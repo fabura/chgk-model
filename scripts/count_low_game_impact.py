@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-Скрипт для оценки: сколько игроков с < N играми и какая доля сэмплов будет отброшена,
-если исключать из датасета все сэмплы, где в команде есть хотя бы один такой игрок.
-По умолчанию N=10. Оценка ускорения: 1 / (1 - доля_отброшенных).
+Скрипт для оценки влияния порога min_games при текущей логике:
+- игроки с < N игр удаляются из состава ("пустой стул"),
+- команда отбрасывается только если после этого состав пустой.
+По умолчанию N=10.
 """
 from __future__ import annotations
 
@@ -43,7 +44,7 @@ def get_player_games_from_db(player_ids: list[int]) -> dict[int, int]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Count players with <N games and sample drop impact")
+    parser = argparse.ArgumentParser(description="Estimate impact of removing low-game players from rosters")
     parser.add_argument("cache_file", nargs="?", default=None, help="Path to cache (required if no default)")
     parser.add_argument("--min_games", type=int, default=10, help="Threshold: players with fewer games are 'low-game' (default 10)")
     args = parser.parse_args()
@@ -85,24 +86,34 @@ def main() -> int:
     print(f"\nPlayers with < {args.min_games} games: {n_low} ({100 * n_low / n_players:.1f}%)")
     print(f"Players with >= {args.min_games} games: {n_active} ({100 * n_active / n_players:.1f}%)")
 
-    # Count samples that contain at least one low-game player (would be dropped)
-    # Vectorized: inv_active[player_indices_flat] then segment sum per sample via reduceat
-    print("\nCounting samples that would be dropped (team has at least one low-game player)...")
-    inv_active = (1 - active).astype(np.int64)  # 1 if low-game, 0 else
-    values = inv_active[player_indices_flat]    # per appearance in flat
-    segment_sums = np.add.reduceat(values, offsets[:-1])
-    dropped = int((segment_sums > 0).sum())
+    # Count samples dropped only when roster becomes empty after removing low-game players.
+    # Also estimate compute impact by reduced total roster slots.
+    print("\nCounting impact with 'remove low-game players, drop only empty teams' logic...")
+    active_int = active.astype(np.int64)          # 1 if active, 0 if low-game
+    active_per_slot = active_int[player_indices_flat]
+    active_counts = np.add.reduceat(active_per_slot, offsets[:-1])  # active players per sample after filtering
+    original_counts = team_sizes.astype(np.int64)
+
+    dropped = int((active_counts == 0).sum())
     kept = n_samples - dropped
     pct_dropped = 100 * dropped / n_samples
     pct_kept = 100 * kept / n_samples
 
-    print(f"\nSamples that would be DROPPED (team has any player with <{args.min_games} games): {dropped} ({pct_dropped:.1f}%)")
-    print(f"Samples that would be KEPT: {kept} ({pct_kept:.1f}%)")
+    total_slots_before = int(original_counts.sum())
+    total_slots_after = int(active_counts.sum())
+    slots_removed = total_slots_before - total_slots_after
+    pct_slots_removed = 100 * slots_removed / max(1, total_slots_before)
 
-    if kept > 0:
-        speedup = n_samples / kept
-        print(f"\nОценка ускорения (при исключении этих сэмплов): в ~{speedup:.2f}x раз быстрее эпоха")
-        print(f"(плюс меньше игроков в модели: {n_active} вместо {n_players})")
+    print(f"\nSamples DROPPED (became empty after removing <{args.min_games}): {dropped} ({pct_dropped:.1f}%)")
+    print(f"Samples KEPT: {kept} ({pct_kept:.1f}%)")
+    print(f"Total roster slots before: {total_slots_before}")
+    print(f"Total roster slots after:  {total_slots_after}")
+    print(f"Roster slots removed:      {slots_removed} ({pct_slots_removed:.1f}%)")
+
+    if total_slots_after > 0:
+        speedup_slots = total_slots_before / total_slots_after
+        print(f"\nОценка ускорения по количеству игроков в командах: ~{speedup_slots:.2f}x")
+        print(f"(и меньше игроков в модели: {n_active} вместо {n_players})")
     return 0
 
 

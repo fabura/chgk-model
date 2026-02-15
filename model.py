@@ -26,7 +26,9 @@ class ChGKModel(nn.Module):
         team_size_bias: [max_team_size]  bias for team size (e.g. 1-6)
         tournament_dl: [num_questions]  optional tournament difficulty (true_dl); higher = harder
         tournament_type: [num_questions]  type index 0=Очник, 1=Синхрон, 2=Асинхрон
-        tournament_dl_scale: [3]  learned scale per type so effective b += scale[type] * tournament_dl
+        tournament_type_bias: [3]  learned additive bias per tournament type
+        tournament_dl_scale: [3]  learned scale per type so effective b += bias[type] + scale[type] * f(dl_z)
+        dl_transform: transform for tournament_dl before scaling (linear/log1p/power)
     """
 
     NUM_TOURNAMENT_TYPES = 3  # Очник, Синхрон, Асинхрон
@@ -44,6 +46,10 @@ class ChGKModel(nn.Module):
         mode: str = "exp",
         tournament_dl: Optional[torch.Tensor] = None,
         tournament_type: Optional[torch.Tensor] = None,
+        dl_transform: str = "linear",
+        dl_log_alpha: float = 1.0,
+        dl_power_gamma: float = 0.5,
+        dl_normalize_by_type: bool = True,
     ):
         super().__init__()
         self.num_players = num_players
@@ -67,9 +73,48 @@ class ChGKModel(nn.Module):
             self.register_buffer("tournament_type", tournament_type.long().clamp(0, self.NUM_TOURNAMENT_TYPES - 1))
         else:
             self.register_buffer("tournament_type", torch.zeros(num_questions, dtype=torch.long))
+        self.dl_normalize_by_type = bool(dl_normalize_by_type)
         self.tournament_dl_scale = nn.Parameter(torch.zeros(self.NUM_TOURNAMENT_TYPES))
+        self.tournament_type_bias = nn.Parameter(torch.zeros(self.NUM_TOURNAMENT_TYPES))
+        self.dl_transform = dl_transform
+        self.dl_log_alpha = float(dl_log_alpha)
+        self.dl_power_gamma = float(dl_power_gamma)
+        if self.dl_transform not in {"linear", "log1p", "power"}:
+            raise ValueError(f"Unsupported dl_transform={self.dl_transform!r}. Use linear/log1p/power.")
+        # Per-type normalization stats for dl z-score.
+        dl_type_mean = torch.zeros(self.NUM_TOURNAMENT_TYPES, dtype=torch.float32)
+        dl_type_std = torch.ones(self.NUM_TOURNAMENT_TYPES, dtype=torch.float32)
+        if self.dl_normalize_by_type and self.tournament_dl.numel() > 0 and self.tournament_type.numel() > 0:
+            with torch.no_grad():
+                for t in range(self.NUM_TOURNAMENT_TYPES):
+                    mask = self.tournament_type == t
+                    if torch.any(mask):
+                        vals = self.tournament_dl[mask]
+                        mean = vals.mean()
+                        std = vals.std(unbiased=False)
+                        dl_type_mean[t] = mean
+                        dl_type_std[t] = std if float(std.item()) > 1e-6 else torch.tensor(1.0, dtype=torch.float32)
+        self.register_buffer("dl_type_mean", dl_type_mean)
+        self.register_buffer("dl_type_std", dl_type_std)
         self.mode = mode
         self._eps = 1e-7
+
+    def _transform_tournament_dl(self, dl: torch.Tensor) -> torch.Tensor:
+        if self.dl_transform == "linear":
+            return dl
+        if self.dl_transform == "log1p":
+            # Monotonic saturating transform that supports negative z-scores too.
+            alpha = max(self.dl_log_alpha, 1e-8)
+            return torch.sign(dl) * torch.log1p(torch.abs(dl) * alpha)
+        # self.dl_transform == "power"
+        gamma = max(self.dl_power_gamma, 1e-8)
+        # Support possible negative values while keeping monotonicity by sign.
+        return torch.sign(dl) * torch.pow(torch.abs(dl), gamma)
+
+    def _normalize_tournament_dl(self, dl: torch.Tensor, type_idx: torch.Tensor) -> torch.Tensor:
+        if not self.dl_normalize_by_type:
+            return dl
+        return (dl - self.dl_type_mean[type_idx]) / self.dl_type_std[type_idx]
 
     def forward(
         self,
@@ -85,7 +130,11 @@ class ChGKModel(nn.Module):
         # λ_ik = exp(-b_i + a_i * θ_k). For each sample we need λ_sum = Σ_k λ_ik.
         type_idx = self.tournament_type[question_indices]
         scale = self.tournament_dl_scale[type_idx]
-        b_i = self.b[question_indices] + scale * self.tournament_dl[question_indices]  # [B]
+        bias = self.tournament_type_bias[type_idx]
+        dl_raw = self.tournament_dl[question_indices]
+        dl_norm = self._normalize_tournament_dl(dl_raw, type_idx)
+        dl_i = self._transform_tournament_dl(dl_norm)
+        b_i = self.b[question_indices] + bias + scale * dl_i  # [B]
         a_i = torch.exp(self.log_a[question_indices]).clamp(min=self._eps)  # [B]
         # For each sample s: λ_sum_s = Σ_{k in team_s} exp(-b_s + a_s * θ_k)
         p_list: List[torch.Tensor] = []
@@ -120,7 +169,11 @@ class ChGKModel(nn.Module):
         b_i = self.b[question_indices]  # [B]
         type_idx = self.tournament_type[question_indices]
         scale = self.tournament_dl_scale[type_idx]
-        b_i = b_i + scale * self.tournament_dl[question_indices]
+        bias = self.tournament_type_bias[type_idx]
+        dl_raw = self.tournament_dl[question_indices]
+        dl_norm = self._normalize_tournament_dl(dl_raw, type_idx)
+        dl_i = self._transform_tournament_dl(dl_norm)
+        b_i = b_i + bias + scale * dl_i
         # Clamp log_a to prevent exponential explosion (max a ~ 7.4)
         log_a_clipped = self.log_a[question_indices].clamp(max=2.0)
         a_i = torch.exp(log_a_clipped).clamp(min=self._eps)  # [B]

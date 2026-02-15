@@ -121,30 +121,34 @@ def filter_dataset_by_player_games(
     player_games: np.ndarray,
     min_games: int,
 ) -> Tuple[PackedData, IndexMaps]:
-    """Remove players with < min_games from the dataset: drop samples where any team member is low-game, reindex players."""
+    """Remove low-game players from rosters; drop only samples that become empty; then reindex players."""
     n_players = len(maps.idx_to_player_id)
     active = (player_games >= min_games).astype(np.int64)
-    # Samples to keep: no low-game player in team
-    inv_active = 1 - active
-    segment_sums = np.add.reduceat(inv_active[data.player_indices_flat], data.offsets[:-1])
-    keep_mask = segment_sums == 0
-    n_kept = int(keep_mask.sum())
-    n_dropped = len(data) - n_kept
-
     active_idx = np.where(active)[0]
     old_to_new = np.full(n_players, -1, dtype=np.int32)
     old_to_new[active_idx] = np.arange(len(active_idx), dtype=np.int32)
 
-    kept_indices = np.where(keep_mask)[0]
-    new_q_idx = data.q_idx[kept_indices]
-    new_taken = data.taken[kept_indices]
-    new_team_sizes = data.team_sizes[kept_indices]
+    kept_indices: list[int] = []
+    new_team_sizes_list: list[int] = []
     new_flat_list = []
-    for i in kept_indices:
+    for i in range(len(data)):
         start, end = data.offsets[i], data.offsets[i + 1]
         team = data.player_indices_flat[start:end]
-        new_flat_list.append(old_to_new[team])
-    new_player_indices_flat = np.concatenate(new_flat_list)
+        team_active = team[active[team] == 1]
+        if team_active.size == 0:
+            continue
+        kept_indices.append(i)
+        new_team_sizes_list.append(int(team_active.size))
+        new_flat_list.append(old_to_new[team_active])
+
+    kept_indices_arr = np.array(kept_indices, dtype=np.int64)
+    new_q_idx = data.q_idx[kept_indices_arr]
+    new_taken = data.taken[kept_indices_arr]
+    new_team_sizes = np.array(new_team_sizes_list, dtype=data.team_sizes.dtype)
+    if new_flat_list:
+        new_player_indices_flat = np.concatenate(new_flat_list).astype(np.int32, copy=False)
+    else:
+        new_player_indices_flat = np.empty((0,), dtype=np.int32)
 
     out_arrays = {
         "q_idx": new_q_idx,
@@ -153,7 +157,7 @@ def filter_dataset_by_player_games(
         "player_indices_flat": new_player_indices_flat,
     }
     if data.team_strength is not None:
-        out_arrays["team_strength"] = data.team_strength[kept_indices]
+        out_arrays["team_strength"] = data.team_strength[kept_indices_arr]
 
     new_idx_to_player_id = [maps.idx_to_player_id[j] for j in active_idx]
     new_maps = IndexMaps(
@@ -326,19 +330,28 @@ def compute_empirical_init(
     # Per-question correlation(taken, team_strength) as selectivity proxy -> init log_a
     log_a_init: Optional[np.ndarray] = None
     if data.team_strength is not None:
-        log_a_init = np.zeros(n_questions, dtype=np.float32)
-        for q in range(n_questions):
-            mask = data.q_idx == q
-            n = mask.sum()
-            if n < 2:
-                continue
-            t = data.taken[mask].astype(np.float64)
-            s = data.team_strength[mask].astype(np.float64)
-            if t.std() < 1e-9 or s.std() < 1e-9:
-                continue
-            corr = np.corrcoef(t, s)[0, 1]
-            if np.isfinite(corr):
-                log_a_init[q] = np.clip(scale_log_a * corr, -log_a_clamp, log_a_clamp)
+        # Vectorized per-question Pearson correlation:
+        # corr = (n*sum(ts)-sum(t)sum(s)) / sqrt((n*sum(t^2)-sum(t)^2)*(n*sum(s^2)-sum(s)^2))
+        q_idx = data.q_idx
+        t = data.taken.astype(np.float64)
+        s = data.team_strength.astype(np.float64)
+        n = np.bincount(q_idx, minlength=n_questions).astype(np.float64)
+        sum_t = np.bincount(q_idx, weights=t, minlength=n_questions)
+        sum_s = np.bincount(q_idx, weights=s, minlength=n_questions)
+        sum_tt = np.bincount(q_idx, weights=t * t, minlength=n_questions)
+        sum_ss = np.bincount(q_idx, weights=s * s, minlength=n_questions)
+        sum_ts = np.bincount(q_idx, weights=t * s, minlength=n_questions)
+
+        num = n * sum_ts - sum_t * sum_s
+        den_t = n * sum_tt - sum_t * sum_t
+        den_s = n * sum_ss - sum_s * sum_s
+        den = np.sqrt(np.maximum(den_t * den_s, 0.0))
+
+        corr = np.zeros(n_questions, dtype=np.float64)
+        valid = (n >= 2.0) & (den > 1e-12)
+        corr[valid] = num[valid] / den[valid]
+        corr = np.clip(corr, -1.0, 1.0)
+        log_a_init = np.clip(scale_log_a * corr, -log_a_clamp, log_a_clamp).astype(np.float32)
 
     return theta_init, b_init, log_a_init
 
@@ -488,6 +501,36 @@ def main() -> int:
     parser.add_argument("--reg_theta", type=float, default=1e-4)
     parser.add_argument("--reg_b", type=float, default=1e-3)
     parser.add_argument("--reg_log_a", type=float, default=1e-3)
+    parser.add_argument(
+        "--dl_transform",
+        choices=["linear", "log1p", "power"],
+        default="linear",
+        help="Transform for tournament_dl before scaling: linear/log1p/power. Default linear.",
+    )
+    parser.add_argument(
+        "--dl_log_alpha",
+        type=float,
+        default=1.0,
+        help="Alpha for dl_transform=log1p: f(dl)=log1p(alpha*dl). Default 1.0.",
+    )
+    parser.add_argument(
+        "--dl_power_gamma",
+        type=float,
+        default=0.5,
+        help="Gamma for dl_transform=power: f(dl)=sign(dl)*|dl|^gamma. Default 0.5.",
+    )
+    parser.add_argument(
+        "--dl_normalize_by_type",
+        action="store_true",
+        default=True,
+        help="Use z-score normalization of tournament_dl separately per tournament type before transform/scale. Default on.",
+    )
+    parser.add_argument(
+        "--no_dl_normalize_by_type",
+        action="store_false",
+        dest="dl_normalize_by_type",
+        help="Disable per-type z-score normalization of tournament_dl.",
+    )
     parser.add_argument("--val_frac", type=float, default=0.15)
     parser.add_argument("--max_tournaments", type=int, default=None, help="DB: limit tournaments")
     parser.add_argument(
@@ -496,9 +539,10 @@ def main() -> int:
         help="DB: include every tournament with enough questions (default: only those with points_mask data)",
     )
     parser.add_argument(
-        "--only_tournaments_with_true_dl",
-        action="store_true",
-        help="DB: use only tournaments that have true_dl (default: all tournaments, difficulty from true_dl + ndcg fallback)",
+        "--tournament_dl_filter",
+        choices=["all", "true_dl", "ndcg", "any", "both"],
+        default="all",
+        help="DB: filter tournaments by difficulty-source availability: all/true_dl/ndcg/any/both. Default all.",
     )
     parser.add_argument(
         "--min_tournament_date",
@@ -516,7 +560,7 @@ def main() -> int:
         "--min_games_in_dataset",
         type=int,
         default=10,
-        help="Exclude players with fewer games: at DB load only load teams of players with >= N games; at cache load filter to such samples. 0=no filter. Default 10.",
+        help="Treat players with fewer games as inactive: remove them from team rosters; drop only teams that become empty. 0=no filter. Default 10.",
     )
     parser.add_argument("--calibration_plot", type=str, default=None, help="Save calibration curve to path")
     parser.add_argument(
@@ -530,6 +574,18 @@ def main() -> int:
         type=str,
         default=None,
         help="Save checkpoint after each epoch to this dir (latest.pt). Use with --resume to continue training.",
+    )
+    parser.add_argument(
+        "--players_out",
+        type=str,
+        default="results/players.csv",
+        help="Export player_id,theta to CSV at the end of training (default: results/players.csv). Empty string = do not export.",
+    )
+    parser.add_argument(
+        "--export_min_games",
+        type=int,
+        default=30,
+        help="When exporting players_out: only include players with at least this many games (since min_tournament_date). 0 = export all. Default 30.",
     )
     parser.add_argument(
         "--resume",
@@ -563,7 +619,7 @@ def main() -> int:
             samples, maps = load_from_db(
                 max_tournaments=args.max_tournaments,
                 only_with_question_data=not args.all_tournaments,
-                only_tournaments_with_true_dl=args.only_tournaments_with_true_dl,
+                tournament_dl_filter=args.tournament_dl_filter,
                 min_tournament_date=args.min_tournament_date or None,
                 min_games=args.min_games_in_dataset,
                 seed=args.seed,
@@ -573,7 +629,7 @@ def main() -> int:
                     save_cached(samples, maps, cache_path, meta={"max_tournaments": args.max_tournaments})
             packed_data = PackedData.from_arrays(samples_to_arrays(samples))
 
-    # Optionally remove low-game players from dataset entirely (drop samples, reindex players)
+    # Optionally remove low-game players from rosters (drop only teams that become empty), then reindex players
     if packed_data and args.min_games_in_dataset > 0:
         db_games = get_player_games_from_db(maps.idx_to_player_id)
         if db_games:
@@ -593,7 +649,7 @@ def main() -> int:
         )
         n_dropped = n_before - len(packed_data)
         print(
-            f"Filtered dataset (games from {games_source}): dropped {n_dropped} samples with any player <{args.min_games_in_dataset} games; "
+            f"Filtered dataset (games from {games_source}): dropped {n_dropped} samples that became empty after removing players with <{args.min_games_in_dataset} games; "
             f"kept {len(packed_data)} samples, {maps.num_players} players"
         )
 
@@ -620,6 +676,15 @@ def main() -> int:
             )
         start_epoch = ckpt["epoch"] + 1
         print(f"Resuming from epoch {start_epoch} (checkpoint had epoch {ckpt['epoch']})")
+        # Keep dl transform consistent with the checkpoint when available.
+        if "dl_transform" in ckpt:
+            args.dl_transform = ckpt["dl_transform"]
+        if "dl_log_alpha" in ckpt:
+            args.dl_log_alpha = float(ckpt["dl_log_alpha"])
+        if "dl_power_gamma" in ckpt:
+            args.dl_power_gamma = float(ckpt["dl_power_gamma"])
+        if "dl_normalize_by_type" in ckpt:
+            args.dl_normalize_by_type = bool(ckpt["dl_normalize_by_type"])
 
     tournament_dl_tensor = None
     tournament_type_tensor = None
@@ -629,18 +694,37 @@ def main() -> int:
     if getattr(maps, "tournament_type", None) is not None:
         tournament_type_tensor = torch.from_numpy(maps.tournament_type).long()
         print("Using tournament type (Очник/Синхрон/Асинхрон) for type-dependent dl scale")
+    print(
+        f"Tournament dl transform: {args.dl_transform}"
+        + (
+            f" (alpha={args.dl_log_alpha})"
+            if args.dl_transform == "log1p"
+            else f" (gamma={args.dl_power_gamma})"
+            if args.dl_transform == "power"
+            else ""
+        )
+        + (", zscore_by_type=on" if args.dl_normalize_by_type else ", zscore_by_type=off")
+    )
     model = ChGKModel(
         n_players,
         n_questions,
         mode=args.model_mode,
         tournament_dl=tournament_dl_tensor,
         tournament_type=tournament_type_tensor,
+        dl_transform=args.dl_transform,
+        dl_log_alpha=args.dl_log_alpha,
+        dl_power_gamma=args.dl_power_gamma,
+        dl_normalize_by_type=args.dl_normalize_by_type,
     ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=2)
 
     if args.resume:
-        model.load_state_dict(ckpt["model_state"])
+        missing, unexpected = model.load_state_dict(ckpt["model_state"], strict=False)
+        if missing:
+            print(f"Resume: missing keys in checkpoint (using defaults): {missing}")
+        if unexpected:
+            print(f"Resume: unexpected keys in checkpoint (ignored): {unexpected}")
         if "optimizer_state" in ckpt:
             optimizer.load_state_dict(ckpt["optimizer_state"])
         if "scheduler_state" in ckpt:
@@ -683,6 +767,7 @@ def main() -> int:
 
     # Data-driven initial values for theta, b and optionally log_a (only when not resuming)
     if not args.resume and isinstance(train_data, PackedData):
+        print("Computing empirical init (theta/b and optional log_a) ...")
         theta_init, b_init, log_a_init = compute_empirical_init(
             train_data, n_players, n_questions, eps=1e-4, scale=0.5, scale_log_a=0.8, log_a_clamp=1.5
         )
@@ -748,6 +833,10 @@ def main() -> int:
                 "idx_to_question_id": maps.idx_to_question_id,
                 "lr": optimizer.param_groups[0]["lr"],
                 "best_val_loss": best_val_loss,
+                "dl_transform": args.dl_transform,
+                "dl_log_alpha": float(args.dl_log_alpha),
+                "dl_power_gamma": float(args.dl_power_gamma),
+                "dl_normalize_by_type": bool(args.dl_normalize_by_type),
             }
             if getattr(maps, "tournament_dl", None) is not None:
                 ckpt_dict["tournament_dl"] = maps.tournament_dl
@@ -808,6 +897,86 @@ def main() -> int:
         qid = idx_to_question[idx] if idx < len(idx_to_question) else idx
         print(f"  {i}. question_id={qid} a={a[idx]:.4f}")
 
+    if args.players_out:
+        import csv
+
+        player_ids = [idx_to_player[idx] if idx < len(idx_to_player) else idx for idx in range(len(theta))]
+        # Exposure in the current training slice: distinct tournaments and total team-question appearances.
+        train_games = np.zeros(len(theta), dtype=np.int64)
+        train_samples = np.zeros(len(theta), dtype=np.int64)
+        if isinstance(train_data, PackedData) and hasattr(maps, "idx_to_question_id"):
+            q_keys = maps.idx_to_question_id
+            off = train_data.offsets
+            player_tournaments: dict[int, set] = {}
+            for i in range(len(train_data.q_idx)):
+                qidx = train_data.q_idx[i]
+                tid = q_keys[qidx][0] if isinstance(q_keys[qidx], tuple) else q_keys[qidx]
+                for pidx in train_data.player_indices_flat[off[i] : off[i + 1]]:
+                    p = int(pidx)
+                    train_samples[p] += 1
+                    player_tournaments.setdefault(p, set()).add(tid)
+            train_games = np.array([len(player_tournaments.get(j, set())) for j in range(len(theta))], dtype=np.int64)
+        elif isinstance(train_data, list):
+            player_tournaments: dict[int, set] = {}
+            for s in train_data:
+                qid = s.question_id
+                tid = qid[0] if isinstance(qid, tuple) else qid
+                for p in s.player_indices:
+                    p = int(p)
+                    train_samples[p] += 1
+                    player_tournaments.setdefault(p, set()).add(tid)
+            train_games = np.array([len(player_tournaments.get(j, set())) for j in range(len(theta))], dtype=np.int64)
+        allowed_idx = set(range(len(theta)))
+        if args.export_min_games > 0 and player_ids:
+            try:
+                import os as _os
+                import psycopg2
+
+                url = _os.environ.get("DATABASE_URL", "postgresql://postgres:password@127.0.0.1:5432/postgres")
+                conn = psycopg2.connect(url)
+                cur = conn.cursor()
+                min_date = (args.min_tournament_date or "").strip()
+                if min_date:
+                    cur.execute(
+                        """
+                        SELECT tr.player_id, COUNT(DISTINCT tr.tournament_id)
+                        FROM public.tournament_rosters tr
+                        JOIN public.tournaments t ON t.id = tr.tournament_id
+                        WHERE tr.player_id = ANY(%s)
+                          AND (t.start_datetime IS NULL OR t.start_datetime >= %s::timestamp)
+                        GROUP BY tr.player_id
+                        HAVING COUNT(DISTINCT tr.tournament_id) >= %s
+                        """,
+                        (player_ids, min_date, args.export_min_games),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        SELECT player_id, COUNT(DISTINCT tournament_id)
+                        FROM public.tournament_rosters
+                        WHERE player_id = ANY(%s)
+                        GROUP BY player_id
+                        HAVING COUNT(DISTINCT tournament_id) >= %s
+                        """,
+                        (player_ids, args.export_min_games),
+                    )
+                allowed_ids = {r[0] for r in cur.fetchall()}
+                conn.close()
+                allowed_idx = {idx for idx in range(len(theta)) if player_ids[idx] in allowed_ids}
+                date_note = f" (tournaments >= {min_date})" if min_date else ""
+                print(f"\nExport players: min_games {args.export_min_games}{date_note} -> {len(allowed_idx)} of {len(theta)} players")
+            except Exception as e:
+                print(f"DB unavailable for export_min_games filter ({e}), exporting all players", file=sys.stderr)
+        out_path = args.players_out
+        os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+        with open(out_path, "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(["player_id", "theta", "train_games", "train_samples"])
+            for idx in sorted(allowed_idx):
+                pid = idx_to_player[idx] if idx < len(idx_to_player) else idx
+                w.writerow([pid, round(float(theta[idx]), 6), int(train_games[idx]), int(train_samples[idx])])
+        print(f"Players saved to {out_path}")
+
     if args.calibration_plot:
         # For calibration plot, use val_data
         if isinstance(val_data, PackedData):
@@ -830,6 +999,10 @@ def main() -> int:
                 "num_questions": maps.num_questions,
                 "idx_to_player_id": maps.idx_to_player_id,
                 "idx_to_question_id": maps.idx_to_question_id,
+                "dl_transform": args.dl_transform,
+                "dl_log_alpha": float(args.dl_log_alpha),
+                "dl_power_gamma": float(args.dl_power_gamma),
+                "dl_normalize_by_type": bool(args.dl_normalize_by_type),
             },
             path,
         )

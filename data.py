@@ -149,7 +149,7 @@ def load_from_db(
     max_tournaments: Optional[int] = None,
     min_questions: int = 10,
     only_with_question_data: bool = True,
-    only_tournaments_with_true_dl: bool = False,
+    tournament_dl_filter: str = "all",
     min_tournament_date: Optional[str] = "2015-01-01",
     min_games: int = 10,
     show_progress: bool = True,
@@ -165,10 +165,15 @@ def load_from_db(
       points_mask simply contribute no samples).
     - min_tournament_date: only tournaments with start_datetime >= this date (YYYY-MM-DD).
       None = no date filter. Default 2015-01-01.
-    - When only_tournaments_with_true_dl=True, only tournaments that have
-      at least one row in true_dls are used. Default False: include all (tournament_dl from true_dl + ndcg fallback).
-    - min_games: players with fewer games (total in DB) are excluded entirely; only teams
-      where all players have >= min_games are loaded. Default 10.
+    - tournament_dl_filter controls which tournaments are used by availability of
+      difficulty sources:
+      * "all" (default): no filter by difficulty source.
+      * "true_dl": only tournaments present in true_dls.
+      * "ndcg": only tournaments present in ndcg.
+      * "any": tournaments present in true_dls or ndcg.
+      * "both": tournaments present in both true_dls and ndcg.
+    - min_games: players with fewer games (total in DB) are treated as inactive and removed
+      from rosters; teams are dropped only if roster becomes empty. Default 10.
     - Results: only rows where points_mask IS NOT NULL; teams/tournaments
       without question-level data never contribute samples.
     - Maps: tournament_id -> game, (tournament_id, question_index) -> global question index.
@@ -243,21 +248,43 @@ def load_from_db(
             "in rating-db run 'docker-compose down -v' then 'docker-compose up' with rating.backup in the same folder."
         ) from e
     rows = cur.fetchall()
-    # Optionally restrict to tournaments that have true_dl (exclude earlier ones without difficulty data)
-    if only_tournaments_with_true_dl:
+    # Optional restrict by availability of tournament difficulty sources.
+    dl_filter = tournament_dl_filter
+    if dl_filter not in {"all", "true_dl", "ndcg", "any", "both"}:
+        conn.close()
+        raise ValueError(
+            f"Unsupported tournament_dl_filter={dl_filter!r}. Use one of: all, true_dl, ndcg, any, both."
+        )
+    if dl_filter != "all":
         try:
-            cur.execute(
-                "SELECT DISTINCT tournament_id FROM public.true_dls WHERE tournament_id IS NOT NULL"
+            true_ids: set[int] = set()
+            ndcg_ids: set[int] = set()
+            if dl_filter in {"true_dl", "any", "both"}:
+                cur.execute(
+                    "SELECT DISTINCT tournament_id FROM public.true_dls WHERE tournament_id IS NOT NULL"
+                )
+                true_ids = {int(r[0]) for r in cur.fetchall()}
+            if dl_filter in {"ndcg", "any", "both"}:
+                cur.execute(
+                    "SELECT DISTINCT tournament_id FROM public.ndcg WHERE tournament_id IS NOT NULL"
+                )
+                ndcg_ids = {int(r[0]) for r in cur.fetchall()}
+
+            if dl_filter == "true_dl":
+                allowed_ids = true_ids
+            elif dl_filter == "ndcg":
+                allowed_ids = ndcg_ids
+            elif dl_filter == "any":
+                allowed_ids = true_ids | ndcg_ids
+            else:  # both
+                allowed_ids = true_ids & ndcg_ids
+
+            n_before = len(rows)
+            rows = [r for r in rows if int(r[0]) in allowed_ids]
+            excluded = n_before - len(rows)
+            print(
+                f"Applied tournament_dl_filter={dl_filter}: kept {len(rows)} tournaments, excluded {excluded} without required difficulty source(s)"
             )
-            ids_with_dl = {r[0] for r in cur.fetchall()}
-            if ids_with_dl:
-                n_before = len(rows)
-                rows = [r for r in rows if r[0] in ids_with_dl]
-                if rows and n_before > len(rows):
-                    min_id = min(r[0] for r in rows)
-                    print(
-                        f"Restricted to {len(rows)} tournaments with true_dl (earliest id={min_id}, excluded {n_before - len(rows)} without true_dl)"
-                    )
         except Exception:
             pass
     if max_tournaments:
@@ -346,7 +373,7 @@ def load_from_db(
             roster_raw[key] = []
         roster_raw[key].append(pid)
 
-    # Players with >= min_games (total in DB) — exclude everyone else entirely
+    # Players with >= min_games (total in DB) are active; low-game players are removed from rosters.
     all_pids = set()
     for pids in roster_raw.values():
         all_pids.update(pids)
@@ -360,17 +387,28 @@ def load_from_db(
         player_games = {r[0]: r[1] for r in cur.fetchall()}
     else:
         player_games = {}
-    active_players = {pid for pid, g in player_games.items() if g >= min_games}
+    if min_games > 0:
+        active_players = {pid for pid in all_pids if player_games.get(pid, 0) >= min_games}
+    else:
+        active_players = set(all_pids)
     if min_games > 0 and active_players != all_pids:
         n_excl = len(all_pids - active_players)
-        print(f"Excluded {n_excl} players with <{min_games} games (only loading teams of players with >={min_games})")
+        print(f"Marked {n_excl} players with <{min_games} games as inactive (they will be removed from rosters)")
 
-    # Keep only teams where all players have >= min_games
+    # Keep teams, but remove inactive players from rosters.
+    # Drop team only if it becomes empty after filtering.
     roster_map_filtered: dict[tuple[int, int], list[int]] = {}
+    n_teams_dropped_empty = 0
     for key, pids in roster_raw.items():
-        if not pids or (min_games > 0 and not all(p in active_players for p in pids)):
+        if not pids:
             continue
-        roster_map_filtered[key] = pids
+        filtered = [p for p in pids if p in active_players] if min_games > 0 else pids
+        if not filtered:
+            n_teams_dropped_empty += 1
+            continue
+        roster_map_filtered[key] = filtered
+    if min_games > 0:
+        print(f"Dropped {n_teams_dropped_empty} teams with empty roster after removing inactive players")
 
     player_ids = sorted(set().union(*(roster_map_filtered[k] for k in roster_map_filtered)))
     player_id_to_idx = {pid: i for i, pid in enumerate(player_ids)}
