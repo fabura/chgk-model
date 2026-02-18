@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import math
 import os
 import random
 import sys
@@ -205,6 +206,7 @@ def loss_fn(
     reg_team_size: float = 0.0,
     reg_gamma: float = 0.0,
     reg_game_weights: float = 0.0,
+    log_gamma_init: Optional[float] = None,
     mean_b: Optional[float] = 0.0,
     obs_weights: Optional[torch.Tensor] = None,
     theta_reg_weights: Optional[torch.Tensor] = None,
@@ -256,14 +258,15 @@ def loss_fn(
     if reg_team_size > 0:
         reg = reg + reg_team_size * (model.team_size_bias ** 2).mean()
 
-    # --- dl power gamma (around init) ---
+    # --- dl power gamma (pull toward init value, not zero) ---
     if reg_gamma > 0 and hasattr(model, "log_dl_power_gamma"):
-        reg = reg + reg_gamma * (model.log_dl_power_gamma ** 2)
+        anchor = log_gamma_init if log_gamma_init is not None else 0.0
+        reg = reg + reg_gamma * (model.log_dl_power_gamma - anchor) ** 2
 
     # --- learnable game weights ---
     if reg_game_weights > 0 and weight_module is not None:
-        for p in weight_module.parameters():
-            reg = reg + reg_game_weights * (p ** 2).mean()
+        for param in weight_module.parameters():
+            reg = reg + reg_game_weights * (param ** 2).mean()
 
     if mean_b is not None:
         reg = reg + 1e2 * (model.b.mean() - mean_b) ** 2
@@ -490,6 +493,7 @@ def train_epoch(
     reg_team_size: float = 0.0,
     reg_gamma: float = 0.0,
     reg_game_weights: float = 0.0,
+    log_gamma_init: Optional[float] = None,
     center_theta: bool = True,
     center_b: bool = False,
     show_progress: bool = True,
@@ -498,6 +502,7 @@ def train_epoch(
     theta_center_mask: Optional[torch.Tensor] = None,
     theta_freeze_mask: Optional[torch.Tensor] = None,
     weight_module: Optional[object] = None,
+    grad_clip: float = 0.0,
 ) -> Tuple[float, float]:
     model.train()
     n_samples = len(data)
@@ -535,6 +540,7 @@ def train_epoch(
             reg_theta=reg_theta, reg_b=reg_b, reg_log_a=reg_log_a,
             reg_type=reg_type, reg_team_size=reg_team_size,
             reg_gamma=reg_gamma, reg_game_weights=reg_game_weights,
+            log_gamma_init=log_gamma_init,
             mean_b=0.0 if center_b else None,
             obs_weights=obs_w,
             theta_reg_weights=theta_reg_weights,
@@ -544,6 +550,11 @@ def train_epoch(
         loss.backward()
         if theta_freeze_mask is not None and model.theta.grad is not None:
             model.theta.grad[theta_freeze_mask] = 0
+        if grad_clip > 0:
+            all_params = list(model.parameters())
+            if weight_module is not None:
+                all_params += list(weight_module.parameters())
+            torch.nn.utils.clip_grad_norm_(all_params, grad_clip)
         optimizer.step()
         apply_identifiability(
             model, center_theta=center_theta, center_b=center_b,
@@ -614,7 +625,6 @@ def evaluate(
         
     p = torch.cat(all_p)
     taken = torch.cat(all_taken)
-    _ = torch.cat(all_w) if all_w else None
     
     mean_loss = total_loss / n_samples
     brier = brier_score(taken, p).item()
@@ -645,6 +655,8 @@ def main() -> int:
     parser.add_argument("--batch_size", type=int, default=512)
     parser.add_argument("--lr", type=float, default=5e-3)
     parser.add_argument("--patience", type=int, default=10, help="Early stopping patience")
+    parser.add_argument("--grad_clip", type=float, default=5.0,
+                        help="Max gradient norm (0=off). Default 5.0.")
     parser.add_argument("--reg_theta", type=float, default=1e-4)
     parser.add_argument("--reg_b", type=float, default=1e-3)
     parser.add_argument("--reg_log_a", type=float, default=1e-3)
@@ -1007,18 +1019,24 @@ def main() -> int:
     best_val_loss = float("inf")
     epochs_no_improve = 0
 
+    _log_gamma_init: Optional[float] = None
+    if hasattr(model, "log_dl_power_gamma"):
+        _log_gamma_init = math.log(max(args.dl_power_gamma, 1e-6))
+
     for epoch in range(start_epoch, args.epochs):
         train_loss, train_mean_p = train_epoch(
             model, train_data, optimizer, device, args.batch_size,
             reg_theta=args.reg_theta, reg_b=args.reg_b, reg_log_a=args.reg_log_a,
             reg_type=args.reg_type, reg_team_size=args.reg_team_size,
             reg_gamma=args.reg_gamma, reg_game_weights=args.reg_game_weights,
+            log_gamma_init=_log_gamma_init,
             center_theta=True, center_b=True,
             theta_reg_weights=theta_reg_weights,
             question_reg_weights=question_reg_weights,
             theta_center_mask=theta_center_mask,
             theta_freeze_mask=theta_freeze_mask,
             weight_module=weight_module,
+            grad_clip=args.grad_clip,
         )
         val_loss, val_mean_p, val_brier, val_auc = evaluate(model, val_data, device, weight_module=weight_module)
         print(
@@ -1346,6 +1364,7 @@ def main() -> int:
                     reg_theta=args.reg_theta, reg_b=args.reg_b, reg_log_a=args.reg_log_a,
                     reg_type=args.reg_type, reg_team_size=args.reg_team_size,
                     reg_gamma=args.reg_gamma, reg_game_weights=args.reg_game_weights,
+                    log_gamma_init=_log_gamma_init,
                     center_theta=True, center_b=True,
                     theta_reg_weights=theta_reg_weights,
                     question_reg_weights=question_reg_weights,
@@ -1353,6 +1372,7 @@ def main() -> int:
                     theta_freeze_mask=theta_freeze_mask,
                     weight_module=None,
                     show_progress=False,
+                    grad_clip=args.grad_clip,
                 )
                 vloss, _, _, _ = evaluate(m, val_data, device)
                 sch.step(vloss)

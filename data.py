@@ -336,6 +336,9 @@ def detect_paired_tournaments(
     def _normalize_fuzzy(title: str) -> str:
         return _normalize_tournament_title(title, strip_edition=True)
 
+    _SYNC_TYPES = {"синхрон", "sync", "строго синхронный"}
+    _ASYNC_TYPES = {"асинхрон", "async"}
+
     def _try_pair(candidates: list[int]) -> list[TournamentPairGroup]:
         """Find actual pairs within a bucket of same-name same-qcount tournaments."""
         if len(candidates) < 2:
@@ -344,15 +347,13 @@ def detect_paired_tournaments(
         for t in candidates:
             by_type[meta[t]["type"]].append(t)
         types_present = set(by_type.keys())
-        non_offline = [t for typ in types_present - {"очник", "offline", ""} for t in by_type[typ]]
-        offline_or_sync = [t for typ in types_present for t in by_type[typ]]
         if len(types_present) < 2:
             return []
 
-        sync_tids = by_type.get("синхрон", []) + by_type.get("sync", [])
-        async_tids = by_type.get("асинхрон", []) + by_type.get("async", [])
+        sync_tids = [t for typ in _SYNC_TYPES for t in by_type.get(typ, [])]
+        async_tids = [t for typ in _ASYNC_TYPES for t in by_type.get(typ, [])]
         offline_tids = [t for t in candidates if meta[t]["type"] not in
-                        ("синхрон", "sync", "асинхрон", "async")]
+                        _SYNC_TYPES | _ASYNC_TYPES]
 
         source_pool = sync_tids + offline_tids
         target_pool = async_tids
