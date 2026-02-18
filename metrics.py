@@ -15,6 +15,20 @@ def logloss(y_true: torch.Tensor, p_pred: torch.Tensor, eps: float = 1e-7) -> to
     return -(y_true * torch.log(p) + (1.0 - y_true) * torch.log(1.0 - p)).mean()
 
 
+def weighted_logloss(
+    y_true: torch.Tensor,
+    p_pred: torch.Tensor,
+    weights: torch.Tensor,
+    eps: float = 1e-7,
+) -> torch.Tensor:
+    """Weighted BCE with normalized weighted mean."""
+    p = p_pred.clamp(min=eps, max=1.0 - eps)
+    ll = -(y_true * torch.log(p) + (1.0 - y_true) * torch.log(1.0 - p))
+    w = weights.clamp(min=0.0)
+    w_sum = w.sum().clamp(min=eps)
+    return (w * ll).sum() / w_sum
+
+
 def brier_score(y_true: torch.Tensor, p_pred: torch.Tensor) -> torch.Tensor:
     """Brier: mean (p - y)^2."""
     return ((p_pred - y_true) ** 2).mean()

@@ -46,6 +46,7 @@ def main() -> int:
     dl_transform = ckpt.get("dl_transform", "linear")
     dl_log_alpha = float(ckpt.get("dl_log_alpha", 1.0))
     dl_power_gamma = float(ckpt.get("dl_power_gamma", 0.5))
+    dl_learn_power = bool(ckpt.get("dl_learn_power", False))
     dl_normalize_by_type = bool(ckpt.get("dl_normalize_by_type", True))
     model = ChGKModel(
         ckpt["num_players"],
@@ -55,6 +56,7 @@ def main() -> int:
         dl_transform=dl_transform,
         dl_log_alpha=dl_log_alpha,
         dl_power_gamma=dl_power_gamma,
+        dl_learn_power=dl_learn_power,
         dl_normalize_by_type=dl_normalize_by_type,
     )
     state = ckpt["model_state"]

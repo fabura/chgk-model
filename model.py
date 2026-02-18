@@ -24,11 +24,14 @@ class ChGKModel(nn.Module):
         b:     [num_questions]  question difficulty
         log_a: [num_questions]  log discrimination (a_i > 0)
         team_size_bias: [max_team_size]  bias for team size (e.g. 1-6)
-        tournament_dl: [num_questions]  optional tournament difficulty (true_dl); higher = harder
+        tournament_dl: [num_questions]  optional tournament difficulty (true_dl)
         tournament_type: [num_questions]  type index 0=Очник, 1=Синхрон, 2=Асинхрон
         tournament_type_bias: [3]  learned additive bias per tournament type
-        tournament_dl_scale: [3]  learned scale per type so effective b += bias[type] + scale[type] * f(dl_z)
-        dl_transform: transform for tournament_dl before scaling (linear/log1p/power)
+        tournament_dl_scale: [3]  learned scale per type: effective b += bias[type] + scale[type] * f(dl_z)
+        dl_transform: transform for true_dl before scaling (default: power)
+        dl_power_gamma: exponent for power transform (default: 2.0, learnable)
+        canonical_q_idx: [num_questions] maps question slots to canonical params (for paired tournaments)
+        num_canonical_questions: size of b and log_a (<=num_questions when tournaments share packages)
     """
 
     NUM_TOURNAMENT_TYPES = 3  # Очник, Синхрон, Асинхрон
@@ -38,6 +41,8 @@ class ChGKModel(nn.Module):
         num_players: int,
         num_questions: int,
         *,
+        num_canonical_questions: Optional[int] = None,
+        canonical_q_idx: Optional[torch.Tensor] = None,
         init_theta_scale: float = 0.1,
         init_b_scale: float = 0.1,
         init_log_a_mean: float = 0.0,
@@ -46,18 +51,24 @@ class ChGKModel(nn.Module):
         mode: str = "exp",
         tournament_dl: Optional[torch.Tensor] = None,
         tournament_type: Optional[torch.Tensor] = None,
-        dl_transform: str = "linear",
-        dl_log_alpha: float = 1.0,
-        dl_power_gamma: float = 0.5,
-        dl_normalize_by_type: bool = True,
+        dl_transform: str = "power",
+        dl_power_gamma: float = 2.0,
+        dl_learn_power: bool = True,
     ):
         super().__init__()
         self.num_players = num_players
         self.num_questions = num_questions
+        # b and log_a are sized by canonical questions (shared across paired tournaments)
+        n_params = num_canonical_questions if num_canonical_questions is not None else num_questions
+        self.num_b_params = n_params
+        if canonical_q_idx is not None:
+            self.register_buffer("canonical_q_idx", canonical_q_idx.long())
+        else:
+            self.register_buffer("canonical_q_idx", torch.arange(num_questions, dtype=torch.long))
         self.theta = nn.Parameter(torch.zeros(num_players).uniform_(-init_theta_scale, init_theta_scale))
-        self.b = nn.Parameter(torch.zeros(num_questions).uniform_(-init_b_scale, init_b_scale))
+        self.b = nn.Parameter(torch.zeros(n_params).uniform_(-init_b_scale, init_b_scale))
         self.log_a = nn.Parameter(
-            torch.full((num_questions,), init_log_a_mean).uniform_(
+            torch.full((n_params,), init_log_a_mean).uniform_(
                 init_log_a_mean - init_log_a_scale,
                 init_log_a_mean + init_log_a_scale,
             )
@@ -73,18 +84,22 @@ class ChGKModel(nn.Module):
             self.register_buffer("tournament_type", tournament_type.long().clamp(0, self.NUM_TOURNAMENT_TYPES - 1))
         else:
             self.register_buffer("tournament_type", torch.zeros(num_questions, dtype=torch.long))
-        self.dl_normalize_by_type = bool(dl_normalize_by_type)
         self.tournament_dl_scale = nn.Parameter(torch.zeros(self.NUM_TOURNAMENT_TYPES))
         self.tournament_type_bias = nn.Parameter(torch.zeros(self.NUM_TOURNAMENT_TYPES))
         self.dl_transform = dl_transform
-        self.dl_log_alpha = float(dl_log_alpha)
-        self.dl_power_gamma = float(dl_power_gamma)
+        self.dl_learn_power = bool(dl_learn_power) and (dl_transform == "power")
+        if self.dl_learn_power:
+            # log(gamma) so gamma stays positive; init from dl_power_gamma
+            import math
+            self.log_dl_power_gamma = nn.Parameter(torch.tensor(math.log(max(dl_power_gamma, 1e-6))))
+        else:
+            self.register_buffer("_dl_power_gamma_fixed", torch.tensor(float(dl_power_gamma)))
         if self.dl_transform not in {"linear", "log1p", "power"}:
             raise ValueError(f"Unsupported dl_transform={self.dl_transform!r}. Use linear/log1p/power.")
-        # Per-type normalization stats for dl z-score.
+        # Per-type z-score normalization stats for dl.
         dl_type_mean = torch.zeros(self.NUM_TOURNAMENT_TYPES, dtype=torch.float32)
         dl_type_std = torch.ones(self.NUM_TOURNAMENT_TYPES, dtype=torch.float32)
-        if self.dl_normalize_by_type and self.tournament_dl.numel() > 0 and self.tournament_type.numel() > 0:
+        if self.tournament_dl.numel() > 0 and self.tournament_type.numel() > 0:
             with torch.no_grad():
                 for t in range(self.NUM_TOURNAMENT_TYPES):
                     mask = self.tournament_type == t
@@ -103,17 +118,17 @@ class ChGKModel(nn.Module):
         if self.dl_transform == "linear":
             return dl
         if self.dl_transform == "log1p":
-            # Monotonic saturating transform that supports negative z-scores too.
-            alpha = max(self.dl_log_alpha, 1e-8)
-            return torch.sign(dl) * torch.log1p(torch.abs(dl) * alpha)
+            return torch.sign(dl) * torch.log1p(torch.abs(dl))
         # self.dl_transform == "power"
-        gamma = max(self.dl_power_gamma, 1e-8)
+        gamma = (
+            torch.exp(self.log_dl_power_gamma).clamp(min=0.5, max=4.0)
+            if self.dl_learn_power
+            else max(float(self._dl_power_gamma_fixed), 1e-8)
+        )
         # Support possible negative values while keeping monotonicity by sign.
         return torch.sign(dl) * torch.pow(torch.abs(dl), gamma)
 
     def _normalize_tournament_dl(self, dl: torch.Tensor, type_idx: torch.Tensor) -> torch.Tensor:
-        if not self.dl_normalize_by_type:
-            return dl
         return (dl - self.dl_type_mean[type_idx]) / self.dl_type_std[type_idx]
 
     def forward(
@@ -128,14 +143,15 @@ class ChGKModel(nn.Module):
         Returns: p [B] in (0, 1), clipped for numerical stability.
         """
         # λ_ik = exp(-b_i + a_i * θ_k). For each sample we need λ_sum = Σ_k λ_ik.
+        canon_idx = self.canonical_q_idx[question_indices]
         type_idx = self.tournament_type[question_indices]
         scale = self.tournament_dl_scale[type_idx]
         bias = self.tournament_type_bias[type_idx]
         dl_raw = self.tournament_dl[question_indices]
         dl_norm = self._normalize_tournament_dl(dl_raw, type_idx)
         dl_i = self._transform_tournament_dl(dl_norm)
-        b_i = self.b[question_indices] + bias + scale * dl_i  # [B]
-        a_i = torch.exp(self.log_a[question_indices]).clamp(min=self._eps)  # [B]
+        b_i = self.b[canon_idx] + bias + scale * dl_i  # [B]
+        a_i = torch.exp(self.log_a[canon_idx]).clamp(min=self._eps)  # [B]
         # For each sample s: λ_sum_s = Σ_{k in team_s} exp(-b_s + a_s * θ_k)
         p_list: List[torch.Tensor] = []
         for s in range(question_indices.size(0)):
@@ -166,7 +182,8 @@ class ChGKModel(nn.Module):
         Vectorized forward using packed representation.
         question_indices: [B], player_indices_flat: [total_players], team_sizes: [B] (sum = total_players).
         """
-        b_i = self.b[question_indices]  # [B]
+        canon_idx = self.canonical_q_idx[question_indices]
+        b_i = self.b[canon_idx]  # [B]
         type_idx = self.tournament_type[question_indices]
         scale = self.tournament_dl_scale[type_idx]
         bias = self.tournament_type_bias[type_idx]
@@ -174,8 +191,7 @@ class ChGKModel(nn.Module):
         dl_norm = self._normalize_tournament_dl(dl_raw, type_idx)
         dl_i = self._transform_tournament_dl(dl_norm)
         b_i = b_i + bias + scale * dl_i
-        # Clamp log_a to prevent exponential explosion (max a ~ 7.4)
-        log_a_clipped = self.log_a[question_indices].clamp(max=2.0)
+        log_a_clipped = self.log_a[canon_idx].clamp(max=2.0)
         a_i = torch.exp(log_a_clipped).clamp(min=self._eps)  # [B]
         theta_flat = self.theta[player_indices_flat]  # [total_players]
         # Expand b_i, a_i to per-player: repeat each b_i[s], a_i[s] by team_sizes[s]
