@@ -210,6 +210,7 @@ def loss_fn(
     mean_b: Optional[float] = 0.0,
     obs_weights: Optional[torch.Tensor] = None,
     theta_reg_weights: Optional[torch.Tensor] = None,
+    theta_anchor: Optional[torch.Tensor] = None,
     question_reg_weights: Optional[torch.Tensor] = None,
     weight_module: Optional[object] = None,
 ) -> torch.Tensor:
@@ -219,6 +220,8 @@ def loss_fn(
     scaled by its weight (typically 1/sqrt(obs_count)), so that players or
     questions with many observations are penalized less relative to their
     data signal.
+
+    theta_anchor: per-player anchor for theta regularization (rookie prior).
     """
     p = model.forward_packed(question_indices, player_indices_flat, team_sizes)
     nll = (
@@ -227,11 +230,13 @@ def loss_fn(
         else metric_logloss(taken, p)
     )
 
-    # --- theta regularization (observation-normalized) ---
+    # --- theta regularization (observation-normalized, with rookie anchor) ---
+    anchor = theta_anchor if theta_anchor is not None else 0.0
+    theta_diff = model.theta - anchor
     if theta_reg_weights is not None:
-        reg_t = reg_theta * (theta_reg_weights * model.theta ** 2).mean()
+        reg_t = reg_theta * (theta_reg_weights * theta_diff ** 2).mean()
     else:
-        reg_t = reg_theta * (model.theta ** 2).mean()
+        reg_t = reg_theta * (theta_diff ** 2).mean()
 
     # --- question regularization (observation-normalized) ---
     if question_reg_weights is not None:
@@ -498,9 +503,9 @@ def train_epoch(
     center_b: bool = False,
     show_progress: bool = True,
     theta_reg_weights: Optional[torch.Tensor] = None,
+    theta_anchor: Optional[torch.Tensor] = None,
     question_reg_weights: Optional[torch.Tensor] = None,
     theta_center_mask: Optional[torch.Tensor] = None,
-    theta_freeze_mask: Optional[torch.Tensor] = None,
     weight_module: Optional[object] = None,
     grad_clip: float = 0.0,
 ) -> Tuple[float, float]:
@@ -544,12 +549,11 @@ def train_epoch(
             mean_b=0.0 if center_b else None,
             obs_weights=obs_w,
             theta_reg_weights=theta_reg_weights,
+            theta_anchor=theta_anchor,
             question_reg_weights=question_reg_weights,
             weight_module=weight_module,
         )
         loss.backward()
-        if theta_freeze_mask is not None and model.theta.grad is not None:
-            model.theta.grad[theta_freeze_mask] = 0
         if grad_clip > 0:
             all_params = list(model.parameters())
             if weight_module is not None:
@@ -560,9 +564,6 @@ def train_epoch(
             model, center_theta=center_theta, center_b=center_b,
             theta_center_mask=theta_center_mask,
         )
-        if theta_freeze_mask is not None:
-            with torch.no_grad():
-                model.theta[theta_freeze_mask] = 0
 
         total_loss += loss.item() * len(batch_idx)
         total_count += len(batch_idx)
@@ -632,6 +633,231 @@ def evaluate(
     return mean_loss, p.mean().item(), brier, auc
 
 
+# ---------------------------------------------------------------------------
+# Hyperparameter tuning (random search)
+# ---------------------------------------------------------------------------
+
+TUNE_SEARCH_SPACE = {
+    "lr":           ("log_uniform", 5e-4, 2e-2),
+    "batch_size":   ("choice", [256, 512, 1024, 2048]),
+    "reg_theta":    ("log_uniform", 1e-5, 1e-2),
+    "reg_b":        ("log_uniform", 1e-4, 1e-1),
+    "reg_log_a":    ("log_uniform", 1e-4, 1e-1),
+    "reg_type":     ("log_uniform", 1e-3, 1e-1),
+    "reg_team_size":("log_uniform", 1e-3, 1e-1),
+    "reg_gamma":    ("log_uniform", 1e-2, 1.0),
+    "reg_game_weights": ("log_uniform", 1e-3, 1e-1),
+    "grad_clip":    ("choice", [1.0, 3.0, 5.0, 10.0]),
+    "rookie_floor": ("uniform", -3.0, -0.1),
+    "rookie_tau":   ("uniform", 10.0, 100.0),
+}
+
+
+def _sample_hparams(rng: random.Random) -> dict:
+    hparams = {}
+    for key, spec in TUNE_SEARCH_SPACE.items():
+        if spec[0] == "log_uniform":
+            lo, hi = math.log(spec[1]), math.log(spec[2])
+            hparams[key] = math.exp(rng.uniform(lo, hi))
+        elif spec[0] == "uniform":
+            hparams[key] = rng.uniform(spec[1], spec[2])
+        elif spec[0] == "choice":
+            hparams[key] = rng.choice(spec[1])
+    hparams["batch_size"] = int(hparams["batch_size"])
+    return hparams
+
+
+def run_tuning(
+    args,
+    train_data: PackedData,
+    val_data: PackedData,
+    n_players: int,
+    n_questions: int,
+    num_canonical: int,
+    maps,
+    device: torch.device,
+    tournament_dl_tensor,
+    tournament_type_tensor,
+    canonical_q_idx_tensor,
+    weight_module_factory,
+    theta_center_mask,
+    theta_anchor,
+    player_games: np.ndarray,
+) -> dict:
+    """Run random hyperparameter search and return best config."""
+    rng = random.Random(args.seed)
+    results: list[dict] = []
+
+    _log_gamma_init: Optional[float] = None
+    if args.dl_learn_power:
+        _log_gamma_init = math.log(max(args.dl_power_gamma, 1e-6))
+
+    print(f"\n{'='*70}", flush=True)
+    print(f"HYPERPARAMETER TUNING: {args.tune_trials} trials, {args.tune_epochs} epochs each", flush=True)
+    print(f"{'='*70}\n", flush=True)
+
+    for trial in range(args.tune_trials):
+        hp = _sample_hparams(rng)
+        set_seed(args.seed + trial)
+
+        theta_reg_weights, question_reg_weights = compute_reg_weights(
+            train_data, n_players, n_questions, device,
+            canonical_q_idx=getattr(maps, "canonical_q_idx", None),
+            num_canonical=num_canonical if num_canonical < n_questions else None,
+            question_min_obs=args.question_min_obs,
+        )
+
+        model = ChGKModel(
+            n_players, n_questions,
+            num_canonical_questions=num_canonical if num_canonical < n_questions else None,
+            canonical_q_idx=canonical_q_idx_tensor,
+            tournament_dl=tournament_dl_tensor,
+            tournament_type=tournament_type_tensor,
+            dl_transform=args.dl_transform,
+            dl_power_gamma=args.dl_power_gamma,
+            dl_learn_power=args.dl_learn_power,
+        ).to(device)
+
+        wm = weight_module_factory() if weight_module_factory is not None else None
+        params = list(model.parameters())
+        if wm is not None:
+            wm = wm.to(device)
+            params += list(wm.parameters())
+        optimizer = torch.optim.Adam(params, lr=hp["lr"])
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode="min", factor=0.5, patience=2,
+        )
+
+        # Per-trial rookie anchor from sampled hp
+        trial_anchor = None
+        if hp["rookie_floor"] < 0:
+            anchor_np = hp["rookie_floor"] * np.exp(-player_games.astype(np.float32) / hp["rookie_tau"])
+            trial_anchor = torch.from_numpy(anchor_np).float().to(device)
+
+        theta_init, b_init, log_a_init = compute_empirical_init(
+            train_data, n_players, n_questions,
+        )
+        if theta_init is not None and b_init is not None:
+            if trial_anchor is not None:
+                theta_init = np.minimum(theta_init, anchor_np * 0.5)
+            model.theta.data.copy_(torch.from_numpy(theta_init).to(device))
+            cq = maps.canonical_q_idx
+            if cq is not None and num_canonical < n_questions:
+                b_canon = np.zeros(num_canonical, dtype=np.float32)
+                cnt = np.zeros(num_canonical, dtype=np.float32)
+                np.add.at(b_canon, cq, b_init)
+                np.add.at(cnt, cq, 1.0)
+                b_canon /= np.maximum(cnt, 1.0)
+                model.b.data.copy_(torch.from_numpy(b_canon).to(device))
+            else:
+                model.b.data.copy_(torch.from_numpy(b_init).to(device))
+            apply_identifiability(model, center_theta=True, center_b=False,
+                                  theta_center_mask=theta_center_mask)
+            if log_a_init is not None:
+                if cq is not None and num_canonical < n_questions:
+                    a_canon = np.zeros(num_canonical, dtype=np.float32)
+                    cnt_a = np.zeros(num_canonical, dtype=np.float32)
+                    np.add.at(a_canon, cq, log_a_init)
+                    np.add.at(cnt_a, cq, 1.0)
+                    a_canon /= np.maximum(cnt_a, 1.0)
+                    model.log_a.data.copy_(torch.from_numpy(a_canon).to(device))
+                else:
+                    model.log_a.data.copy_(torch.from_numpy(log_a_init).to(device))
+
+        best_vloss = float("inf")
+        best_epoch = 0
+        best_auc = 0.0
+        best_brier = 1.0
+        patience_cnt = 0
+
+        for epoch in range(args.tune_epochs):
+            train_epoch(
+                model, train_data, optimizer, device, hp["batch_size"],
+                reg_theta=hp["reg_theta"], reg_b=hp["reg_b"], reg_log_a=hp["reg_log_a"],
+                reg_type=hp["reg_type"], reg_team_size=hp["reg_team_size"],
+                reg_gamma=hp["reg_gamma"], reg_game_weights=hp["reg_game_weights"],
+                log_gamma_init=_log_gamma_init,
+                center_theta=True, center_b=True,
+                theta_reg_weights=theta_reg_weights,
+                theta_anchor=trial_anchor,
+                question_reg_weights=question_reg_weights,
+                theta_center_mask=theta_center_mask,
+                weight_module=wm,
+                show_progress=False,
+                grad_clip=hp["grad_clip"],
+            )
+            vloss, _, vbrier, vauc = evaluate(model, val_data, device, weight_module=wm)
+            scheduler.step(vloss)
+
+            if vloss < best_vloss:
+                best_vloss = vloss
+                best_epoch = epoch + 1
+                best_auc = vauc
+                best_brier = vbrier
+                patience_cnt = 0
+            else:
+                patience_cnt += 1
+                if patience_cnt >= 5:
+                    break
+
+        hp_short = {k: (f"{v:.2e}" if isinstance(v, float) else v)
+                    for k, v in hp.items()}
+        result = {
+            "trial": trial + 1,
+            "val_loss": best_vloss,
+            "val_auc": best_auc,
+            "val_brier": best_brier,
+            "best_epoch": best_epoch,
+            "hparams": hp,
+        }
+        results.append(result)
+        print(
+            f"Trial {trial+1:2d}/{args.tune_trials} | "
+            f"val_loss {best_vloss:.4f} AUC {best_auc:.4f} Brier {best_brier:.4f} "
+            f"(ep {best_epoch}) | "
+            f"lr={hp['lr']:.1e} bs={hp['batch_size']} "
+            f"rθ={hp['reg_theta']:.1e} rb={hp['reg_b']:.1e} ra={hp['reg_log_a']:.1e} "
+            f"rookie={hp['rookie_floor']:.1f}/τ={hp['rookie_tau']:.0f}",
+            flush=True,
+        )
+
+        del model, optimizer, scheduler, wm
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
+
+    results.sort(key=lambda r: r["val_loss"])
+    print(f"\n{'='*70}")
+    print("TOP 5 CONFIGURATIONS:")
+    print(f"{'='*70}")
+    for i, r in enumerate(results[:5]):
+        hp = r["hparams"]
+        print(f"\n#{i+1} val_loss={r['val_loss']:.4f} AUC={r['val_auc']:.4f} Brier={r['val_brier']:.4f} (epoch {r['best_epoch']})")
+        print(f"  --lr {hp['lr']:.4e} --batch_size {hp['batch_size']} \\")
+        print(f"  --reg_theta {hp['reg_theta']:.4e} --reg_b {hp['reg_b']:.4e} --reg_log_a {hp['reg_log_a']:.4e} \\")
+        print(f"  --reg_type {hp['reg_type']:.4e} --reg_team_size {hp['reg_team_size']:.4e} \\")
+        print(f"  --reg_gamma {hp['reg_gamma']:.4e} --reg_game_weights {hp['reg_game_weights']:.4e} \\")
+        print(f"  --grad_clip {hp['grad_clip']} \\")
+        print(f"  --rookie_floor {hp['rookie_floor']:.2f} --rookie_tau {hp['rookie_tau']:.1f}")
+
+    best = results[0]
+    print(f"\nBest trial: #{best['trial']} with val_loss={best['val_loss']:.4f}")
+    print("\nTo run full training with best config:")
+    hp = best["hparams"]
+    cmd = (
+        f"python train.py --mode {args.mode}"
+        + (f" --cache_file {args.cache_file}" if args.cache_file else "")
+        + (f" --max_tournaments {args.max_tournaments}" if args.max_tournaments else "")
+        + f" --lr {hp['lr']:.4e} --batch_size {hp['batch_size']}"
+        + f" --reg_theta {hp['reg_theta']:.4e} --reg_b {hp['reg_b']:.4e} --reg_log_a {hp['reg_log_a']:.4e}"
+        + f" --reg_type {hp['reg_type']:.4e} --reg_team_size {hp['reg_team_size']:.4e}"
+        + f" --reg_gamma {hp['reg_gamma']:.4e} --reg_game_weights {hp['reg_game_weights']:.4e}"
+        + f" --grad_clip {hp['grad_clip']}"
+        + f" --rookie_floor {hp['rookie_floor']:.2f} --rookie_tau {hp['rookie_tau']:.1f}"
+    )
+    print(cmd)
+    return best
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="ChGK model training")
     # -- Data --
@@ -647,26 +873,26 @@ def main() -> int:
                         help="DB: tournaments from this date. Default 2015-01-01.")
     parser.add_argument("--cache_file", type=str, default=None,
                         help="DB: cache file (load if exists, else save after DB load).")
-    parser.add_argument("--min_games_in_dataset", type=int, default=10,
-                        help="Remove low-game players from rosters. 0=off. Default 10.")
+    parser.add_argument("--min_games_in_dataset", type=int, default=0,
+                        help="Remove low-game players from rosters. 0=off. Default 0.")
     # -- Training --
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--epochs", type=int, default=80)
-    parser.add_argument("--batch_size", type=int, default=512)
-    parser.add_argument("--lr", type=float, default=5e-3)
-    parser.add_argument("--patience", type=int, default=10, help="Early stopping patience")
-    parser.add_argument("--grad_clip", type=float, default=5.0,
-                        help="Max gradient norm (0=off). Default 5.0.")
-    parser.add_argument("--reg_theta", type=float, default=1e-4)
-    parser.add_argument("--reg_b", type=float, default=1e-3)
-    parser.add_argument("--reg_log_a", type=float, default=1e-3)
-    parser.add_argument("--reg_type", type=float, default=1e-2,
+    parser.add_argument("--batch_size", type=int, default=256)
+    parser.add_argument("--lr", type=float, default=5.1344e-4)
+    parser.add_argument("--patience", type=int, default=5, help="Early stopping patience")
+    parser.add_argument("--grad_clip", type=float, default=3.0,
+                        help="Max gradient norm (0=off). Default 3.0.")
+    parser.add_argument("--reg_theta", type=float, default=4.8621e-5)
+    parser.add_argument("--reg_b", type=float, default=5.2031e-2)
+    parser.add_argument("--reg_log_a", type=float, default=3.7923e-2)
+    parser.add_argument("--reg_type", type=float, default=1.3858e-3,
                         help="L2 on tournament_dl_scale and tournament_type_bias")
-    parser.add_argument("--reg_team_size", type=float, default=1e-2,
+    parser.add_argument("--reg_team_size", type=float, default=2.9923e-3,
                         help="L2 on team_size_bias")
-    parser.add_argument("--reg_gamma", type=float, default=0.1,
+    parser.add_argument("--reg_gamma", type=float, default=0.01,
                         help="L2 on log_dl_power_gamma (keeps it near init)")
-    parser.add_argument("--reg_game_weights", type=float, default=0.01,
+    parser.add_argument("--reg_game_weights", type=float, default=2.6821e-3,
                         help="L2 on LearnableGameWeights params")
     parser.add_argument("--question_min_obs", type=int, default=50,
                         help="Extra reg boost for questions with fewer observations. 0=off.")
@@ -683,6 +909,13 @@ def main() -> int:
                         help="Use fixed weights instead of learning them.")
     parser.add_argument("--run_ablations", action="store_true",
                         help="Run weighting ablations: type-only, type+size, type+size+mix.")
+    # -- Tuning --
+    parser.add_argument("--tune", action="store_true",
+                        help="Run hyperparameter random search instead of normal training.")
+    parser.add_argument("--tune_trials", type=int, default=20,
+                        help="Number of random search trials. Default 20.")
+    parser.add_argument("--tune_epochs", type=int, default=15,
+                        help="Epochs per trial (shorter than full training). Default 15.")
     # -- Output --
     parser.add_argument("--calibration_plot", type=str, default=None, help="Save calibration curve to path")
     parser.add_argument("--save_model", type=str, default=None, help="Save model to .pt file.")
@@ -695,7 +928,12 @@ def main() -> int:
     parser.add_argument("--export_min_games", type=int, default=30,
                         help="Min games for player export. 0=all. Default 30.")
     # -- Ranking --
-    parser.add_argument("--rating_c", type=float, default=1.0, help="Conservative rating = theta - c*SE")
+    parser.add_argument("--rating_c", type=float, default=5.0, help="Conservative rating = theta - c*SE")
+    # -- Rookie prior --
+    parser.add_argument("--rookie_floor", type=float, default=-1.0,
+                        help="Negative anchor for theta of inexperienced players. 0=off.")
+    parser.add_argument("--rookie_tau", type=float, default=30.0,
+                        help="Decay rate (in games) for rookie penalty: anchor = floor*exp(-games/tau)")
     args = parser.parse_args()
 
     # Derive boolean flags (default: learn both gamma and weights)
@@ -888,8 +1126,48 @@ def main() -> int:
     if getattr(maps, "canonical_q_idx", None) is not None and maps.num_canonical_questions is not None:
         canonical_q_idx_tensor = torch.from_numpy(maps.canonical_q_idx).long()
         num_canonical = maps.num_canonical_questions
+    if args.mode == "db":
         saved = n_questions - num_canonical
-        print(f"Paired tournaments: {num_canonical} canonical questions ({saved} shared across paired packages)")
+        if saved > 0:
+            print(f"Paired tournaments: {num_canonical} canonical questions ({saved} shared across paired packages)")
+        else:
+            print(f"Paired tournaments: no pairs detected, {n_questions} questions")
+
+    # --- Tuning mode: run random search and exit ---
+    if args.tune:
+        wm_factory = None
+        if have_game_meta and args.learn_weights and game_weights is not None:
+            _game_types = [str(x) for x in maps.game_type.tolist()]
+            _type_index = np.array([_type_to_index(t) for t in _game_types], dtype=np.int32)
+            _size_raw = game_weights.w_size.astype(np.float64)
+            _size_feat = (_size_raw / np.maximum(_size_raw.mean(), 1e-8)).astype(np.float32)
+            _entropy = game_weights.entropy.astype(np.float32)
+            _tgm = train_game_mask.astype(np.float32)
+            _num_games = len(maps.idx_to_game_id)
+            wm_factory = lambda: LearnableGameWeights(
+                num_games=_num_games, type_index=_type_index,
+                size_feat=_size_feat, entropy=_entropy, train_game_mask=_tgm,
+            )
+
+        db_games = get_player_games_from_db(maps.idx_to_player_id)
+        if db_games:
+            _player_games = np.array([db_games.get(pid, 0) for pid in maps.idx_to_player_id], dtype=np.int64)
+        else:
+            _player_games = compute_player_games(train_data, maps.idx_to_question_id, n_players)
+        MIN_GAMES_FOR_CENTER = 500
+        _tcm = torch.from_numpy(_player_games >= MIN_GAMES_FOR_CENTER).to(device) if (_player_games >= MIN_GAMES_FOR_CENTER).any() else None
+        if args.rookie_floor < 0:
+            _anchor_np = args.rookie_floor * np.exp(-_player_games.astype(np.float32) / args.rookie_tau)
+            _theta_anchor = torch.from_numpy(_anchor_np).float().to(device)
+        else:
+            _theta_anchor = None
+
+        run_tuning(
+            args, train_data, val_data, n_players, n_questions, num_canonical,
+            maps, device, tournament_dl_tensor, tournament_type_tensor,
+            canonical_q_idx_tensor, wm_factory, _tcm, _theta_anchor, _player_games,
+        )
+        return 0
 
     model = ChGKModel(
         n_players,
@@ -920,13 +1198,12 @@ def main() -> int:
         if "scheduler_state" in ckpt:
             scheduler.load_state_dict(ckpt["scheduler_state"])
 
-    # Compute observation-normalized regularization weights, theta center mask, and freeze mask
+    # Compute observation-normalized regularization weights, theta center mask, and rookie anchor
     theta_reg_weights = None
     question_reg_weights = None
     theta_center_mask = None
-    theta_freeze_mask = None
+    theta_anchor = None
     MIN_GAMES_FOR_CENTER = 500
-    MIN_GAMES_FOR_TRAIN = 10  # Players with fewer games: theta fixed at 0, not updated
     if isinstance(train_data, PackedData):
         theta_reg_weights, question_reg_weights = compute_reg_weights(
             train_data, n_players, n_questions, device,
@@ -966,10 +1243,12 @@ def main() -> int:
             print(f"Theta centering: by {n_experienced} players with >={MIN_GAMES_FOR_CENTER} games (total in DB)")
         else:
             print(f"Theta centering: no players with >={MIN_GAMES_FOR_CENTER} games, using global mean")
-        n_freeze = (player_games < MIN_GAMES_FOR_TRAIN).sum()
-        if n_freeze > 0:
-            theta_freeze_mask = torch.from_numpy(player_games < MIN_GAMES_FOR_TRAIN).to(device)
-            print(f"Theta frozen at 0 for {n_freeze} players with <{MIN_GAMES_FOR_TRAIN} games (excluded from training)")
+        if args.rookie_floor < 0:
+            anchor_np = args.rookie_floor * np.exp(-player_games.astype(np.float32) / args.rookie_tau)
+            theta_anchor = torch.from_numpy(anchor_np).float().to(device)
+            n_affected = (anchor_np < -0.1).sum()
+            print(f"Rookie prior: floor={args.rookie_floor}, tau={args.rookie_tau} "
+                  f"({n_affected} players with anchor < -0.1)")
 
     # Data-driven initial values for theta, b and optionally log_a (only when not resuming)
     theta_init = None
@@ -981,6 +1260,8 @@ def main() -> int:
             train_data, n_players, n_questions, eps=1e-4, scale=0.5, scale_log_a=0.8, log_a_clamp=1.5
         )
         if theta_init is not None and b_init is not None:
+            if theta_anchor is not None:
+                theta_init = np.minimum(theta_init, anchor_np * 0.5)
             model.theta.data.copy_(torch.from_numpy(theta_init).to(device))
             # Aggregate per-question inits to per-canonical-question (average over paired slots)
             cq = maps.canonical_q_idx
@@ -1011,11 +1292,6 @@ def main() -> int:
                 msg += "; log_a from correlation(taken, team_strength)"
             print(msg)
 
-    # Frozen players (e.g. <10 games): theta=0, not updated (after init or after loading checkpoint)
-    if theta_freeze_mask is not None:
-        with torch.no_grad():
-            model.theta[theta_freeze_mask] = 0
-
     best_val_loss = float("inf")
     epochs_no_improve = 0
 
@@ -1032,9 +1308,9 @@ def main() -> int:
             log_gamma_init=_log_gamma_init,
             center_theta=True, center_b=True,
             theta_reg_weights=theta_reg_weights,
+            theta_anchor=theta_anchor,
             question_reg_weights=question_reg_weights,
             theta_center_mask=theta_center_mask,
-            theta_freeze_mask=theta_freeze_mask,
             weight_module=weight_module,
             grad_clip=args.grad_clip,
         )
@@ -1351,9 +1627,6 @@ def main() -> int:
                 if log_a_init is not None:
                     m.log_a.data.copy_(model.log_a.data.detach().clone())
                 apply_identifiability(m, center_theta=True, center_b=False, theta_center_mask=theta_center_mask)
-            if theta_freeze_mask is not None:
-                with torch.no_grad():
-                    m.theta[theta_freeze_mask] = 0
             opt = torch.optim.Adam(m.parameters(), lr=args.lr)
             sch = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, mode="min", factor=0.5, patience=2)
             best = float("inf")
@@ -1367,9 +1640,9 @@ def main() -> int:
                     log_gamma_init=_log_gamma_init,
                     center_theta=True, center_b=True,
                     theta_reg_weights=theta_reg_weights,
+                    theta_anchor=theta_anchor,
                     question_reg_weights=question_reg_weights,
                     theta_center_mask=theta_center_mask,
-                    theta_freeze_mask=theta_freeze_mask,
                     weight_module=None,
                     show_progress=False,
                     grad_clip=args.grad_clip,

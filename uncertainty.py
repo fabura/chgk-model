@@ -23,7 +23,8 @@ def fisher_diag_theta(
     device = question_indices.device
     eps = 1e-7
 
-    b_i = model.b[question_indices]
+    canon_idx = model.canonical_q_idx[question_indices]
+    b_i = model.b[canon_idx]
     type_idx = model.tournament_type[question_indices]
     scale = model.tournament_dl_scale[type_idx]
     bias = model.tournament_type_bias[type_idx]
@@ -32,7 +33,7 @@ def fisher_diag_theta(
     dl_i = model._transform_tournament_dl(dl_norm)  # pylint: disable=protected-access
     b_i = b_i + bias + scale * dl_i
 
-    log_a_clipped = model.log_a[question_indices].clamp(max=2.0)
+    log_a_clipped = model.log_a[canon_idx].clamp(max=2.0)
     a_i = torch.exp(log_a_clipped).clamp(min=eps)
 
     theta_flat = model.theta[player_indices_flat]

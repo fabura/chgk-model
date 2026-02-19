@@ -213,8 +213,7 @@ class LearnableGameWeights(nn.Module):
         self.log_mix_coef = nn.Parameter(torch.tensor(float(np.log(init_mix_coef + 1e-8))))
 
     def forward(self) -> torch.Tensor:
-        # Type weights: floor at 0.3 so no type is ignored; max ratio ~3x
-        type_w = torch.exp(self.log_type_w).clamp(min=0.3, max=3.0)
+        type_w = torch.exp(self.log_type_w).clamp(min=0.65, max=1.3)
         type_w = type_w / type_w.mean()
         w_type = type_w[self.type_index]
 
@@ -234,7 +233,7 @@ class LearnableGameWeights(nn.Module):
     def effective_weights(self) -> dict[str, float]:
         """Return the effective learned parameters (after clamping) for display."""
         with torch.no_grad():
-            type_w = torch.exp(self.log_type_w).clamp(min=0.3, max=3.0)
+            type_w = torch.exp(self.log_type_w).clamp(min=0.65, max=1.3)
             type_w = type_w / type_w.mean()
             return {
                 "type_offline": round(type_w[0].item(), 3),
