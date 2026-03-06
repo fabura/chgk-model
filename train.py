@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import datetime
 import math
 import os
 import random
@@ -15,24 +16,19 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 import torch
-import torch.nn as nn
 from tqdm import tqdm
 
 from data import (
     IndexMaps,
-    Sample,
     generate_synthetic,
-    generate_synthetic_two_populations,
     load_cached,
     load_from_db,
     save_cached,
     samples_to_arrays,
-    samples_to_tensors,
-    train_val_split,
 )
 from metrics import auc_roc, brier_score, logloss as metric_logloss, plot_calibration, weighted_logloss
 from model import ChGKModel
-from uncertainty import conservative_rating, fisher_diag_theta
+from uncertainty import conservative_rating, fisher_diag_b_and_log_a, fisher_diag_theta, se_from_fisher
 from weights import WeightConfig, LearnableGameWeights, _type_to_index, compute_game_weights
 
 
@@ -42,23 +38,6 @@ def set_seed(seed: int) -> None:
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
-
-
-def packed_from_samples(
-    samples: list[Sample],
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Convert samples to packed: question_indices, player_indices_flat, team_sizes, taken."""
-    q_list = np.array([s.question_idx for s in samples], dtype=np.int32)
-    taken_list = np.array([s.taken for s in samples], dtype=np.float32)
-    team_sizes = np.array([len(s.player_indices) for s in samples], dtype=np.int32)
-    flat_players = np.concatenate([s.player_indices for s in samples]).astype(np.int32)
-    
-    return (
-        torch.from_numpy(q_list).long(),
-        torch.from_numpy(flat_players).long(),
-        torch.from_numpy(team_sizes).long(),
-        torch.from_numpy(taken_list).float(),
-    )
 
 
 @dataclass
@@ -365,6 +344,70 @@ def compute_player_games(data: PackedData, idx_to_question_id: list, n_players: 
     return np.array([len(player_tournaments.get(j, set())) for j in range(n_players)], dtype=np.int64)
 
 
+def _write_strongest_table(
+    theta: np.ndarray,
+    rating: np.ndarray,
+    se: np.ndarray,
+    idx_to_player: list,
+    train_games: np.ndarray,
+    export_min_games: int,
+    out_path: str,
+    min_tournament_date: Optional[str] = None,
+) -> None:
+    """Write strongest_30plus_games-style CSV: rank, player_id, first_name, last_name, rating, theta, SE, games, last_game."""
+    min_g = export_min_games if export_min_games > 0 else 0
+    eligible = np.where(train_games >= min_g)[0] if min_g > 0 else np.arange(len(theta))
+    if len(eligible) == 0:
+        print(f"Strongest table: no players with >={min_g} games, skipping", file=sys.stderr)
+        return
+    order = eligible[np.argsort(rating[eligible])[::-1]]
+    player_ids = [idx_to_player[i] if i < len(idx_to_player) else i for i in order]
+    db_stats: dict = {}
+    names: dict = {}
+    try:
+        import psycopg2
+
+        url = os.environ.get("DATABASE_URL", "postgresql://postgres:password@127.0.0.1:5432/postgres")
+        conn = psycopg2.connect(url)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT tr.player_id, COUNT(DISTINCT tr.tournament_id), MAX(t.start_datetime::date)
+            FROM public.tournament_rosters tr
+            JOIN public.tournaments t ON t.id = tr.tournament_id AND t.start_datetime IS NOT NULL
+            WHERE tr.player_id = ANY(%s)
+            GROUP BY tr.player_id
+            """,
+            (player_ids,),
+        )
+        db_stats = {r[0]: {"games": r[1], "last_game": r[2]} for r in cur.fetchall()}
+        cur.execute(
+            "SELECT id, first_name, last_name FROM public.players WHERE id = ANY(%s)",
+            (player_ids,),
+        )
+        names = {r[0]: (r[1] or "", r[2] or "") for r in cur.fetchall()}
+        conn.close()
+    except Exception as e:
+        print(f"DB unavailable for strongest table ({e}), using train data only", file=sys.stderr)
+
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    with open(out_path, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(["rank", "player_id", "first_name", "last_name", "rating", "theta", "SE", "games", "last_game"])
+        for i, idx in enumerate(order, 1):
+            pid = idx_to_player[idx] if idx < len(idx_to_player) else idx
+            first, last = names.get(pid, ("", ""))
+            r = rating[idx]
+            t = theta[idx]
+            s = se[idx] if np.isfinite(se[idx]) else 0.0
+            stats = db_stats.get(pid)
+            games = int(stats["games"]) if stats and stats["games"] else int(train_games[idx])
+            last_game = stats["last_game"] if stats else None
+            last_game_str = last_game.strftime("%Y-%m-%d") if last_game and hasattr(last_game, "strftime") else ""
+            w.writerow([i, pid, first, last, round(float(r), 6), round(float(t), 6), round(float(s), 6), games, last_game_str])
+    print(f"Strongest table saved to {out_path} ({len(order)} players)")
+
+
 def split_indices_by_game_date(
     data: PackedData,
     game_date_ordinal: Optional[np.ndarray],
@@ -487,7 +530,7 @@ def apply_identifiability(
 
 def train_epoch(
     model: ChGKModel,
-    data: list[Sample] | PackedData,
+    data: PackedData,
     optimizer: torch.optim.Optimizer,
     device: torch.device,
     batch_size: int,
@@ -522,20 +565,14 @@ def train_epoch(
         
     for start in batch_starts:
         batch_idx = indices[start : start + batch_size]
-        
-        if isinstance(data, PackedData):
-            q, flat_p, sizes, taken = data.get_batch(batch_idx)
-            obs_w = None
-            if weight_module is not None and data.game_idx is not None:
-                w_game = weight_module()
-                obs_w = w_game[data.game_idx[batch_idx]]
-            elif data.obs_weight is not None:
-                obs_w = torch.from_numpy(data.obs_weight[batch_idx]).float()
-        else:
-            batch_samples = [data[i] for i in batch_idx]
-            q, flat_p, sizes, taken = packed_from_samples(batch_samples)
-            obs_w = None
-            
+        q, flat_p, sizes, taken = data.get_batch(batch_idx)
+        obs_w = None
+        if weight_module is not None and data.game_idx is not None:
+            w_game = weight_module()
+            obs_w = w_game[data.game_idx[batch_idx]]
+        elif data.obs_weight is not None:
+            obs_w = torch.from_numpy(data.obs_weight[batch_idx]).float()
+
         q, flat_p, sizes, taken = q.to(device), flat_p.to(device), sizes.to(device), taken.to(device)
         if obs_w is not None:
             obs_w = obs_w.to(device)
@@ -577,7 +614,7 @@ def train_epoch(
 @torch.no_grad()
 def evaluate(
     model: ChGKModel,
-    data: list[Sample] | PackedData,
+    data: PackedData,
     device: torch.device,
     batch_size: int = 4096,
     weight_module: Optional[object] = None,
@@ -598,19 +635,14 @@ def evaluate(
         end = min(start + batch_size, n_samples)
         batch_idx = np.arange(start, end)
         
-        if isinstance(data, PackedData):
-            q, flat_p, sizes, taken = data.get_batch(batch_idx)
-            obs_w = None
-            if weight_module is not None and data.game_idx is not None:
-                w_game = weight_module()
-                obs_w = w_game[data.game_idx[batch_idx]]
-            elif data.obs_weight is not None:
-                obs_w = torch.from_numpy(data.obs_weight[batch_idx]).float()
-        else:
-            batch_samples = [data[i] for i in batch_idx]
-            q, flat_p, sizes, taken = packed_from_samples(batch_samples)
-            obs_w = None
-            
+        q, flat_p, sizes, taken = data.get_batch(batch_idx)
+        obs_w = None
+        if weight_module is not None and data.game_idx is not None:
+            w_game = weight_module()
+            obs_w = w_game[data.game_idx[batch_idx]]
+        elif data.obs_weight is not None:
+            obs_w = torch.from_numpy(data.obs_weight[batch_idx]).float()
+
         q, flat_p, sizes, taken = q.to(device), flat_p.to(device), sizes.to(device), taken.to(device)
         if obs_w is not None:
             obs_w = obs_w.to(device)
@@ -643,10 +675,6 @@ TUNE_SEARCH_SPACE = {
     "reg_theta":    ("log_uniform", 1e-5, 1e-2),
     "reg_b":        ("log_uniform", 1e-4, 1e-1),
     "reg_log_a":    ("log_uniform", 1e-4, 1e-1),
-    "reg_type":     ("log_uniform", 1e-3, 1e-1),
-    "reg_team_size":("log_uniform", 1e-3, 1e-1),
-    "reg_gamma":    ("log_uniform", 1e-2, 1.0),
-    "reg_game_weights": ("log_uniform", 1e-3, 1e-1),
     "grad_clip":    ("choice", [1.0, 3.0, 5.0, 10.0]),
     "rookie_floor": ("uniform", -3.0, -0.1),
     "rookie_tau":   ("uniform", 10.0, 100.0),
@@ -704,7 +732,7 @@ def run_tuning(
             train_data, n_players, n_questions, device,
             canonical_q_idx=getattr(maps, "canonical_q_idx", None),
             num_canonical=num_canonical if num_canonical < n_questions else None,
-            question_min_obs=args.question_min_obs,
+            question_min_obs=0,
         )
 
         model = ChGKModel(
@@ -774,8 +802,7 @@ def run_tuning(
             train_epoch(
                 model, train_data, optimizer, device, hp["batch_size"],
                 reg_theta=hp["reg_theta"], reg_b=hp["reg_b"], reg_log_a=hp["reg_log_a"],
-                reg_type=hp["reg_type"], reg_team_size=hp["reg_team_size"],
-                reg_gamma=hp["reg_gamma"], reg_game_weights=hp["reg_game_weights"],
+                reg_type=0.0, reg_team_size=0.0, reg_gamma=0.0, reg_game_weights=0.0,
                 log_gamma_init=_log_gamma_init,
                 center_theta=True, center_b=True,
                 theta_reg_weights=theta_reg_weights,
@@ -862,8 +889,6 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="ChGK model training")
     # -- Data --
     parser.add_argument("--mode", choices=["synthetic", "db"], default="synthetic")
-    parser.add_argument("--synthetic_two_pop", action="store_true",
-                        help="Synthetic: two weakly connected populations.")
     parser.add_argument("--max_tournaments", type=int, default=None, help="DB: limit tournaments")
     parser.add_argument("--all_tournaments", action="store_true",
                         help="DB: include all tournaments (default: only with points_mask)")
@@ -873,8 +898,8 @@ def main() -> int:
                         help="DB: tournaments from this date. Default 2015-01-01.")
     parser.add_argument("--cache_file", type=str, default=None,
                         help="DB: cache file (load if exists, else save after DB load).")
-    parser.add_argument("--min_games_in_dataset", type=int, default=0,
-                        help="Remove low-game players from rosters. 0=off. Default 0.")
+    parser.add_argument("--min_games_in_dataset", type=int, default=10,
+                        help="Remove low-game players from rosters. 0=off. Default 10.")
     # -- Training --
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--epochs", type=int, default=80)
@@ -886,29 +911,7 @@ def main() -> int:
     parser.add_argument("--reg_theta", type=float, default=4.8621e-5)
     parser.add_argument("--reg_b", type=float, default=5.2031e-2)
     parser.add_argument("--reg_log_a", type=float, default=3.7923e-2)
-    parser.add_argument("--reg_type", type=float, default=1.3858e-3,
-                        help="L2 on tournament_dl_scale and tournament_type_bias")
-    parser.add_argument("--reg_team_size", type=float, default=2.9923e-3,
-                        help="L2 on team_size_bias")
-    parser.add_argument("--reg_gamma", type=float, default=0.01,
-                        help="L2 on log_dl_power_gamma (keeps it near init)")
-    parser.add_argument("--reg_game_weights", type=float, default=2.6821e-3,
-                        help="L2 on LearnableGameWeights params")
-    parser.add_argument("--question_min_obs", type=int, default=50,
-                        help="Extra reg boost for questions with fewer observations. 0=off.")
     parser.add_argument("--val_frac", type=float, default=0.15)
-    # -- Difficulty transform --
-    parser.add_argument("--dl_transform", choices=["linear", "log1p", "power"], default="power",
-                        help="Transform for true_dl. Default power.")
-    parser.add_argument("--dl_power_gamma", type=float, default=2.0,
-                        help="Init gamma for power transform. Default 2.0 (quadratic).")
-    parser.add_argument("--no_learn_gamma", action="store_true",
-                        help="Fix gamma instead of learning it.")
-    # -- Game weights --
-    parser.add_argument("--no_learn_weights", action="store_true",
-                        help="Use fixed weights instead of learning them.")
-    parser.add_argument("--run_ablations", action="store_true",
-                        help="Run weighting ablations: type-only, type+size, type+size+mix.")
     # -- Tuning --
     parser.add_argument("--tune", action="store_true",
                         help="Run hyperparameter random search instead of normal training.")
@@ -927,6 +930,8 @@ def main() -> int:
                         help="Export game weights CSV. Empty=skip. Default results/games_weights.csv.")
     parser.add_argument("--export_min_games", type=int, default=30,
                         help="Min games for player export. 0=all. Default 30.")
+    parser.add_argument("--strongest_out", type=str, default="results/strongest_30plus_games.csv",
+                        help="Export strongest table (rank, names, rating). Empty=skip.")
     # -- Ranking --
     parser.add_argument("--rating_c", type=float, default=5.0, help="Conservative rating = theta - c*SE")
     # -- Rookie prior --
@@ -936,9 +941,11 @@ def main() -> int:
                         help="Decay rate (in games) for rookie penalty: anchor = floor*exp(-games/tau)")
     args = parser.parse_args()
 
-    # Derive boolean flags (default: learn both gamma and weights)
-    args.learn_weights = not args.no_learn_weights
-    args.dl_learn_power = (not args.no_learn_gamma) and (args.dl_transform == "power")
+    # Fixed defaults for legacy batch model (sequential rating uses rating/ package)
+    args.learn_weights = True
+    args.dl_transform = "power"
+    args.dl_power_gamma = 2.0
+    args.dl_learn_power = True
 
     set_seed(args.seed)
     if torch.cuda.is_available():
@@ -955,10 +962,7 @@ def main() -> int:
     loaded_from_cache = False
     
     if args.mode == "synthetic":
-        if args.synthetic_two_pop:
-            samples, maps = generate_synthetic_two_populations(seed=args.seed)
-        else:
-            samples, maps = generate_synthetic(seed=args.seed)
+        samples, maps = generate_synthetic(seed=args.seed)
         packed_data = PackedData.from_arrays(samples_to_arrays(samples))
     else:
         cache_path = args.cache_file
@@ -1021,58 +1025,52 @@ def main() -> int:
     elif packed_data and args.min_games_in_dataset <= 0:
         print("Post-load min-games filtering disabled (min_games_in_dataset <= 0).", flush=True)
 
-    if packed_data:
-        train_idx, val_idx = split_indices_by_game_date(
-            packed_data,
-            getattr(maps, "game_date_ordinal", None),
-            args.val_frac,
-            args.seed,
-        )
-        train_data, val_data = packed_data.split(train_idx, val_idx)
-    else:
-        train_data, val_data = train_val_split(samples, val_frac=args.val_frac, seed=args.seed)
-        
+    train_idx, val_idx = split_indices_by_game_date(
+        packed_data,
+        getattr(maps, "game_date_ordinal", None),
+        args.val_frac,
+        args.seed,
+    )
+    train_data, val_data = packed_data.split(train_idx, val_idx)
     n_players = maps.num_players
     n_questions = maps.num_questions
     print(f"Train {len(train_data)} val {len(val_data)} | players {n_players} questions {n_questions}")
 
     # Build game-level weights and attach observation weights.
     game_weights = None
-    have_game_meta = False
     train_game_mask = np.array([True])  # placeholder
-    if isinstance(train_data, PackedData) and isinstance(val_data, PackedData):
-        have_game_meta = (
+    have_game_meta = (
             train_data.game_idx is not None
             and packed_data is not None
             and packed_data.game_idx is not None
             and getattr(maps, "idx_to_game_id", None)
             and getattr(maps, "game_type", None) is not None
             and getattr(maps, "question_game_idx", None) is not None
+    )
+    if have_game_meta:
+        cfg = WeightConfig()
+        train_game_mask = np.zeros(len(maps.idx_to_game_id), dtype=bool)
+        train_game_mask[np.unique(train_data.game_idx)] = True
+        game_weights = compute_game_weights(
+            game_idx=packed_data.game_idx,
+            q_idx=packed_data.q_idx,
+            offsets=packed_data.offsets,
+            player_indices_flat=packed_data.player_indices_flat,
+            num_players=n_players,
+            game_types=[str(x) for x in maps.game_type.tolist()],
+            game_date_ordinal=maps.game_date_ordinal if maps.game_date_ordinal is not None else np.full(len(maps.idx_to_game_id), -1, dtype=np.int32),
+            train_game_mask=train_game_mask,
+            cfg=cfg,
         )
-        if have_game_meta:
-            cfg = WeightConfig()
-            train_game_mask = np.zeros(len(maps.idx_to_game_id), dtype=bool)
-            train_game_mask[np.unique(train_data.game_idx)] = True
-            game_weights = compute_game_weights(
-                game_idx=packed_data.game_idx,
-                q_idx=packed_data.q_idx,
-                offsets=packed_data.offsets,
-                player_indices_flat=packed_data.player_indices_flat,
-                num_players=n_players,
-                game_types=[str(x) for x in maps.game_type.tolist()],
-                game_date_ordinal=maps.game_date_ordinal if maps.game_date_ordinal is not None else np.full(len(maps.idx_to_game_id), -1, dtype=np.int32),
-                train_game_mask=train_game_mask,
-                cfg=cfg,
+        if not args.learn_weights:
+            train_data.obs_weight = game_weights.w_norm[train_data.game_idx]
+            val_data.obs_weight = game_weights.w_norm[val_data.game_idx]
+            print(
+                f"Game weights (fixed): mean(train)={train_data.obs_weight.mean():.4f}, "
+                f"w_mix mean={game_weights.w_mix.mean():.4f}"
             )
-            if not args.learn_weights:
-                train_data.obs_weight = game_weights.w_norm[train_data.game_idx]
-                val_data.obs_weight = game_weights.w_norm[val_data.game_idx]
-                print(
-                    f"Game weights (fixed): mean(train)={train_data.obs_weight.mean():.4f}, "
-                    f"w_mix mean={game_weights.w_mix.mean():.4f}"
-                )
-            else:
-                print("Game weights: learnable (type, size, mix)")
+        else:
+            print("Game weights: learnable (type, size, mix)")
 
     weight_module: Optional[LearnableGameWeights] = None
     if have_game_meta and args.learn_weights and game_weights is not None:
@@ -1209,23 +1207,10 @@ def main() -> int:
             train_data, n_players, n_questions, device,
             canonical_q_idx=getattr(maps, "canonical_q_idx", None),
             num_canonical=num_canonical if num_canonical < n_questions else None,
-            question_min_obs=args.question_min_obs,
+            question_min_obs=0,
         )
         print(f"Reg weights: theta min={theta_reg_weights.min():.4f} max={theta_reg_weights.max():.4f} | "
               f"question min={question_reg_weights.min():.4f} max={question_reg_weights.max():.4f}")
-        if args.question_min_obs > 0:
-            print(f"Question low-obs boost: min_obs={args.question_min_obs}")
-        reg_extras = []
-        if args.reg_type > 0:
-            reg_extras.append(f"type={args.reg_type}")
-        if args.reg_team_size > 0:
-            reg_extras.append(f"team_size={args.reg_team_size}")
-        if args.reg_gamma > 0:
-            reg_extras.append(f"gamma={args.reg_gamma}")
-        if args.reg_game_weights > 0 and weight_module is not None:
-            reg_extras.append(f"game_weights={args.reg_game_weights}")
-        if reg_extras:
-            print(f"Extra L2 reg: {', '.join(reg_extras)}")
         # Games = total in DB (or from dataset if DB unavailable)
         db_games = get_player_games_from_db(maps.idx_to_player_id)
         if db_games:
@@ -1303,8 +1288,7 @@ def main() -> int:
         train_loss, train_mean_p = train_epoch(
             model, train_data, optimizer, device, args.batch_size,
             reg_theta=args.reg_theta, reg_b=args.reg_b, reg_log_a=args.reg_log_a,
-            reg_type=args.reg_type, reg_team_size=args.reg_team_size,
-            reg_gamma=args.reg_gamma, reg_game_weights=args.reg_game_weights,
+            reg_type=0.0, reg_team_size=0.0, reg_gamma=0.0, reg_game_weights=0.0,
             log_gamma_init=_log_gamma_init,
             center_theta=True, center_b=True,
             theta_reg_weights=theta_reg_weights,
@@ -1370,6 +1354,9 @@ def main() -> int:
     idx_to_player = maps.idx_to_player_id
     idx_to_question = maps.idx_to_question_id
     fisher = np.zeros_like(theta, dtype=np.float32)
+    n_canon = model.b.size(0)
+    fisher_b = np.zeros(n_canon, dtype=np.float32)
+    fisher_log_a = np.zeros(n_canon, dtype=np.float32)
     if isinstance(train_data, PackedData):
         prior_precision = float(args.reg_theta)
         for start in range(0, len(train_data), args.batch_size):
@@ -1394,10 +1381,27 @@ def main() -> int:
                 num_players=n_players,
             )
             fisher += fd.detach().cpu().numpy().astype(np.float32)
+            fdb, fdla = fisher_diag_b_and_log_a(
+                model=model,
+                question_indices=q,
+                player_indices_flat=flat_p,
+                team_sizes=sizes,
+                taken=taken,
+                obs_weights=obs_w,
+                num_canonical_questions=n_canon,
+            )
+            fisher_b += fdb.detach().cpu().numpy().astype(np.float32)
+            fisher_log_a += fdla.detach().cpu().numpy().astype(np.float32)
         se, rating = conservative_rating(theta, fisher, prior_precision=prior_precision, c=float(args.rating_c))
+        prior_b = 1e-6
+        se_b = se_from_fisher(fisher_b, prior_precision=prior_b)
+        se_log_a = se_from_fisher(fisher_log_a, prior_precision=prior_b)
+        se_a = se_log_a * a  # delta method: SE(a) ≈ |da/dlog_a| * SE(log_a) = a * SE(log_a)
     else:
         se = np.full_like(theta, np.nan, dtype=np.float32)
         rating = theta.copy()
+        se_b = np.full(n_canon, np.nan, dtype=np.float32)
+        se_a = np.full(n_canon, np.nan, dtype=np.float32)
 
     if getattr(model, "dl_learn_power", False):
         gamma = torch.exp(model.log_dl_power_gamma).clamp(min=0.5, max=4.0).item()
@@ -1450,11 +1454,25 @@ def main() -> int:
         qid = idx_to_question[idx] if idx < len(idx_to_question) else idx
         print(f"  {i}. question_id={qid} b={b[idx]:.4f}")
 
+    if np.any(np.isfinite(se_b)):
+        top_se_b = np.argsort(se_b)[::-1][:10]
+        print("\nTop 10 highest uncertainty (SE) for b:")
+        for i, idx in enumerate(top_se_b, 1):
+            qid = idx_to_question[idx] if idx < len(idx_to_question) else idx
+            print(f"  {i}. question_id={qid} b={b[idx]:.4f} SE_b={se_b[idx]:.4f}")
+
     top_selective = np.argsort(a)[::-1][:10]
     print("\nTop 10 most selective questions (a):")
     for i, idx in enumerate(top_selective, 1):
         qid = idx_to_question[idx] if idx < len(idx_to_question) else idx
         print(f"  {i}. question_id={qid} a={a[idx]:.4f}")
+
+    if np.any(np.isfinite(se_a)):
+        top_se_a = np.argsort(se_a)[::-1][:10]
+        print("\nTop 10 highest uncertainty (SE) for a:")
+        for i, idx in enumerate(top_se_a, 1):
+            qid = idx_to_question[idx] if idx < len(idx_to_question) else idx
+            print(f"  {i}. question_id={qid} a={a[idx]:.4f} SE_a={se_a[idx]:.4f}")
 
     if weight_module is not None:
         ew = weight_module.effective_weights()
@@ -1484,10 +1502,9 @@ def main() -> int:
         allowed_idx = set(range(len(theta)))
         if args.export_min_games > 0 and player_ids:
             try:
-                import os as _os
                 import psycopg2
 
-                url = _os.environ.get("DATABASE_URL", "postgresql://postgres:password@127.0.0.1:5432/postgres")
+                url = os.environ.get("DATABASE_URL", "postgresql://postgres:password@127.0.0.1:5432/postgres")
                 conn = psycopg2.connect(url)
                 cur = conn.cursor()
                 min_date = (args.min_tournament_date or "").strip()
@@ -1541,6 +1558,18 @@ def main() -> int:
                 )
         print(f"Players saved to {out_path}")
 
+    if args.strongest_out:
+        _write_strongest_table(
+            theta=theta,
+            rating=rating,
+            se=se,
+            idx_to_player=idx_to_player,
+            train_games=train_games,
+            export_min_games=args.export_min_games,
+            out_path=args.strongest_out,
+            min_tournament_date=args.min_tournament_date,
+        )
+
     if args.games_weights_out and game_weights is not None and getattr(maps, "idx_to_game_id", None):
         out_path = args.games_weights_out
         os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
@@ -1554,8 +1583,7 @@ def main() -> int:
             for gi, gid in enumerate(maps.idx_to_game_id):
                 d = ""
                 if maps.game_date_ordinal is not None and gi < len(maps.game_date_ordinal) and maps.game_date_ordinal[gi] >= 0:
-                    import datetime as _dt
-                    d = _dt.date.fromordinal(int(maps.game_date_ordinal[gi])).isoformat()
+                    d = datetime.date.fromordinal(int(maps.game_date_ordinal[gi])).isoformat()
                 w.writerow(
                     [
                         gid,
@@ -1575,162 +1603,8 @@ def main() -> int:
             gid = maps.idx_to_game_id[gi]
             print(f"  {i}. game_id={gid} w_mix={game_weights.w_mix[gi]:.4f} entropy={game_weights.entropy[gi]:.4f}")
 
-    if args.run_ablations and isinstance(train_data, PackedData) and isinstance(val_data, PackedData) and game_weights is not None:
-        print("\nRunning ablations: [type], [type+size], [type+size+mix]")
-
-        def suspicious_count(theta_arr: np.ndarray, se_arr: np.ndarray) -> int:
-            t_thr = np.quantile(theta_arr, 0.95)
-            s_thr = np.quantile(se_arr[np.isfinite(se_arr)], 0.95)
-            return int(np.sum((theta_arr >= t_thr) & (se_arr >= s_thr)))
-
-        def rank_volatility(theta_arr: np.ndarray, rating_arr: np.ndarray, top_n: int = 100) -> float:
-            top_theta = set(np.argsort(theta_arr)[::-1][:top_n].tolist())
-            top_rating = set(np.argsort(rating_arr)[::-1][:top_n].tolist())
-            return 1.0 - (len(top_theta & top_rating) / float(max(1, top_n)))
-
-        # Preserve current full-weight setup.
-        train_obs_backup = None if train_data.obs_weight is None else train_data.obs_weight.copy()
-        val_obs_backup = None if val_data.obs_weight is None else val_data.obs_weight.copy()
-        base_theta = theta.copy()
-
-        ablation_defs = [
-            ("type_only", game_weights.w_type),
-            ("type_size", game_weights.w_type * game_weights.w_size),
-            ("type_size_mix", game_weights.w_type * game_weights.w_size * game_weights.w_mix),
-        ]
-        ablation_rows = []
-
-        for ab_idx, (name, gw) in enumerate(ablation_defs, 1):
-            print(f"  Ablation {ab_idx}/3: {name} ...", flush=True)
-            gw = gw.astype(np.float32)
-            mean_train = float(np.mean(gw[np.unique(train_data.game_idx)]))
-            gw_norm = gw / max(mean_train, 1e-8)
-            train_data.obs_weight = gw_norm[train_data.game_idx]
-            val_data.obs_weight = gw_norm[val_data.game_idx]
-
-            set_seed(args.seed)
-            m = ChGKModel(
-                n_players,
-                n_questions,
-                num_canonical_questions=num_canonical if num_canonical < n_questions else None,
-                canonical_q_idx=canonical_q_idx_tensor,
-                tournament_dl=tournament_dl_tensor,
-                tournament_type=tournament_type_tensor,
-                dl_transform=args.dl_transform,
-                dl_power_gamma=args.dl_power_gamma,
-                dl_learn_power=args.dl_learn_power,
-            ).to(device)
-            if theta_init is not None and b_init is not None:
-                m.theta.data.copy_(torch.from_numpy(theta_init).to(device))
-                # Reuse canonical-aggregated init from main model
-                m.b.data.copy_(model.b.data.detach().clone())
-                if log_a_init is not None:
-                    m.log_a.data.copy_(model.log_a.data.detach().clone())
-                apply_identifiability(m, center_theta=True, center_b=False, theta_center_mask=theta_center_mask)
-            opt = torch.optim.Adam(m.parameters(), lr=args.lr)
-            sch = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, mode="min", factor=0.5, patience=2)
-            best = float("inf")
-            noimp = 0
-            for _epoch in range(args.epochs):
-                train_epoch(
-                    m, train_data, opt, device, args.batch_size,
-                    reg_theta=args.reg_theta, reg_b=args.reg_b, reg_log_a=args.reg_log_a,
-                    reg_type=args.reg_type, reg_team_size=args.reg_team_size,
-                    reg_gamma=args.reg_gamma, reg_game_weights=args.reg_game_weights,
-                    log_gamma_init=_log_gamma_init,
-                    center_theta=True, center_b=True,
-                    theta_reg_weights=theta_reg_weights,
-                    theta_anchor=theta_anchor,
-                    question_reg_weights=question_reg_weights,
-                    theta_center_mask=theta_center_mask,
-                    weight_module=None,
-                    show_progress=False,
-                    grad_clip=args.grad_clip,
-                )
-                vloss, _, _, _ = evaluate(m, val_data, device)
-                sch.step(vloss)
-                if (_epoch + 1) % 10 == 0 or _epoch == 0:
-                    print(f"    epoch {_epoch + 1}/{args.epochs} val_loss={vloss:.4f}", flush=True)
-                if vloss < best:
-                    best = vloss
-                    noimp = 0
-                else:
-                    noimp += 1
-                    if noimp >= args.patience:
-                        break
-
-            th = m.theta.detach().cpu().numpy()
-            fisher_ab = np.zeros_like(th, dtype=np.float32)
-            print(f"    computing Fisher ...", flush=True)
-            for start in range(0, len(train_data), args.batch_size):
-                end = min(start + args.batch_size, len(train_data))
-                bidx = np.arange(start, end)
-                q, flat_p, sizes, taken = train_data.get_batch(bidx)
-                q, flat_p, sizes, taken = q.to(device), flat_p.to(device), sizes.to(device), taken.to(device)
-                obs_w = torch.from_numpy(train_data.obs_weight[bidx]).float().to(device)
-                fd = fisher_diag_theta(
-                    model=m,
-                    question_indices=q,
-                    player_indices_flat=flat_p,
-                    team_sizes=sizes,
-                    taken=taken,
-                    obs_weights=obs_w,
-                    num_players=n_players,
-                )
-                fisher_ab += fd.detach().cpu().numpy().astype(np.float32)
-            se_ab, rating_ab = conservative_rating(
-                th,
-                fisher_ab,
-                prior_precision=float(args.reg_theta),
-                c=float(args.rating_c),
-            )
-            ablation_rows.append(
-                (
-                    name,
-                    best,
-                    rank_volatility(base_theta, rating_ab),
-                    suspicious_count(th, se_ab),
-                )
-            )
-
-        print("\nAblation results (holdout logloss / volatility / suspicious):")
-        for name, ll, vol, susp in ablation_rows:
-            print(f"  {name:14s} logloss={ll:.5f}  volatility={vol:.4f}  suspicious={susp}")
-
-        # Compare full weighting against no-mix variant on the trained model.
-        if val_data.game_idx is not None:
-            no_mix = (game_weights.w_type * game_weights.w_size).astype(np.float32)
-            no_mix /= max(float(np.mean(no_mix[np.unique(train_data.game_idx)])), 1e-8)
-            full = game_weights.w_norm.astype(np.float32)
-            full_ll = weighted_logloss(
-                torch.from_numpy(val_data.taken).float(),
-                model.forward_packed(
-                    torch.from_numpy(val_data.q_idx).long().to(device),
-                    torch.from_numpy(val_data.player_indices_flat).long().to(device),
-                    torch.from_numpy(val_data.team_sizes).long().to(device),
-                ).detach().cpu(),
-                torch.from_numpy(full[val_data.game_idx]).float(),
-            ).item()
-            no_mix_ll = weighted_logloss(
-                torch.from_numpy(val_data.taken).float(),
-                model.forward_packed(
-                    torch.from_numpy(val_data.q_idx).long().to(device),
-                    torch.from_numpy(val_data.player_indices_flat).long().to(device),
-                    torch.from_numpy(val_data.team_sizes).long().to(device),
-                ).detach().cpu(),
-                torch.from_numpy(no_mix[val_data.game_idx]).float(),
-            ).item()
-            print(f"\nPredictive weighted logloss on val: no_mix={no_mix_ll:.5f}, with_mix={full_ll:.5f}")
-
-        train_data.obs_weight = train_obs_backup
-        val_data.obs_weight = val_obs_backup
-
     if args.calibration_plot:
-        # For calibration plot, use val_data
-        if isinstance(val_data, PackedData):
-            qv, flat_pv, sizes_v, taken_v = val_data.get_batch(np.arange(len(val_data)))
-        else:
-            qv, flat_pv, sizes_v, taken_v = packed_from_samples(val_data)
+        qv, flat_pv, sizes_v, taken_v = val_data.get_batch(np.arange(len(val_data)))
         qv, flat_pv, sizes_v, taken_v = qv.to(device), flat_pv.to(device), sizes_v.to(device), taken_v.to(device)
         model.eval()
         with torch.no_grad():
