@@ -6,5 +6,12 @@ data/*.pkl
 checkpoints/
 checkpoints*
 .DS_Store
+
 # Local DB cache (too large for git)
 data.npz
+
+# Run logs (anywhere)
+*.log
+
+# Experiment outputs: CSV/npz exports, tuning tables, backtest dumps (regenerate via rating / scripts)
+results/
