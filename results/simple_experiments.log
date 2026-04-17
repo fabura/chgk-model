@@ -1,0 +1,20 @@
+Loading /Users/fbr/Projects/personal/сhgk-model/data.npz ...
+Data: 32296888 obs, 49021 players, 398316 questions
+
+=== baseline_t6 ===
+  done in 274.4s  logloss=0.6019  brier=0.2018  auc=0.8145
+    offline n=  1008576 logloss=0.6489 brier=0.2089 auc=0.8741
+    sync    n=  2201059 logloss=0.5887 brier=0.2014 auc=0.8172
+    async   n=  1238185 logloss=0.5871 brier=0.1967 auc=0.7850
+
+=== reg_theta_0.01 ===
+  done in 255.5s  logloss=0.6096  brier=0.2044  auc=0.8132
+    offline n=  1008576 logloss=0.6665 brier=0.2141 auc=0.8740
+    sync    n=  2201059 logloss=0.5935 brier=0.2033 auc=0.8168
+    async   n=  1238185 logloss=0.5917 brier=0.1983 auc=0.7835
+
+=== reg_theta_0.05 ===
+Loading /Users/fbr/Projects/personal/сhgk-model/data.npz ...
+Data: 32296888 obs, 49021 players, 398316 questions
+
+=== cold_init_0.5 ===

@@ -1,40 +1,73 @@
 #!/usr/bin/env python3
-"""Build strongest_30plus_games.csv from players.csv. Keeps only players with >30 games in DB."""
+"""Build strongest_30plus_games.csv from seq.npz (or players.csv). Keeps only players with ≥30 games."""
 from __future__ import annotations
 
+import argparse
 import csv
-import os
 import sys
 from pathlib import Path
+
+import numpy as np
 
 # Add project root for imports
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
 def main() -> int:
-    results_dir = Path(__file__).resolve().parent.parent / "results"
-    players_csv = results_dir / "players.csv"
-    out_csv = results_dir / "strongest_30plus_games.csv"
+    parser = argparse.ArgumentParser(description="Build strongest_30plus_games.csv")
+    parser.add_argument(
+        "--input",
+        choices=["seq", "players"],
+        default=None,
+        help="Source: seq=seq.npz (sequential model), players=players.csv. Auto-detect if not set.",
+    )
+    parser.add_argument("--min_games", type=int, default=30, help="Min games to include. Default 30.")
+    parser.add_argument("--out", type=str, default=None, help="Output CSV path. Default results/strongest_30plus_games.csv")
+    args = parser.parse_args()
 
-    if not players_csv.exists():
-        print(f"File not found: {players_csv}", file=sys.stderr)
+    results_dir = Path(__file__).resolve().parent.parent / "results"
+    seq_npz = results_dir / "seq.npz"
+    players_csv = results_dir / "players.csv"
+    out_csv = Path(args.out) if args.out else results_dir / "strongest_30plus_games.csv"
+
+    # Choose input
+    use_seq = args.input == "seq" or (args.input is None and seq_npz.exists())
+    if use_seq and seq_npz.exists():
+        from rating import load_results_npz
+
+        r = load_results_npz(seq_npz)
+        mask = r.games >= args.min_games
+        order = np.argsort(r.theta)[::-1]
+        players = [
+            (int(r.player_id[i]), float(r.theta[i]), 0.0, float(r.theta[i]), int(r.games[i]))
+            for i in order
+            if mask[i]
+        ]
+        print(f"Loaded {len(players)} players (≥{args.min_games} games) from {seq_npz}")
+    elif players_csv.exists():
+        players = []
+        with open(players_csv, newline="", encoding="utf-8") as f:
+            r = csv.DictReader(f)
+            for row in r:
+                try:
+                    pid = int(row["player_id"])
+                    theta = float(row["theta"])
+                    se = float(row.get("SE", "0"))
+                    rating = float(row.get("rating", str(theta)))
+                    games = int(row.get("num_games", row.get("games", 0)))
+                    players.append((pid, theta, se, rating, games))
+                except (KeyError, ValueError):
+                    continue
+        players = [p for p in players if p[4] >= args.min_games]
+        players.sort(key=lambda p: -p[3])  # by rating
+        print(f"Loaded {len(players)} players (≥{args.min_games} games) from {players_csv}")
+    else:
+        print(f"No input found. Need {seq_npz} or {players_csv}", file=sys.stderr)
         return 1
 
-    # Load players.csv: player_id, theta, SE, rating
-    players: list[tuple[int, float, float, float]] = []
-    with open(players_csv, newline="", encoding="utf-8") as f:
-        r = csv.DictReader(f)
-        for row in r:
-            try:
-                pid = int(row["player_id"])
-                theta = float(row["theta"])
-                se = float(row.get("SE", "0"))
-                rating = float(row.get("rating", str(theta)))
-                players.append((pid, theta, se, rating))
-            except (KeyError, ValueError):
-                continue
-
-    print(f"Loaded {len(players)} players from {players_csv}")
+    if not players:
+        print("No players with enough games.", file=sys.stderr)
+        return 1
 
     try:
         import psycopg2
@@ -42,15 +75,16 @@ def main() -> int:
         print("pip install psycopg2-binary", file=sys.stderr)
         return 1
 
-    url = os.environ.get("DATABASE_URL", "postgresql://postgres:password@127.0.0.1:5432/postgres")
     player_ids = [p[0] for p in players]
-    player_map = {p[0]: p for p in players}
+    url = "postgresql://postgres:password@127.0.0.1:5432/postgres"
+    import os
+
+    url = os.environ.get("DATABASE_URL", url)
 
     try:
         conn = psycopg2.connect(url)
         cur = conn.cursor()
 
-        # Get games count and last_game per player from tournament_rosters + tournaments
         cur.execute(
             """
             SELECT tr.player_id,
@@ -65,7 +99,6 @@ def main() -> int:
         )
         db_stats = {r[0]: {"games": r[1], "last_game": r[2]} for r in cur.fetchall()}
 
-        # Get first_name, last_name from players
         cur.execute(
             "SELECT id, first_name, last_name FROM public.players WHERE id = ANY(%s)",
             (player_ids,),
@@ -77,28 +110,22 @@ def main() -> int:
         print(f"DB error: {e}", file=sys.stderr)
         return 1
 
-    # Build rows: only players with >30 games
     rows = []
-    for pid, theta, se, rating in players:
+    for pid, theta, se, rating, games_in in players:
         stats = db_stats.get(pid)
-        if not stats or stats["games"] <= 30:
-            continue
         first, last = names.get(pid, ("", ""))
-        last_game = stats["last_game"]
+        last_game = stats["last_game"] if stats else None
         last_game_str = last_game.strftime("%Y-%m-%d") if last_game else ""
-        rows.append((pid, first, last, theta, se, rating, stats["games"], last_game_str))
+        games = stats["games"] if stats and stats["games"] else games_in
+        rows.append((pid, first, last, rating, theta, se, games, last_game_str))
 
-    # Sort by conservative rating (theta - c*SE) descending
-    rows.sort(key=lambda r: -r[5])
-
-    # Write output
     with open(out_csv, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(["rank", "player_id", "first_name", "last_name", "rating", "theta", "SE", "games", "last_game"])
-        for i, (pid, first, last, theta, se, rating, games, last_game) in enumerate(rows, 1):
+        for i, (pid, first, last, rating, theta, se, games, last_game) in enumerate(rows, 1):
             w.writerow([i, pid, first, last, round(rating, 6), round(theta, 6), round(se, 6), games, last_game])
 
-    print(f"Wrote {len(rows)} players (games > 30) to {out_csv}")
+    print(f"Wrote {len(rows)} players to {out_csv}")
     return 0
 
 

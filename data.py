@@ -16,7 +16,6 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 import numpy as np
-import torch
 
 
 @dataclass
@@ -83,81 +82,7 @@ def build_index_maps(samples: list[Sample]) -> IndexMaps:
     )
 
 
-def samples_to_tensors(
-    samples: list[Sample],
-    maps: IndexMaps,
-) -> Tuple[torch.Tensor, List[torch.Tensor], torch.Tensor]:
-    """
-    Convert samples to batched tensors for model forward.
-    Returns: question_indices [N], list of player_index tensors (ragged), taken [N].
-    """
-    q_idx = torch.tensor([s.question_idx for s in samples], dtype=torch.long)
-    taken = torch.tensor([s.taken for s in samples], dtype=torch.float32)
-    player_lists: List[torch.Tensor] = [
-        torch.tensor(s.player_indices, dtype=torch.long) for s in samples
-    ]
-    return q_idx, player_lists, taken
-
-
 # --- Synthetic data ---
-
-
-def generate_synthetic(
-    num_players: int = 50,
-    num_questions: int = 200,
-    num_teams_per_game: int = 12,
-    players_per_team: int = 6,
-    num_games: int = 30,
-    seed: int = 42,
-) -> Tuple[list[Sample], IndexMaps]:
-    """
-    Generate synthetic (game, question, team, taken) data from known θ, b, a.
-    Each game has num_questions questions and num_teams_per_game teams; each team has players_per_team players.
-    """
-    rng = np.random.default_rng(seed)
-    # True parameters
-    theta = rng.standard_normal(num_players).astype(np.float32)
-    theta = theta - theta.mean()
-    b = rng.standard_normal(num_questions).astype(np.float32)
-    b = b - b.mean()
-    log_a = np.log(0.5 + rng.exponential(0.5, num_questions).astype(np.float32))
-
-    samples: list[Sample] = []
-    # We'll create games: each game has several teams; each team is a random subset of players
-    player_indices = list(range(num_players))
-    idx_to_game_id = list(range(num_games))
-    question_game_idx = np.zeros(num_questions, dtype=np.int32)
-    for g in range(num_games):
-        # Assign teams: each team = random subset of players (with replacement across games for simplicity)
-        team_rosters: List[List[int]] = []
-        for _ in range(num_teams_per_game):
-            team_rosters.append(rng.choice(player_indices, size=players_per_team, replace=False).tolist())
-        for qi in range(num_questions):
-            question_game_idx[qi] = g
-            a_i = np.exp(log_a[qi])
-            b_i = b[qi]
-            for t, roster in enumerate(team_rosters):
-                lam_sum = 0.0
-                for k in roster:
-                    lam_sum += np.exp(-b_i + a_i * theta[k])
-                p = 1.0 - np.exp(-lam_sum)
-                p = np.clip(p, 1e-6, 1.0 - 1e-6)
-                taken = 1 if rng.random() < p else 0
-                samples.append(
-                    Sample(question_idx=qi, player_indices=roster.copy(), taken=taken, game_idx=g)
-                )
-
-    maps = IndexMaps(
-        player_id_to_idx={i: i for i in range(num_players)},
-        question_id_to_idx={i: i for i in range(num_questions)},
-        idx_to_player_id=list(range(num_players)),
-        idx_to_question_id=list(range(num_questions)),
-        question_game_idx=question_game_idx,
-        idx_to_game_id=idx_to_game_id,
-        game_type=np.array(["offline"] * num_games, dtype=object),
-        game_date_ordinal=np.array([-1] * num_games, dtype=np.int32),
-    )
-    return samples, maps
 
 
 def generate_synthetic_two_populations(
@@ -929,6 +854,27 @@ def train_val_split(
 # --- Cache (save/load extracted data) ---
 
 CACHE_VERSION = 4
+CACHE_VERSION_NPZ = 5
+
+
+def _samples_to_arrays(samples: list[Sample]) -> dict[str, np.ndarray]:
+    """Convert samples to packed arrays (shared by save paths)."""
+    q_idx = np.array([s.question_idx for s in samples], dtype=np.int32)
+    taken = np.array([s.taken for s in samples], dtype=np.float32)
+    team_sizes = np.array([len(s.player_indices) for s in samples], dtype=np.int32)
+    player_indices_flat = np.concatenate([s.player_indices for s in samples]).astype(np.int32)
+
+    out = {
+        "q_idx": q_idx,
+        "taken": taken,
+        "team_sizes": team_sizes,
+        "player_indices_flat": player_indices_flat,
+    }
+    if samples and getattr(samples[0], "game_idx", None) is not None:
+        out["game_idx"] = np.array([getattr(s, "game_idx", -1) for s in samples], dtype=np.int32)
+    if samples and getattr(samples[0], "team_strength", None) is not None:
+        out["team_strength"] = np.array([getattr(s, "team_strength", 0.5) for s in samples], dtype=np.float32)
+    return out
 
 
 def save_cached(
@@ -937,63 +883,114 @@ def save_cached(
     path: str | Path,
     *,
     meta: Optional[dict] = None,
+    use_npz: Optional[bool] = None,
 ) -> None:
-    """Save (samples, index maps) to a single file using NumPy for speed."""
+    """Save (samples, index maps). Use .npz path for compressed format (smaller, faster load)."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Convert to packed NumPy arrays for efficient storage and loading
-    q_idx = np.array([s.question_idx for s in samples], dtype=np.int32)
-    taken = np.array([s.taken for s in samples], dtype=np.float32)
-    team_sizes = np.array([len(s.player_indices) for s in samples], dtype=np.int32)
-    player_indices_flat = np.concatenate([s.player_indices for s in samples]).astype(np.int32)
+    arr = _samples_to_arrays(samples)
+    use_npz = (path.suffix.lower() == ".npz") if use_npz is None else use_npz
 
-    payload = {
-        "version": CACHE_VERSION,
-        "q_idx": q_idx,
-        "taken": taken,
-        "team_sizes": team_sizes,
-        "player_indices_flat": player_indices_flat,
-        "idx_to_player_id": maps.idx_to_player_id,
-        "idx_to_question_id": maps.idx_to_question_id,
-        "meta": meta or {},
+    if use_npz:
+        out_path = path.with_suffix(".npz") if path.suffix.lower() != ".npz" else path
+        _save_arrays_maps_npz(arr, maps, out_path)
+    else:
+        payload = {
+            "version": CACHE_VERSION,
+            **arr,
+            "idx_to_player_id": maps.idx_to_player_id,
+            "idx_to_question_id": maps.idx_to_question_id,
+            "meta": meta or {},
+        }
+        if getattr(maps, "tournament_dl", None) is not None:
+            payload["tournament_dl"] = maps.tournament_dl
+        if getattr(maps, "tournament_type", None) is not None:
+            payload["tournament_type"] = maps.tournament_type
+        if getattr(maps, "question_game_idx", None) is not None:
+            payload["question_game_idx"] = maps.question_game_idx
+        if getattr(maps, "idx_to_game_id", None):
+            payload["idx_to_game_id"] = maps.idx_to_game_id
+        if getattr(maps, "game_type", None) is not None:
+            payload["game_type"] = maps.game_type
+        if getattr(maps, "game_date_ordinal", None) is not None:
+            payload["game_date_ordinal"] = maps.game_date_ordinal
+        if getattr(maps, "canonical_q_idx", None) is not None:
+            payload["canonical_q_idx"] = maps.canonical_q_idx
+            payload["num_canonical_questions"] = maps.num_canonical_questions
+        with open(path, "wb") as f:
+            pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+
+def convert_cache_to_npz(pkl_path: str | Path, npz_path: str | Path) -> None:
+    """Convert .pkl cache to compressed .npz. Frees disk space and speeds up load."""
+    arrays, maps = load_cached(pkl_path)
+    _save_arrays_maps_npz(arrays, maps, Path(npz_path))
+
+
+def _save_arrays_maps_npz(arrays: dict[str, np.ndarray], maps: IndexMaps, path: Path) -> None:
+    """Save arrays and maps to compressed .npz (used by save_cached and convert)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    qids = maps.idx_to_question_id
+    q_is_tuple = qids and isinstance(qids[0], tuple)
+    if q_is_tuple:
+        q_tid = np.array([q[0] for q in qids], dtype=np.int32)
+        q_qi = np.array([q[1] for q in qids], dtype=np.int32)
+    else:
+        q_tid = np.array(qids, dtype=np.int32)
+        q_qi = np.zeros(len(qids), dtype=np.int32)
+
+    npz_kw: dict[str, np.ndarray] = {
+        "version": np.array([CACHE_VERSION_NPZ], dtype=np.int32),
+        "q_idx": arrays["q_idx"],
+        "taken": arrays["taken"],
+        "team_sizes": arrays["team_sizes"],
+        "player_indices_flat": arrays["player_indices_flat"],
+        "idx_to_player_id": np.array(maps.idx_to_player_id, dtype=np.int64),
+        "question_tid": q_tid,
+        "question_qi": q_qi,
+        "question_is_tuple": np.array([1 if q_is_tuple else 0], dtype=np.int8),
     }
-    if samples and getattr(samples[0], "game_idx", None) is not None:
-        payload["game_idx"] = np.array([getattr(s, "game_idx", -1) for s in samples], dtype=np.int32)
-    if samples and getattr(samples[0], "team_strength", None) is not None:
-        payload["team_strength"] = np.array([getattr(s, "team_strength", 0.5) for s in samples], dtype=np.float32)
+    if "game_idx" in arrays:
+        npz_kw["game_idx"] = arrays["game_idx"]
+    if "team_strength" in arrays:
+        npz_kw["team_strength"] = arrays["team_strength"]
     if getattr(maps, "tournament_dl", None) is not None:
-        payload["tournament_dl"] = maps.tournament_dl
+        npz_kw["tournament_dl"] = maps.tournament_dl
     if getattr(maps, "tournament_type", None) is not None:
-        payload["tournament_type"] = maps.tournament_type
+        npz_kw["tournament_type"] = maps.tournament_type
     if getattr(maps, "question_game_idx", None) is not None:
-        payload["question_game_idx"] = maps.question_game_idx
+        npz_kw["question_game_idx"] = maps.question_game_idx
     if getattr(maps, "idx_to_game_id", None):
-        payload["idx_to_game_id"] = maps.idx_to_game_id
+        npz_kw["idx_to_game_id"] = np.array(maps.idx_to_game_id, dtype=np.int64)
     if getattr(maps, "game_type", None) is not None:
-        payload["game_type"] = maps.game_type
+        npz_kw["game_type"] = maps.game_type
     if getattr(maps, "game_date_ordinal", None) is not None:
-        payload["game_date_ordinal"] = maps.game_date_ordinal
+        npz_kw["game_date_ordinal"] = maps.game_date_ordinal
     if getattr(maps, "canonical_q_idx", None) is not None:
-        payload["canonical_q_idx"] = maps.canonical_q_idx
-        payload["num_canonical_questions"] = maps.num_canonical_questions
-    with open(path, "wb") as f:
-        pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
+        npz_kw["canonical_q_idx"] = maps.canonical_q_idx
+    if getattr(maps, "num_canonical_questions", None) is not None:
+        npz_kw["num_canonical_questions"] = np.array([maps.num_canonical_questions], dtype=np.int32)
+    np.savez_compressed(path, **npz_kw)
 
 
 def load_cached(path: str | Path) -> Tuple[dict[str, np.ndarray], IndexMaps]:
-    """Load packed arrays and index maps from a cache file."""
+    """Load packed arrays and index maps. Supports .npz (compressed) and .pkl."""
     path = Path(path)
     if not path.is_file():
         raise FileNotFoundError(f"Cache file not found: {path}")
+
+    if path.suffix.lower() == ".npz":
+        return _load_cached_npz(path)
+
     with open(path, "rb") as f:
         payload = pickle.load(f)
-    
+
     version = payload.get("version")
     if version != CACHE_VERSION:
         raise ValueError(
             f"Cache version mismatch: file has {version}, expected {CACHE_VERSION}. "
-            "Please delete the cache file and re-run to regenerate in the new fast format."
+            "Please delete the cache file and re-run to regenerate."
         )
 
     idx_to_player_id = payload["idx_to_player_id"]
@@ -1034,16 +1031,78 @@ def load_cached(path: str | Path) -> Tuple[dict[str, np.ndarray], IndexMaps]:
     return arrays, maps
 
 
+def _load_cached_npz(path: Path) -> Tuple[dict[str, np.ndarray], IndexMaps]:
+    """Load from compressed .npz format."""
+    z = np.load(path, allow_pickle=True)
+
+    version = int(z["version"][0])
+    if version != CACHE_VERSION_NPZ:
+        raise ValueError(
+            f"NPZ cache version mismatch: file has {version}, expected {CACHE_VERSION_NPZ}. "
+            "Please delete and re-run to regenerate."
+        )
+
+    idx_to_player_id = z["idx_to_player_id"].tolist()
+    q_tid = z["question_tid"]
+    q_qi = z["question_qi"]
+    q_is_tuple = int(z["question_is_tuple"][0]) != 0
+    idx_to_question_id = (
+        [(int(t), int(q)) for t, q in zip(q_tid, q_qi)]
+        if q_is_tuple
+        else q_tid.tolist()
+    )
+
+    def _arr(name: str, default=None):
+        return z[name] if name in z else default
+
+    num_canonical = None
+    if "num_canonical_questions" in z:
+        num_canonical = int(z["num_canonical_questions"][0])
+
+    maps = IndexMaps(
+        player_id_to_idx={pid: i for i, pid in enumerate(idx_to_player_id)},
+        question_id_to_idx={qid: i for i, qid in enumerate(idx_to_question_id)},
+        idx_to_player_id=idx_to_player_id,
+        idx_to_question_id=idx_to_question_id,
+        tournament_dl=_arr("tournament_dl"),
+        tournament_type=_arr("tournament_type"),
+        question_game_idx=_arr("question_game_idx"),
+        idx_to_game_id=z["idx_to_game_id"].tolist() if "idx_to_game_id" in z else [],
+        game_type=_arr("game_type"),
+        game_date_ordinal=_arr("game_date_ordinal"),
+        canonical_q_idx=_arr("canonical_q_idx"),
+        num_canonical_questions=num_canonical,
+    )
+
+    arrays = {
+        "q_idx": z["q_idx"],
+        "taken": z["taken"],
+        "team_sizes": z["team_sizes"],
+        "player_indices_flat": z["player_indices_flat"],
+    }
+    if "game_idx" in z:
+        arrays["game_idx"] = z["game_idx"]
+    if "team_strength" in z:
+        arrays["team_strength"] = z["team_strength"]
+    return arrays, maps
+
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="ChGK data utilities")
     parser.add_argument("--detect_pairs", action="store_true",
                         help="Run paired tournament detection on DB data")
+    parser.add_argument("--convert_cache", nargs=2, metavar=("PKL", "NPZ"),
+                        help="Convert .pkl cache to compressed .npz (e.g. data.pkl data.npz)")
     parser.add_argument("--max_tournaments", type=int, default=None)
     parser.add_argument("--min_tournament_date", type=str, default="2015-01-01")
     args = parser.parse_args()
 
-    if args.detect_pairs:
+    if args.convert_cache:
+        pkl_p, npz_p = args.convert_cache
+        convert_cache_to_npz(pkl_p, npz_p)
+        print(f"Converted {pkl_p} → {npz_p}")
+    elif args.detect_pairs:
         import psycopg2
         url = os.environ.get("DATABASE_URL", "postgresql://postgres:password@127.0.0.1:5432/postgres")
         conn = psycopg2.connect(url)

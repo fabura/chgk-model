@@ -5,3 +5,6 @@ __pycache__/
 data/*.pkl
 checkpoints/
 checkpoints*
+.DS_Store
+# Local DB cache (too large for git)
+data.npz
