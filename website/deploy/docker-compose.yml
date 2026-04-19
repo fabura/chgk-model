@@ -1,0 +1,49 @@
+# ChGK Model — production stack.
+#
+# Layout (on the server, default DEPLOY_DIR=/srv/chgk-model):
+#   docker-compose.yml   — this file
+#   nginx.conf           — vhost config (bind-mounted into the nginx container)
+#   .env                 — ADMIN_TOKEN=...  (NEVER commit; chmod 600)
+#   data/chgk.duckdb     — DB file (rsynced from a workstation)
+#
+# Bring up:
+#   docker compose pull   # not needed — image is loaded from a tar
+#   docker compose up -d
+#
+# Tail logs:
+#   docker compose logs -f --tail=200
+
+services:
+  app:
+    image: chgk-model:latest
+    container_name: chgk-app
+    restart: unless-stopped
+    environment:
+      - ADMIN_TOKEN=${ADMIN_TOKEN:?ADMIN_TOKEN must be set in .env}
+      - CHGK_DB_PATH=/app/data/chgk.duckdb
+    volumes:
+      # DB file is bind-mounted read-only from the host.  Replace it with
+      # rsync (atomic via --inplace + mv); then either call /admin/reload-db
+      # or `docker compose restart app` to pick up the new file.
+      - ./data:/app/data:ro
+    networks:
+      - web
+    expose:
+      - "8000"
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: chgk-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - app
+    networks:
+      - web
+
+networks:
+  web:
+    driver: bridge
