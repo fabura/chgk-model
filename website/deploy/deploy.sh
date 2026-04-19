@@ -44,9 +44,11 @@ IMAGE_NAME="${IMAGE_NAME:-chgk-model}"
 IMAGE_TAG="${IMAGE_TAG:-latest}"
 # ---- derived paths ------------------------------------------------------
 DB_LOCAL="${REPO_ROOT}/website/data/chgk.duckdb"
+DB_ZST_LOCAL="${DB_LOCAL}.zst"
 TAR_LOCAL="${REPO_ROOT}/website/data/${IMAGE_NAME}.tar"
-TAR_GZ_LOCAL="${TAR_LOCAL}.gz"
-REMOTE_TAR_GZ="${DEPLOY_DIR}/.image-stage/${IMAGE_NAME}.tar.gz"
+TAR_ZST_LOCAL="${TAR_LOCAL}.zst"
+REMOTE_TAR_ZST="${DEPLOY_DIR}/.image-stage/${IMAGE_NAME}.tar.zst"
+REMOTE_DB_ZST="${DEPLOY_DIR}/data/chgk.duckdb.zst.new"
 
 # ---- args ----------------------------------------------------------------
 WITH_DB=0
@@ -60,9 +62,13 @@ for arg in "$@"; do
   esac
 done
 
-SSH="ssh -i ${SSH_KEY} -o StrictHostKeyChecking=accept-new ${REMOTE_USER}@${REMOTE_HOST}"
-SCP="scp -i ${SSH_KEY} -o StrictHostKeyChecking=accept-new"
-RSYNC="rsync -e 'ssh -i ${SSH_KEY} -o StrictHostKeyChecking=accept-new'"
+# ServerAlive* keeps the SSH session alive when rsync goes idle on a
+# slow uplink — without it the channel can drop after ~10 min and the
+# whole transfer aborts (only --partial saves us).
+SSH_OPTS="-i ${SSH_KEY} -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o ServerAliveCountMax=20"
+SSH="ssh ${SSH_OPTS} ${REMOTE_USER}@${REMOTE_HOST}"
+SCP="scp ${SSH_OPTS}"
+RSYNC="rsync -e 'ssh ${SSH_OPTS}'"
 
 log() { printf '\033[1;36m[deploy]\033[0m %s\n' "$*"; }
 
@@ -70,11 +76,22 @@ log() { printf '\033[1;36m[deploy]\033[0m %s\n' "$*"; }
 log "Ensuring remote layout at ${REMOTE_USER}@${REMOTE_HOST}:${DEPLOY_DIR}"
 $SSH "mkdir -p ${DEPLOY_DIR}/data"
 
-# ---- 2. ensure docker on remote -----------------------------------------
+# ---- 2. ensure docker + zstd on remote ----------------------------------
 log "Checking docker on remote…"
 if ! $SSH "command -v docker >/dev/null 2>&1"; then
   echo "ERROR: docker is not installed on ${REMOTE_HOST}." >&2
-  echo "Install with: apt update && apt install -y docker.io docker-compose-plugin" >&2
+  echo "Install with: curl -fsSL https://get.docker.com | sh" >&2
+  exit 3
+fi
+log "Checking zstd on remote…"
+if ! $SSH "command -v unzstd >/dev/null 2>&1"; then
+  echo "ERROR: zstd is not installed on ${REMOTE_HOST}." >&2
+  echo "Install with: apt update && apt install -y zstd" >&2
+  exit 3
+fi
+if ! command -v zstd >/dev/null 2>&1; then
+  echo "ERROR: zstd is not installed locally." >&2
+  echo "Install with: brew install zstd  (macOS)  or  apt install zstd  (Linux)" >&2
   exit 3
 fi
 
@@ -91,15 +108,16 @@ log "Saving image to ${TAR_LOCAL}…"
 docker save "${IMAGE_NAME}:${IMAGE_TAG}" -o "${TAR_LOCAL}"
 ls -lh "${TAR_LOCAL}"
 
-# Re-compress only when the tar is newer than the cached .gz.
-if [[ ! -f "${TAR_GZ_LOCAL}" || "${TAR_LOCAL}" -nt "${TAR_GZ_LOCAL}" ]]; then
-  log "Compressing image (gzip) → ${TAR_GZ_LOCAL}…"
-  gzip -kf "${TAR_LOCAL}"
+# Re-compress only when the tar is newer than the cached .zst.
+# zstd -19 saves ~30% bytes vs gzip on this image; decompression is
+# always fast (~500 MB/s), so the upfront cost (~1 min on a workstation)
+# is paid back many times over on slow uplinks.
+if [[ ! -f "${TAR_ZST_LOCAL}" || "${TAR_LOCAL}" -nt "${TAR_ZST_LOCAL}" ]]; then
+  log "Compressing image (zstd -19) → ${TAR_ZST_LOCAL}…"
+  zstd -19 -T0 -fk -o "${TAR_ZST_LOCAL}" "${TAR_LOCAL}"
 fi
-ls -lh "${TAR_GZ_LOCAL}"
+ls -lh "${TAR_ZST_LOCAL}"
 
-log "Rsyncing image to remote (resumable, with progress)…"
-$SSH "mkdir -p $(dirname "${REMOTE_TAR_GZ}")"
 # --partial + --inplace: a killed transfer resumes from the byte where it
 # stopped on the next deploy, instead of starting over.  Use --info=progress2
 # when available (modern rsync 3.1+) and fall back to --progress for
@@ -108,12 +126,15 @@ PROGRESS_FLAG="--info=progress2"
 if rsync --version 2>&1 | head -1 | grep -qi openrsync; then
   PROGRESS_FLAG="--progress"
 fi
+
+log "Rsyncing image to remote (resumable, with progress)…"
+$SSH "mkdir -p $(dirname "${REMOTE_TAR_ZST}")"
 eval $RSYNC -ah --inplace --partial ${PROGRESS_FLAG} \
-  "${TAR_GZ_LOCAL}" \
-  "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_TAR_GZ}"
+  "${TAR_ZST_LOCAL}" \
+  "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_TAR_ZST}"
 
 log "Loading image on remote…"
-$SSH "gunzip -c ${REMOTE_TAR_GZ} | docker load && rm -f ${REMOTE_TAR_GZ}"
+$SSH "unzstd -c ${REMOTE_TAR_ZST} | docker load && rm -f ${REMOTE_TAR_ZST}"
 
 # ---- 4. compose files (only when not --image-only) ----------------------
 if [[ ${IMAGE_ONLY} -eq 0 ]]; then
@@ -139,10 +160,22 @@ if [[ ${WITH_DB} -eq 1 ]]; then
     echo "  python -m website.build.build_db --cache data.npz --results results/seq.npz --out website/data/chgk.duckdb" >&2
     exit 5
   fi
-  log "Rsyncing DuckDB (~$(du -h "${DB_LOCAL}" | cut -f1)) to ${DEPLOY_DIR}/data/…"
+  if [[ ! -f "${DB_ZST_LOCAL}" || "${DB_LOCAL}" -nt "${DB_ZST_LOCAL}" ]]; then
+    log "Compressing DuckDB (zstd -19) → ${DB_ZST_LOCAL}…"
+    zstd -19 -T0 -fk -o "${DB_ZST_LOCAL}" "${DB_LOCAL}"
+  fi
+  log "Rsyncing DuckDB ($(du -h "${DB_LOCAL}" | cut -f1) raw → $(du -h "${DB_ZST_LOCAL}" | cut -f1) zst) to ${DEPLOY_DIR}/data/…"
   eval $RSYNC -ah --inplace --partial ${PROGRESS_FLAG} \
-    "${DB_LOCAL}" \
-    "${REMOTE_USER}@${REMOTE_HOST}:${DEPLOY_DIR}/data/chgk.duckdb"
+    "${DB_ZST_LOCAL}" \
+    "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DB_ZST}"
+  log "Decompressing + atomic swap on remote…"
+  $SSH "set -e
+    cd ${DEPLOY_DIR}/data
+    unzstd -f -o chgk.duckdb.new chgk.duckdb.zst.new
+    rm -f chgk.duckdb.zst.new
+    if [ -f chgk.duckdb ]; then mv -f chgk.duckdb chgk.duckdb.prev; fi
+    mv -f chgk.duckdb.new chgk.duckdb
+    ls -lh chgk.duckdb*"
 fi
 
 # ---- 6. (re)start stack -------------------------------------------------

@@ -20,8 +20,10 @@ results/
 website/.admin_token
 website/data/*.duckdb
 website/data/*.duckdb.bak*
+website/data/*.duckdb.zst
 website/data/chgk-model.tar
 website/data/chgk-model.tar.gz
+website/data/chgk-model.tar.zst
 website/deploy/.env
 website/deploy/.deploy.env
 website/deploy/data/

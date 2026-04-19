@@ -31,36 +31,57 @@ SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_rsa}"
 DEPLOY_DIR="${DEPLOY_DIR:-/srv/chgk-model}"
 
 DB_LOCAL="${REPO_ROOT}/website/data/chgk.duckdb"
+DB_ZST_LOCAL="${DB_LOCAL}.zst"
+REMOTE_DB_ZST="${DEPLOY_DIR}/data/chgk.duckdb.zst.new"
 
 if [[ ! -f "${DB_LOCAL}" ]]; then
   echo "ERROR: ${DB_LOCAL} not found." >&2
   exit 5
 fi
+if ! command -v zstd >/dev/null 2>&1; then
+  echo "ERROR: zstd not installed locally (brew install zstd / apt install zstd)." >&2
+  exit 6
+fi
 
-SSH="ssh -i ${SSH_KEY} -o StrictHostKeyChecking=accept-new ${REMOTE_USER}@${REMOTE_HOST}"
+SSH_OPTS="-i ${SSH_KEY} -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o ServerAliveCountMax=20"
+SSH="ssh ${SSH_OPTS} ${REMOTE_USER}@${REMOTE_HOST}"
 log() { printf '\033[1;36m[refresh-db]\033[0m %s\n' "$*"; }
 
-# Stage to a sibling file then atomically rename, so the running app
-# always sees a complete file (rsync --inplace would leave a partial
-# file visible mid-transfer).
-log "Rsyncing DB → ${REMOTE_HOST}:${DEPLOY_DIR}/data/chgk.duckdb.new …"
+if ! $SSH "command -v unzstd >/dev/null 2>&1"; then
+  echo "ERROR: zstd not installed on ${REMOTE_HOST}.  apt install -y zstd" >&2
+  exit 6
+fi
+
+# Compress only when the raw .duckdb is newer than the cached .zst.
+# zstd -19 cuts ~373 MB → ~125 MB on this DB; decompression is always
+# fast (~500 MB/s) so the per-deploy CPU spend (~25 s on workstation,
+# ~1 s on remote) easily pays for itself on slow uplinks.
+if [[ ! -f "${DB_ZST_LOCAL}" || "${DB_LOCAL}" -nt "${DB_ZST_LOCAL}" ]]; then
+  log "Compressing DB (zstd -19) → ${DB_ZST_LOCAL}…"
+  zstd -19 -T0 -fk -o "${DB_ZST_LOCAL}" "${DB_LOCAL}"
+fi
+
 # Apple's openrsync (default on macOS) doesn't speak --info=progress2;
 # fall back to the older --progress flag there.
 PROGRESS_FLAG="--info=progress2"
 if rsync --version 2>&1 | head -1 | grep -qi openrsync; then
   PROGRESS_FLAG="--progress"
 fi
-rsync -ah --partial ${PROGRESS_FLAG} \
-  -e "ssh -i ${SSH_KEY} -o StrictHostKeyChecking=accept-new" \
-  "${DB_LOCAL}" \
-  "${REMOTE_USER}@${REMOTE_HOST}:${DEPLOY_DIR}/data/chgk.duckdb.new"
 
-log "Atomic swap on remote…"
+log "Rsyncing DB ($(du -h "${DB_LOCAL}" | cut -f1) raw → $(du -h "${DB_ZST_LOCAL}" | cut -f1) zst, resumable) …"
+rsync -ah --inplace --partial ${PROGRESS_FLAG} \
+  -e "ssh ${SSH_OPTS}" \
+  "${DB_ZST_LOCAL}" \
+  "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DB_ZST}"
+
+# Decompress to a sibling file then atomically rename, so the running
+# app always sees a complete file.
+log "Decompressing + atomic swap on remote…"
 $SSH "set -e
   cd ${DEPLOY_DIR}/data
-  if [ -f chgk.duckdb ]; then
-    mv -f chgk.duckdb chgk.duckdb.prev
-  fi
+  unzstd -f -o chgk.duckdb.new chgk.duckdb.zst.new
+  rm -f chgk.duckdb.zst.new
+  if [ -f chgk.duckdb ]; then mv -f chgk.duckdb chgk.duckdb.prev; fi
   mv -f chgk.duckdb.new chgk.duckdb
   ls -lh chgk.duckdb*"
 
