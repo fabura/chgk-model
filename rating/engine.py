@@ -67,8 +67,16 @@ class Config:
     # decay_period_days)`` applied lazily to each player when they next
     # appear in a tournament.  This decouples decay from the dataset
     # tournament cadence (which is highly uneven across weeks).
-    use_calendar_decay: bool = False
-    rho_calendar: float = 0.99  # default: per-week decay
+    #
+    # Empirically (see ``docs/calendar_decay_experiments.md``), the per-
+    # tournament global decay ``rho=0.9995`` was over-aggressive on the
+    # rating-DB cadence (~21 tournaments/week × ~8 years ⇒ effective
+    # multiplier ≈ 0.014).  Replacing it with calendar decay
+    # (``rho_calendar=1.0`` ⇒ no decay) cut backtest logloss from 0.602
+    # to 0.532.  ``rho_calendar=1.0`` is the new default; lower values
+    # introduce mild long-term shrinkage at a small accuracy cost.
+    use_calendar_decay: bool = True
+    rho_calendar: float = 1.0  # 1.0 = disable; <1 = per-week multiplicative decay
     decay_period_days: float = 7.0
 
     # Cold-start shrinkage for first-time players.  ``cold_init_factor``
@@ -77,6 +85,73 @@ class Config:
     # < 1.0 protect against a strong roster instantly inflating a
     # rookie's rating.
     cold_init_factor: float = 1.0
+
+    # Cold-start prior θ for first-time players.  When
+    # ``cold_init_use_team_mean=False`` every newcomer starts at
+    # ``cold_init_theta`` regardless of their team.  Combined with
+    # ``games_offset`` < 1 (rookie boost), this breaks the positive-
+    # feedback loop where weak rookies → lower team means → even lower
+    # starting θ for the next rookies, which causes the multi-year θ
+    # drift visible on population plots.
+    #
+    # When ``cold_init_use_team_mean=True`` (default, legacy) the prior
+    # is blended with the team mean as
+    #     θ_new = cold_init_factor·mean(team) + (1−cold_init_factor)·prior
+    # and reduces to "no teammates → θ_new = prior".
+    #
+    # Tuned defaults (see ``scripts/exp_cold_start_grid.py`` and
+    # ``docs/cold_start_experiments.md``): a fixed prior of −1.0 with the
+    # rookie boost gave the lowest backtest logloss (0.5129) over a 12-
+    # cell sweep on the 2018-04 → 2025-12 hold-out, a ~1.3 % improvement
+    # over the legacy team-mean inheritance, and effectively eliminated
+    # the long-term drift of the top-1000 player median.
+    cold_init_theta: float = -1.0
+    cold_init_use_team_mean: bool = False
+
+    # Adaptive learning-rate offset.  η_k = η0 / √(games_offset + games_k).
+    # Default 0.25 gives a chess-Elo-style "rookie boost": at games=0 the
+    # learning rate is η0/√0.25 = 2·η0, which lets the model quickly
+    # find the right level for newcomers initialised at the fixed prior.
+    # The previous default 1.0 (η_k = η0/√(1+games)) produced the same
+    # asymptotic behaviour but reacted ~2× slower in the first 5 games.
+    games_offset: float = 0.25
+
+    # Team-size effect.  Adds a global, per-team-size shift to the
+    # tournament difficulty:
+    #     δ = mu_type[type] + eps[t] + delta_size[clip(team_size, 1, K)]
+    # Anchored at ``team_size_anchor`` (delta_size at that index is
+    # forced to zero so the parameter is identifiable against the
+    # weekly-centered ε_t).  ``team_size_max`` clips uncommon roster
+    # sizes (default 8 covers ~98% of the data; sizes 9+ are rare and
+    # often roster errors).  ``w_size`` allows shutting the effect off
+    # for async tournaments where rosters are noisier.
+    use_team_size_effect: bool = True
+    team_size_max: int = 8
+    team_size_anchor: int = 6
+    eta_size: float = 0.005
+    reg_size: float = 0.10
+    w_size_offline: float = 1.0
+    w_size_sync: float = 1.0
+    w_size_async: float = 0.5
+
+    # Position-in-tour effect.  Adds a small per-position shift on
+    # tournament difficulty:
+    #     δ += delta_pos[(question_index_within_tournament) % tour_len]
+    # Anchored at ``pos_anchor`` (mid-tour).  Default ``tour_len=12``
+    # matches the standard ChGK tour length; tournaments with non-12
+    # tour structures (≈30% of the data) get a noisier signal but the
+    # effect is still informative on average.
+    use_pos_effect: bool = True
+    tour_len: int = 12
+    # Anchored at position 0 (the easiest in the empirical take-rate
+    # curve), so all other δ_pos values stay positive and the learned
+    # vector reads naturally as "extra difficulty over question 1".
+    pos_anchor: int = 0
+    eta_pos: float = 0.005
+    reg_pos: float = 0.10
+    w_pos_offline: float = 1.0
+    w_pos_sync: float = 1.0
+    w_pos_async: float = 0.5
 
     use_tournament_delta: bool = True
     use_delta_type_prior: bool = False
@@ -98,14 +173,23 @@ class SequentialResult:
     history: Optional[list] = None
     canonical_q_map: Optional[np.ndarray] = None
     tournaments: Optional[TournamentState] = None
+    delta_size: Optional[np.ndarray] = None  # learned team-size effect (index = team_size)
+    team_size_anchor: int = 6
+    delta_pos: Optional[np.ndarray] = None  # learned position-in-tour effect
+    pos_anchor: int = 6
 
 
 # ======================================================================
 # Helpers
 # ======================================================================
 
-def _type_update_weights(game_type: str, cfg: Config) -> tuple[float, float, float, float, float]:
-    """Return per-parameter update weights for a tournament type."""
+def _type_update_weights(
+    game_type: str, cfg: Config
+) -> tuple[float, float, float, float, float, float, float]:
+    """Return per-parameter update weights for a tournament type.
+
+    Returns ``(theta_w, b_w, log_a_w, mu_w, eps_w, size_w, pos_w)``.
+    """
     if "async" in game_type:
         return (
             cfg.w_online,
@@ -113,6 +197,8 @@ def _type_update_weights(game_type: str, cfg: Config) -> tuple[float, float, flo
             cfg.w_online_log_a,
             cfg.w_async_mode,
             cfg.w_async_residual,
+            cfg.w_size_async,
+            cfg.w_pos_async,
         )
     if "sync" in game_type:
         return (
@@ -121,6 +207,8 @@ def _type_update_weights(game_type: str, cfg: Config) -> tuple[float, float, flo
             cfg.w_sync,
             cfg.w_sync_mode,
             cfg.w_sync_residual,
+            cfg.w_size_sync,
+            cfg.w_pos_sync,
         )
     return (
         cfg.w_offline,
@@ -128,6 +216,8 @@ def _type_update_weights(game_type: str, cfg: Config) -> tuple[float, float, flo
         cfg.w_offline,
         0.0,
         cfg.w_offline,
+        cfg.w_size_offline,
+        cfg.w_pos_offline,
     )
 
 
@@ -261,6 +351,41 @@ def run_sequential(
     zero_mu_type = np.zeros(3, dtype=np.float64)
     zero_eps = np.zeros(max(num_games, 1), dtype=np.float64)
 
+    # Team-size effect: vector of length team_size_max + 1 (index 0 unused),
+    # initialised to zero so the model starts identical to the previous one.
+    # Anchored at team_size_anchor (delta_size at that index stays zero).
+    team_size_max = max(2, int(cfg.team_size_max))
+    team_size_anchor = max(1, min(int(cfg.team_size_anchor), team_size_max))
+    delta_size = np.zeros(team_size_max + 1, dtype=np.float64)
+    if not cfg.use_team_size_effect:
+        eta_size_eff = 0.0
+    else:
+        eta_size_eff = float(cfg.eta_size)
+
+    # Position-in-tour effect: vector of length tour_len, indexed by
+    # raw_question_index_within_tournament % tour_len.  Anchored at
+    # pos_anchor (delta_pos at that index stays zero).
+    tour_len = max(2, int(cfg.tour_len))
+    pos_anchor = max(0, min(int(cfg.pos_anchor), tour_len - 1))
+    delta_pos = np.zeros(tour_len, dtype=np.float64)
+    if not cfg.use_pos_effect:
+        eta_pos_eff = 0.0
+    else:
+        eta_pos_eff = float(cfg.eta_pos)
+
+    # Pre-compute per-(raw)-question position-in-tour from
+    # idx_to_question_id, which stores (tournament_id, question_index)
+    # tuples.  Falls back to ``q_raw % tour_len`` if the structure
+    # differs (e.g. flat ints).
+    qids = getattr(maps, "idx_to_question_id", None)
+    q_pos_in_tour = np.zeros(num_questions, dtype=np.int32)
+    if qids is not None and len(qids) > 0 and isinstance(qids[0], tuple):
+        for raw_qi in range(min(num_questions, len(qids))):
+            q_pos_in_tour[raw_qi] = int(qids[raw_qi][1]) % tour_len
+    else:
+        for raw_qi in range(num_questions):
+            q_pos_in_tour[raw_qi] = raw_qi % tour_len
+
     history: list | None = [] if collect_history else None
     pred_p_list: list[float] | None = [] if collect_predictions else None
     pred_y_list: list[int] | None = [] if collect_predictions else None
@@ -279,7 +404,7 @@ def run_sequential(
     for g in game_iter:
         obs_indices = obs_by_game[g]
         gt = game_types[g] if g < len(game_types) else "offline"
-        theta_w, b_w, log_a_w, mu_w, eps_w = _type_update_weights(gt, cfg)
+        theta_w, b_w, log_a_w, mu_w, eps_w, size_w, pos_w = _type_update_weights(gt, cfg)
         gt_idx = game_type_to_idx(gt)
 
         # 0. Week boundary: center tournament residuals ------------------
@@ -312,6 +437,8 @@ def run_sequential(
                         int(pidx),
                         pids.tolist(),
                         cold_factor=cfg.cold_init_factor,
+                        prior=cfg.cold_init_theta,
+                        use_team_mean=cfg.cold_init_use_team_mean,
                     )
 
         # 3. Initialise unseen questions from empirical take rates --------
@@ -325,7 +452,7 @@ def run_sequential(
 
         # 4. Record predictions BEFORE updating --------------------------
         if collect_predictions:
-            delta_g = tournaments.total_delta(g) if tournaments is not None else 0.0
+            delta_g_base = tournaments.total_delta(g) if tournaments is not None else 0.0
             for i in obs_indices:
                 qi = _cqi(int(q_idx[i]))
                 s, e = int(offsets[i]), int(offsets[i + 1])
@@ -333,6 +460,19 @@ def run_sequential(
                 a_val = math.exp(
                     max(min(questions.log_a[qi], 3.0), -3.0)
                 )
+                ts_raw = e - s
+                if ts_raw < 1:
+                    ts_idx = 1
+                elif ts_raw > team_size_max:
+                    ts_idx = team_size_max
+                else:
+                    ts_idx = ts_raw
+                pos_idx_pred = int(q_pos_in_tour[int(q_idx[i])])
+                delta_g = delta_g_base
+                if cfg.use_team_size_effect and ts_idx != team_size_anchor:
+                    delta_g += float(delta_size[ts_idx])
+                if cfg.use_pos_effect and pos_idx_pred != pos_anchor:
+                    delta_g += float(delta_pos[pos_idx_pred])
                 p, _, _ = forward(th, questions.b[qi], a_val, delta=delta_g)
                 pred_p_list.append(p)
                 pred_y_list.append(int(taken[i]))
@@ -380,11 +520,14 @@ def run_sequential(
             q_idx,
             taken,
             cq,
+            q_pos_in_tour,
             players.theta,
             questions.b,
             questions.log_a,
             mu_type_arr,
             eps_arr,
+            delta_size,
+            delta_pos,
             players.games,
             g,
             gt_idx,
@@ -394,13 +537,23 @@ def run_sequential(
             log_a_w,
             mu_w if tournaments is not None else 0.0,
             eps_w if tournaments is not None else 0.0,
+            size_w if cfg.use_team_size_effect else 0.0,
+            pos_w if cfg.use_pos_effect else 0.0,
             cfg.eta_mu if tournaments is not None else 0.0,
             cfg.eta_eps if tournaments is not None else 0.0,
+            eta_size_eff,
+            eta_pos_eff,
             cfg.reg_mu_type if tournaments is not None else 0.0,
             cfg.reg_eps if tournaments is not None else 0.0,
+            cfg.reg_size,
+            cfg.reg_pos,
+            team_size_anchor,
+            pos_anchor,
             cfg.reg_theta,
             cfg.reg_b,
             cfg.reg_log_a,
+            20.0,
+            cfg.games_offset,
         )
         total_obs_count += len(obs_order)
 
@@ -463,6 +616,23 @@ def run_sequential(
                 f" sync={tournaments.mu_type[TYPE_SYNC]:+.4f}"
                 f" async={tournaments.mu_type[TYPE_ASYNC]:+.4f}"
             )
+        if cfg.use_team_size_effect:
+            parts = []
+            for n in range(1, team_size_max + 1):
+                marker = "*" if n == team_size_anchor else " "
+                parts.append(f"n={n}{marker}{float(delta_size[n]):+.3f}")
+            print("Team-size effects (δ added to difficulty; * = anchor at 0):")
+            print("  " + "  ".join(parts))
+        if cfg.use_pos_effect:
+            parts = []
+            for p in range(tour_len):
+                marker = "*" if p == pos_anchor else " "
+                parts.append(f"p={p:>2}{marker}{float(delta_pos[p]):+.3f}")
+            print(
+                f"Position-in-tour effects (tour_len={tour_len}; "
+                f"δ added to difficulty; * = anchor at 0):"
+            )
+            print("  " + "  ".join(parts))
 
         # Parameter-space diagnostics: how many params hit the hard
         # clamps?  A large fraction signals saturation — usually
@@ -521,4 +691,8 @@ def run_sequential(
         history=history,
         canonical_q_map=cq if num_q_params < num_questions else None,
         tournaments=tournaments,
+        delta_size=delta_size if cfg.use_team_size_effect else None,
+        team_size_anchor=team_size_anchor,
+        delta_pos=delta_pos if cfg.use_pos_effect else None,
+        pos_anchor=pos_anchor,
     )

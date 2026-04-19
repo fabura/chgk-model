@@ -156,11 +156,14 @@ def process_batch_nb(
     q_idx: np.ndarray,
     taken: np.ndarray,
     cq: np.ndarray,
+    q_pos_in_tour: np.ndarray,
     theta: np.ndarray,
     b: np.ndarray,
     log_a: np.ndarray,
     mu_type: np.ndarray,
     eps: np.ndarray,
+    delta_size: np.ndarray,
+    delta_pos: np.ndarray,
     games: np.ndarray,
     game_idx: int,
     game_type_idx: int,
@@ -170,20 +173,44 @@ def process_batch_nb(
     log_a_w: float,
     mu_w: float,
     eps_w: float,
+    size_w: float,
+    pos_w: float,
     eta_mu: float,
     eta_eps: float,
+    eta_size: float,
+    eta_pos: float,
     reg_mu: float,
     reg_eps: float,
+    reg_size: float,
+    reg_pos: float,
+    size_anchor: int,
+    pos_anchor: int,
     reg_theta: float = 0.0,
     reg_b: float = 0.0,
     reg_log_a: float = 0.0,
     clamp: float = 20.0,
+    games_offset: float = 1.0,
 ) -> float:
     """
     Process a batch of observations.
 
-    Updates theta, b, log_a, type effects (mu_type), and tournament
-    residuals (eps) in-place.
+    Updates ``theta``, ``b``, ``log_a``, ``mu_type``, ``eps`` and
+    ``delta_size`` in-place.
+
+    The effective tournament shift is decomposed as
+
+        δ = mu_type[type] + eps[game] + delta_size[team_size]
+            + delta_pos[q_pos_in_tour[qi_raw]]
+
+    where ``delta_size`` is anchored at ``size_anchor`` (typical team
+    size, e.g. 6) and ``delta_pos`` is anchored at ``pos_anchor``
+    (typical mid-tour position, e.g. 6 in a 12-question tour): updates
+    are skipped at the anchor index, and the anchor entry is treated
+    as structurally zero.  ``delta_size`` is stored as a 1-D array
+    indexed by ``team_size`` (sizes outside ``[1, len(delta_size) - 1]``
+    are clipped by the caller).  ``delta_pos`` is indexed by the raw
+    question index modulo the tour length (passed in as
+    ``q_pos_in_tour``).
 
     L2-style shrinkage is applied as a multiplicative pull toward zero
     after each gradient step (``param *= max(0, 1 - lr * reg)``).  For
@@ -193,15 +220,33 @@ def process_batch_nb(
     Returns total log-likelihood for the batch.
     """
     total_ll = 0.0
+    max_size_idx = len(delta_size) - 1
+    n_pos = len(delta_pos)
     for j in range(len(obs_indices)):
         i = obs_indices[j]
         s, e = int(offsets[i]), int(offsets[i + 1])
         qi_raw = int(q_idx[i])
         qi = int(cq[qi_raw])
         y = int(taken[i])
+        team_size_raw = e - s
+        if team_size_raw < 1:
+            ts_idx = 1
+        elif team_size_raw > max_size_idx:
+            ts_idx = max_size_idx
+        else:
+            ts_idx = team_size_raw
+        pos_idx = int(q_pos_in_tour[qi_raw])
+        if pos_idx < 0:
+            pos_idx = 0
+        elif pos_idx >= n_pos:
+            pos_idx = n_pos - 1
         delta_g = eps[game_idx]
         if game_type_idx != 0:
             delta_g += mu_type[game_type_idx]
+        if ts_idx != size_anchor:
+            delta_g += delta_size[ts_idx]
+        if pos_idx != pos_anchor:
+            delta_g += delta_pos[pos_idx]
         b_val = b[qi]
         log_a_val = log_a[qi]
         if log_a_val > 3.0:
@@ -224,7 +269,7 @@ def process_batch_nb(
         dL_dth, dL_db, dL_dloga, dL_ddelta = _gradients_nb(S, lam, a_val, th, y)
         for k in range(team_size):
             pidx = pids[k]
-            lr = eta0 / math.sqrt(1.0 + games[pidx])
+            lr = eta0 / math.sqrt(games_offset + games[pidx])
             theta[pidx] += theta_w * lr * dL_dth[k]
             if reg_theta > 0.0:
                 shrink = 1.0 - lr * reg_theta
@@ -270,4 +315,22 @@ def process_batch_nb(
         elif eps_val < -10.0:
             eps_val = -10.0
         eps[game_idx] = eps_val
+        if ts_idx != size_anchor and size_w > 0.0 and eta_size > 0.0:
+            ds_val = delta_size[ts_idx] + size_w * eta_size * dL_ddelta
+            if reg_size > 0.0:
+                ds_val *= max(0.0, 1.0 - eta_size * reg_size)
+            if ds_val > 10.0:
+                ds_val = 10.0
+            elif ds_val < -10.0:
+                ds_val = -10.0
+            delta_size[ts_idx] = ds_val
+        if pos_idx != pos_anchor and pos_w > 0.0 and eta_pos > 0.0:
+            dp_val = delta_pos[pos_idx] + pos_w * eta_pos * dL_ddelta
+            if reg_pos > 0.0:
+                dp_val *= max(0.0, 1.0 - eta_pos * reg_pos)
+            if dp_val > 10.0:
+                dp_val = 10.0
+            elif dp_val < -10.0:
+                dp_val = -10.0
+            delta_pos[pos_idx] = dp_val
     return total_ll

@@ -30,9 +30,19 @@ class PlayerState:
         self.last_seen_ordinal = np.full(num_players, -1, dtype=np.int64)
 
     # ------------------------------------------------------------------
-    def learning_rate(self, player_idx: int, eta0: float) -> float:
-        """Adaptive learning rate: η_k = η0 / √(1 + games_k)."""
-        return eta0 / math.sqrt(1.0 + self.games[player_idx])
+    def learning_rate(
+        self,
+        player_idx: int,
+        eta0: float,
+        games_offset: float = 1.0,
+    ) -> float:
+        """Adaptive learning rate: η_k = η0 / √(games_offset + games_k).
+
+        ``games_offset`` < 1.0 produces a chess-Elo-style "rookie boost":
+        the very first games get a larger learning rate than the asymptotic
+        η0/√games, fading smoothly as games accumulate.
+        """
+        return eta0 / math.sqrt(games_offset + self.games[player_idx])
 
     # ------------------------------------------------------------------
     def initialize_new(
@@ -40,22 +50,37 @@ class PlayerState:
         player_idx: int,
         teammate_indices: list[int],
         cold_factor: float = 1.0,
+        prior: float = 0.0,
+        use_team_mean: bool = True,
     ) -> None:
         """Set θ for a first-time player.
 
-        If teammates already have ratings → θ_new = cold_factor · mean(teammate θ).
-        Otherwise → θ_new = 0.
+        Two cold-start regimes are supported:
 
-        ``cold_factor`` < 1.0 implements partial inheritance: a rookie
-        does not immediately get the full team-average rating but is
-        shrunk toward zero.  This curbs the "appended player" failure
-        mode where a strong roster instantly inflates a newcomer's θ.
+        * ``use_team_mean=True`` (legacy): θ_new = cold_factor · mean(teammate θ)
+          + (1 − cold_factor) · prior.  With the previous defaults
+          (``cold_factor=1.0``, ``prior=0.0``) this reproduces the original
+          "inherit team average" behaviour.
+        * ``use_team_mean=False``: θ_new = ``prior`` regardless of teammates.
+          Combined with a rookie boost (``games_offset`` < 1.0 in the
+          learning-rate formula) this gives every newcomer a fixed
+          conservative starting θ, then lets the data move them upward
+          quickly.  Breaks the cold-start positive-feedback loop where
+          weak rookies pull down team means and subsequent rookies
+          inherit ever-lower starting θ.
+
+        If ``use_team_mean=True`` but no teammates have been seen yet,
+        we fall back to ``prior``.
         """
         if self.seen[player_idx]:
             return
-        known = [i for i in teammate_indices if i != player_idx and self.seen[i]]
-        if known:
-            self.theta[player_idx] = float(np.mean(self.theta[known])) * cold_factor
+        if use_team_mean:
+            known = [i for i in teammate_indices if i != player_idx and self.seen[i]]
+            if known:
+                team_mean = float(np.mean(self.theta[known]))
+                self.theta[player_idx] = cold_factor * team_mean + (1.0 - cold_factor) * prior
+            else:
+                self.theta[player_idx] = prior
         else:
-            self.theta[player_idx] = 0.0
+            self.theta[player_idx] = prior
         self.seen[player_idx] = True

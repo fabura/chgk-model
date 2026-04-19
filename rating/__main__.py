@@ -116,14 +116,17 @@ def main() -> int:
     )
     hp.add_argument(
         "--use-calendar-decay",
-        action="store_true",
-        help="Use per-player calendar-based decay instead of global per-tournament decay",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use per-player calendar-based decay (default: on). "
+        "Disable with --no-use-calendar-decay to fall back to the legacy "
+        "global per-tournament decay (rho).",
     )
     hp.add_argument(
         "--rho_calendar",
         type=float,
-        default=0.99,
-        help="Calendar decay factor per period (default: per-week)",
+        default=1.0,
+        help="Calendar decay factor per period (1.0 = no decay; default per-week unit)",
     )
     hp.add_argument(
         "--decay_period_days",
@@ -136,6 +139,90 @@ def main() -> int:
         type=float,
         default=1.0,
         help="Shrink team-mean θ when initialising a new player (1.0 = inherit fully, 0.5 = half)",
+    )
+    hp.add_argument(
+        "--cold_init_theta",
+        type=float,
+        default=0.0,
+        help="Prior θ for first-time players (used when team mean unavailable, "
+        "or always if --no-cold-init-team-mean).",
+    )
+    hp.add_argument(
+        "--cold-init-team-mean",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Inherit (blended) team-mean θ for new players. "
+        "Disable with --no-cold-init-team-mean to use cold_init_theta uniformly.",
+    )
+    hp.add_argument(
+        "--games_offset",
+        type=float,
+        default=1.0,
+        help="Adaptive lr offset: η_k = η0/√(games_offset + games_k). "
+        "Values < 1 give a chess-Elo-style rookie boost (e.g. 0.25 → first-game lr is 2× η0).",
+    )
+    hp.add_argument(
+        "--use-team-size-effect",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Learn a per-team-size shift on tournament difficulty (default on). "
+        "Disable with --no-use-team-size-effect.",
+    )
+    hp.add_argument(
+        "--team_size_max",
+        type=int,
+        default=8,
+        help="Cap team size for the size-effect (sizes above are clipped to this).",
+    )
+    hp.add_argument(
+        "--team_size_anchor",
+        type=int,
+        default=6,
+        help="Team size whose δ is fixed at 0 (identifiability anchor).",
+    )
+    hp.add_argument(
+        "--eta_size",
+        type=float,
+        default=0.005,
+        help="Learning rate for delta_size (per-team-size effect).",
+    )
+    hp.add_argument(
+        "--reg_size",
+        type=float,
+        default=0.10,
+        help="L2-style shrinkage for delta_size.",
+    )
+    hp.add_argument(
+        "--use-pos-effect",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Learn a per-position-in-tour shift on tournament difficulty (default on). "
+        "Disable with --no-use-pos-effect.",
+    )
+    hp.add_argument(
+        "--tour_len",
+        type=int,
+        default=12,
+        help="Standard tour length (questions are bucketed by index%%tour_len).",
+    )
+    hp.add_argument(
+        "--pos_anchor",
+        type=int,
+        default=0,
+        help="Position whose δ is fixed at 0 (identifiability anchor; "
+        "default 0 = easiest position in the tour).",
+    )
+    hp.add_argument(
+        "--eta_pos",
+        type=float,
+        default=0.005,
+        help="Learning rate for delta_pos (per-position-in-tour effect).",
+    )
+    hp.add_argument(
+        "--reg_pos",
+        type=float,
+        default=0.10,
+        help="L2-style shrinkage for delta_pos.",
     )
     hp.add_argument(
         "--no-tournament-delta",
@@ -216,6 +303,19 @@ def main() -> int:
         rho_calendar=args.rho_calendar,
         decay_period_days=args.decay_period_days,
         cold_init_factor=args.cold_init_factor,
+        cold_init_theta=args.cold_init_theta,
+        cold_init_use_team_mean=args.cold_init_team_mean,
+        games_offset=args.games_offset,
+        use_team_size_effect=args.use_team_size_effect,
+        team_size_max=args.team_size_max,
+        team_size_anchor=args.team_size_anchor,
+        eta_size=args.eta_size,
+        reg_size=args.reg_size,
+        use_pos_effect=args.use_pos_effect,
+        tour_len=args.tour_len,
+        pos_anchor=args.pos_anchor,
+        eta_pos=args.eta_pos,
+        reg_pos=args.reg_pos,
         use_tournament_delta=not args.no_tournament_delta,
         use_delta_type_prior=args.delta_type_prior,
     )
@@ -379,6 +479,24 @@ def _export_results_npz(path: str, result, maps) -> None:
     }
     if cq is not None:
         kw["canonical_q_idx"] = cq.astype(np.int32)
+
+    # Tournament-level effects (μ_type, ε_t) and per-tournament metadata
+    # required to evaluate the model's expected take rate outside training.
+    tournaments = getattr(result, "tournaments", None)
+    if tournaments is not None:
+        kw["mu_type"] = tournaments.mu_type.astype(np.float32)
+        kw["eps"] = tournaments.eps.astype(np.float32)
+        kw["game_type_idx"] = tournaments.game_type_idx.astype(np.int8)
+
+    # Team-size effect: indexed 0..team_size_max, anchored at team_size_anchor.
+    if result.delta_size is not None:
+        kw["delta_size"] = np.asarray(result.delta_size, dtype=np.float32)
+        kw["team_size_anchor"] = np.array([int(result.team_size_anchor)], dtype=np.int32)
+
+    # Position-in-tour effect: indexed 0..tour_len-1, anchored at pos_anchor.
+    if result.delta_pos is not None:
+        kw["delta_pos"] = np.asarray(result.delta_pos, dtype=np.float32)
+        kw["pos_anchor"] = np.array([int(result.pos_anchor)], dtype=np.int32)
 
     if result.history:
         h = result.history

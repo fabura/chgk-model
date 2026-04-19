@@ -23,6 +23,16 @@ class RatingResults:
     history_player_id: Optional[np.ndarray] = None
     history_game_id: Optional[np.ndarray] = None
     history_theta: Optional[np.ndarray] = None
+    # Tournament-level effects: δ_t = μ_type[type_t] + ε_t.
+    mu_type: Optional[np.ndarray] = None      # shape (3,) for offline/sync/async
+    eps: Optional[np.ndarray] = None          # shape (num_games,)
+    game_type_idx: Optional[np.ndarray] = None  # shape (num_games,) int8 with 0/1/2
+    # Team-size effect, indexed by team size; zeroed at anchor.
+    delta_size: Optional[np.ndarray] = None
+    team_size_anchor: Optional[int] = None
+    # Position-in-tour effect, indexed by (q_in_tournament % len(delta_pos)).
+    delta_pos: Optional[np.ndarray] = None
+    pos_anchor: Optional[int] = None
 
     def theta_for_player(self, player_id: int) -> float:
         """Get θ for player_id (or nan if not found)."""
@@ -39,6 +49,10 @@ class RatingResults:
 def load_results_npz(path: str | Path) -> RatingResults:
     """Load results from .npz file saved by --results_npz."""
     z = np.load(path, allow_pickle=True)
+    def _get(name):
+        return z[name] if name in z else None
+    def _scalar(name):
+        return int(z[name][0]) if name in z else None
     return RatingResults(
         player_id=z["player_id"],
         theta=z["theta"],
@@ -47,8 +61,15 @@ def load_results_npz(path: str | Path) -> RatingResults:
         question_qi=z["question_qi"],
         b=z["b"],
         a=z["a"],
-        canonical_q_idx=z["canonical_q_idx"] if "canonical_q_idx" in z else None,
-        history_player_id=z["history_player_id"] if "history_player_id" in z else None,
-        history_game_id=z["history_game_id"] if "history_game_id" in z else None,
-        history_theta=z["history_theta"] if "history_theta" in z else None,
+        canonical_q_idx=_get("canonical_q_idx"),
+        history_player_id=_get("history_player_id"),
+        history_game_id=_get("history_game_id"),
+        history_theta=_get("history_theta"),
+        mu_type=_get("mu_type"),
+        eps=_get("eps"),
+        game_type_idx=_get("game_type_idx"),
+        delta_size=_get("delta_size"),
+        team_size_anchor=_scalar("team_size_anchor"),
+        delta_pos=_get("delta_pos"),
+        pos_anchor=_scalar("pos_anchor"),
     )

@@ -95,8 +95,19 @@ class TournamentState:
         self.eps[g] = max(min(eps_val, 10.0), -10.0)
         self._processed.add(g)
 
-    def center(self, indices: list[int] | None = None) -> None:
-        """Center residuals ε_t within each mode over the given indices."""
+    def center(
+        self,
+        indices: list[int] | None = None,
+        weights: np.ndarray | None = None,
+    ) -> None:
+        """Center residuals ε_t within each mode over the given indices.
+
+        If ``weights`` is provided (per-game positive weights, e.g. number of
+        observations), use a *weighted* mean for centering.  This prevents a
+        single small/weak tournament from setting the bar for a week — a
+        large/hard tournament with thousands of obs will dominate the
+        within-week mean and keep its non-trivial residual.
+        """
         if indices is None or len(indices) == 0:
             return
         idx = np.asarray(indices, dtype=np.int64)
@@ -105,5 +116,13 @@ class TournamentState:
             if not np.any(mask):
                 continue
             typed_idx = idx[mask]
-            mean_eps = float(np.mean(self.eps[typed_idx]))
+            if weights is not None:
+                w = np.asarray(weights, dtype=np.float64)[mask]
+                wsum = float(w.sum())
+                if wsum > 0.0:
+                    mean_eps = float((self.eps[typed_idx] * w).sum() / wsum)
+                else:
+                    mean_eps = float(np.mean(self.eps[typed_idx]))
+            else:
+                mean_eps = float(np.mean(self.eps[typed_idx]))
             self.eps[typed_idx] -= mean_eps
