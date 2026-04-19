@@ -1,0 +1,7 @@
+data/*.duckdb
+data/*.duckdb.*
+data/*.wal
+build/*.log
+app/dev.log
+__pycache__/
+*.pyc

@@ -1,0 +1,147 @@
+{% extends "base.html" %}
+{% block title %}{{ tournament.title }} — ChGK Model{% endblock %}
+
+{% block head_extra %}
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+{% endblock %}
+
+{% block content %}
+<div class="mb-6">
+  <h1 class="text-2xl font-semibold">{{ tournament.title }}</h1>
+  <div class="text-sm text-slate-600 mt-1">
+    {{ tournament.type }}
+    {% if tournament.start_date %}· {{ tournament.start_date.isoformat() }}{% endif %}
+    {% if tournament.end_date and tournament.end_date != tournament.start_date %} – {{ tournament.end_date.isoformat() }}{% endif %}
+    · вопросов: {{ tournament.n_questions }}
+    · команд: {{ tournament.n_teams }}
+    {% if tournament.pack_title %}
+    · пак: {{ tournament.pack_title }}
+    {% endif %}
+  </div>
+  {% if editors %}
+  <div class="text-sm text-slate-600 mt-1">Редакторы пака: {{ editors|join(", ") }}</div>
+  {% endif %}
+  {% if tournament.delta_t is not none %}
+  <div class="text-sm text-slate-600 mt-1">
+    Сдвиг турнира δ<sub>t</sub> = μ<sub>type</sub> + ε<sub>t</sub> = <span class="font-medium num">{{ "%+.2f"|format(tournament.delta_t) }}</span>
+    <span class="text-slate-400">
+      (положительный — труднее, чем «средний» в его типе)
+    </span>
+  </div>
+  {% endif %}
+</div>
+
+<section class="bg-white border border-slate-200 rounded shadow-sm mb-6">
+  <h2 class="px-4 py-2 text-sm font-medium text-slate-600 border-b border-slate-100">Вопросы — карта (b: сложность, a: дискриминация)</h2>
+  <div id="bq-chart" style="height: 400px;"></div>
+  <p class="px-4 pb-3 text-xs text-slate-500">
+    Каждая точка — вопрос; размер пропорционален эмпирической доле взятых,
+    цвет — есть ли текст (синий = есть, серый = нет).
+    Чем правее (больше b), тем сложнее. Чем выше (больше a), тем сильнее
+    отделяет сильных от слабых.
+  </p>
+</section>
+
+<section class="bg-white border border-slate-200 rounded shadow-sm mb-6">
+  <div class="flex items-baseline justify-between px-4 py-2 border-b border-slate-100">
+    <h2 class="text-sm font-medium text-slate-600">Команды ({{ teams|length }})</h2>
+  </div>
+  <div class="overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead class="bg-slate-100 text-slate-600 uppercase text-xs">
+        <tr>
+          <th class="px-3 py-2 text-right">Место</th>
+          <th class="px-3 py-2 text-left">Команда</th>
+          <th class="px-3 py-2 text-right">N игроков</th>
+          <th class="px-3 py-2 text-right">Взято</th>
+          <th class="px-3 py-2 text-right">Ожидание</th>
+          <th class="px-3 py-2 text-right">Δ</th>
+          <th class="px-3 py-2 text-left">Топ игроков</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for t in teams %}
+        <tr class="border-t border-slate-100 hover:bg-slate-50">
+          <td class="px-3 py-2 text-right num text-slate-600">{{ t.place|int if t.place else "" }}</td>
+          <td class="px-3 py-2"><a href="/team/{{ t.team_id }}" class="text-indigo-700 hover:underline">{{ t.team_name }}</a></td>
+          <td class="px-3 py-2 text-right num text-slate-600">{{ t.n_players_active }}</td>
+          <td class="px-3 py-2 text-right num font-medium">{{ t.score_actual }}</td>
+          <td class="px-3 py-2 text-right num text-slate-600">{{ "%.1f"|format(t.expected_takes) }}</td>
+          <td class="px-3 py-2 text-right num
+            {% set delta = t.score_actual - t.expected_takes %}
+            {% if delta > 0 %}text-emerald-600{% elif delta < 0 %}text-rose-600{% endif %}">
+            {{ "%+.1f"|format(delta) }}
+          </td>
+          <td class="px-3 py-2 text-xs">
+            {% for r in (t.roster or [])[:5] %}
+              <a href="/player/{{ r.player_id }}" class="text-indigo-700 hover:underline">{{ r|fullname }}</a> <span class="text-slate-400">({{ "%.2f"|format(r.theta) }})</span>{% if not loop.last %}, {% endif %}
+            {% endfor %}
+            {% if t.roster and t.roster|length > 5 %}<span class="text-slate-400"> +{{ t.roster|length - 5 }}</span>{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="bg-white border border-slate-200 rounded shadow-sm mb-6">
+  <h2 class="px-4 py-2 text-sm font-medium text-slate-600 border-b border-slate-100">Вопросы ({{ questions|length }})</h2>
+  <div class="overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead class="bg-slate-100 text-slate-600 uppercase text-xs">
+        <tr>
+          <th class="px-3 py-2 text-right">#</th>
+          <th class="px-3 py-2 text-right">Взято</th>
+          <th class="px-3 py-2 text-right">b</th>
+          <th class="px-3 py-2 text-right">a</th>
+          <th class="px-3 py-2 text-left">Текст</th>
+          <th class="px-3 py-2 text-left">Ответ</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for q in questions %}
+        <tr class="border-t border-slate-100 align-top hover:bg-slate-50">
+          <td class="px-3 py-2 text-right num text-slate-500">{{ q.q_in_tournament + 1 }}</td>
+          <td class="px-3 py-2 text-right num">{{ "%.0f"|format(q.take_rate * 100) if q.take_rate is not none else "–" }}%</td>
+          <td class="px-3 py-2 text-right num">{{ "%.2f"|format(q.b) }}</td>
+          <td class="px-3 py-2 text-right num">{{ "%.2f"|format(q.a) }}</td>
+          <td class="px-3 py-2 max-w-xl text-slate-700">{{ q.text or "" }}</td>
+          <td class="px-3 py-2 max-w-xs text-slate-500">{{ q.answer or "" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<script>
+(function() {
+  const data = {{ scatter_json|safe }};
+  if (!data.length) return;
+  const has = data.filter(d => d.has_text);
+  const no = data.filter(d => !d.has_text);
+  const trace = (rows, color, name) => ({
+    x: rows.map(d => d.b),
+    y: rows.map(d => d.a),
+    text: rows.map(d => `# ${d.q} · взято ${(100*d.take_rate).toFixed(0)}%`),
+    mode: 'markers', type: 'scatter', name,
+    marker: {
+      size: rows.map(d => 6 + 18 * (d.take_rate || 0)),
+      color, opacity: 0.7, line: { color: 'white', width: 1 },
+    },
+    hovertemplate: '%{text}<br>b=%{x:.2f}, a=%{y:.2f}<extra></extra>',
+  });
+  Plotly.newPlot('bq-chart', [
+    trace(has, '#4f46e5', 'есть текст'),
+    trace(no, '#94a3b8', 'без текста'),
+  ], {
+    margin: { l: 50, r: 20, t: 10, b: 50 },
+    xaxis: { title: 'b — сложность', gridcolor: '#f1f5f9' },
+    yaxis: { title: 'a — дискриминация', gridcolor: '#f1f5f9' },
+    plot_bgcolor: 'white',
+    legend: { x: 0, y: 1.1, orientation: 'h' },
+  }, { displayModeBar: false, responsive: true });
+})();
+</script>
+{% endblock %}

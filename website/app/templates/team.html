@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% block title %}{{ team_name }} — ChGK Model{% endblock %}
+
+{% block head_extra %}
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+{% endblock %}
+
+{% block content %}
+<div class="mb-6">
+  <h1 class="text-2xl font-semibold">{{ team_name }}</h1>
+  <div class="text-sm text-slate-600 mt-1">
+    Турниров: <span class="num font-medium">{{ summary.n_tournaments }}</span>
+    {% if summary.mean_actual is not none %}
+    · средний результат: <span class="num">{{ "%.1f"|format(summary.mean_actual) }}</span>
+    · среднее ожидание: <span class="num">{{ "%.1f"|format(summary.mean_expected) }}</span>
+    · средняя Δ:
+    <span class="num
+      {% if summary.mean_delta > 0 %}text-emerald-600{% elif summary.mean_delta < 0 %}text-rose-600{% endif %}">
+      {{ "%+.2f"|format(summary.mean_delta) }}
+    </span>
+    {% endif %}
+    · ID команды: {{ team_id }}
+  </div>
+</div>
+
+<section class="bg-white border border-slate-200 rounded shadow-sm mb-6">
+  <h2 class="px-4 py-2 text-sm font-medium text-slate-600 border-b border-slate-100">
+    Результаты во времени
+  </h2>
+  <div id="trend-chart" style="height: 320px;"></div>
+</section>
+
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
+  <section class="lg:col-span-2 bg-white border border-slate-200 rounded shadow-sm">
+    <h2 class="px-4 py-2 text-sm font-medium text-slate-600 border-b border-slate-100">
+      Турниры ({{ games|length }})
+    </h2>
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead class="bg-slate-100 text-slate-600 uppercase text-xs">
+          <tr>
+            <th class="px-3 py-2 text-left">Дата</th>
+            <th class="px-3 py-2 text-left">Турнир</th>
+            <th class="px-3 py-2 text-left">Тип</th>
+            <th class="px-3 py-2 text-left">Под именем</th>
+            <th class="px-3 py-2 text-right">Сост.</th>
+            <th class="px-3 py-2 text-right">Взято</th>
+            <th class="px-3 py-2 text-right">Ожид.</th>
+            <th class="px-3 py-2 text-right">Δ</th>
+            <th class="px-3 py-2 text-right">Место</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for g in games %}
+          <tr class="border-t border-slate-100 hover:bg-slate-50">
+            <td class="px-3 py-2 text-slate-600">{{ g.start_date.isoformat() if g.start_date else "" }}</td>
+            <td class="px-3 py-2"><a href="/tournament/{{ g.tournament_id }}" class="text-indigo-700 hover:underline">{{ g.title }}</a></td>
+            <td class="px-3 py-2 text-slate-600">{{ g.type }}</td>
+            <td class="px-3 py-2 text-slate-700">{{ g.team_name }}</td>
+            <td class="px-3 py-2 text-right num text-slate-600">{{ g.n_players_active }}</td>
+            <td class="px-3 py-2 text-right num font-medium">{{ g.score_actual }} / {{ g.n_questions }}</td>
+            <td class="px-3 py-2 text-right num text-slate-600">{{ "%.1f"|format(g.expected_takes) if g.expected_takes is not none else "" }}</td>
+            <td class="px-3 py-2 text-right num
+              {% if g.expected_takes is not none and g.score_actual is not none %}
+                {% if g.score_actual - g.expected_takes > 0 %}text-emerald-600{% elif g.score_actual - g.expected_takes < 0 %}text-rose-600{% endif %}
+              {% endif %}">
+              {% if g.expected_takes is not none and g.score_actual is not none %}{{ "%+.1f"|format(g.score_actual - g.expected_takes) }}{% endif %}
+            </td>
+            <td class="px-3 py-2 text-right num text-slate-600">{{ g.place|int if g.place else "" }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="bg-white border border-slate-200 rounded shadow-sm">
+    <h2 class="px-4 py-2 text-sm font-medium text-slate-600 border-b border-slate-100">
+      Состав ({{ roster|length }} игр.)
+    </h2>
+    <table class="w-full text-sm">
+      <thead class="bg-slate-100 text-slate-600 uppercase text-xs">
+        <tr>
+          <th class="px-3 py-2 text-left">Игрок</th>
+          <th class="px-3 py-2 text-right">θ</th>
+          <th class="px-3 py-2 text-right">Игр</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in roster %}
+        <tr class="border-t border-slate-100 hover:bg-slate-50">
+          <td class="px-3 py-2"><a href="/player/{{ r.player_id }}" class="text-indigo-700 hover:underline">{{ r|fullname }}</a></td>
+          <td class="px-3 py-2 text-right num">{{ "%.3f"|format(r.theta) }}</td>
+          <td class="px-3 py-2 text-right num text-slate-600">{{ r.games_with_team }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+</div>
+
+<script>
+(function() {
+  const data = {{ trend_json|safe }};
+  if (!data.length) return;
+  const x = data.map(d => d.date);
+  const actual = data.map(d => d.actual);
+  const expected = data.map(d => d.expected);
+  const text = data.map(d => d.title || "");
+  Plotly.newPlot('trend-chart', [
+    { x, y: actual, text, type: 'scatter', mode: 'lines+markers', name: 'взято',
+      line: { color: '#4f46e5', width: 1.5 }, marker: { size: 4 },
+      hovertemplate: '%{x}<br><b>%{text}</b><br>взято: %{y}<extra></extra>' },
+    { x, y: expected, text, type: 'scatter', mode: 'lines', name: 'ожидание модели',
+      line: { color: '#94a3b8', width: 1.2, dash: 'dot' },
+      hovertemplate: '%{x}<br><b>%{text}</b><br>ожидание: %{y:.1f}<extra></extra>' },
+  ], {
+    margin: { l: 40, r: 20, t: 10, b: 40 },
+    xaxis: { type: 'date', gridcolor: '#f1f5f9' },
+    yaxis: { title: 'взятий за тур', gridcolor: '#f1f5f9', rangemode: 'tozero' },
+    plot_bgcolor: 'white',
+    legend: { orientation: 'h', x: 0, y: 1.05 },
+  }, { displayModeBar: false, responsive: true });
+})();
+</script>
+{% endblock %}

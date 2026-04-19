@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}Топ игроков — ChGK Model{% endblock %}
+
+{% block content %}
+<div class="flex items-baseline justify-between mb-4">
+  <h1 class="text-2xl font-semibold">Топ игроков по θ</h1>
+  <form method="get" class="flex items-center gap-2 text-sm text-slate-600">
+    <label for="min_games">мин. игр:</label>
+    <input id="min_games" type="number" name="min_games" value="{{ min_games }}" min="1" max="10000"
+           class="w-20 border border-slate-300 rounded px-2 py-0.5">
+    <label for="limit">показать:</label>
+    <input id="limit" type="number" name="limit" value="{{ limit }}" min="10" max="2000"
+           class="w-24 border border-slate-300 rounded px-2 py-0.5">
+    <button type="submit" class="bg-indigo-600 text-white px-3 py-1 rounded hover:bg-indigo-700">Обновить</button>
+  </form>
+</div>
+
+<div class="bg-white rounded shadow border border-slate-200 overflow-hidden">
+  <table class="w-full text-sm">
+    <thead class="bg-slate-100 text-slate-600 uppercase text-xs">
+      <tr>
+        <th class="px-3 py-2 text-right">#</th>
+        <th class="px-3 py-2 text-left">Игрок</th>
+        <th class="px-3 py-2 text-right">θ</th>
+        <th class="px-3 py-2 text-right">Игры</th>
+        <th class="px-3 py-2 text-left">Последняя игра</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for p in players %}
+      <tr class="border-t border-slate-100 hover:bg-slate-50">
+        <td class="px-3 py-2 text-right num text-slate-400">{{ p.rank }}</td>
+        <td class="px-3 py-2">
+          <a href="/player/{{ p.player_id }}" class="text-indigo-700 hover:underline">{{ p|fullname }}</a>
+        </td>
+        <td class="px-3 py-2 text-right num font-medium">{{ "%.3f"|format(p.theta) }}</td>
+        <td class="px-3 py-2 text-right num text-slate-600">{{ p.games }}</td>
+        <td class="px-3 py-2 text-slate-600">
+          {{ p.last_game_date.isoformat() if p.last_game_date else "" }}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

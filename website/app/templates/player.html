@@ -1,0 +1,190 @@
+{% extends "base.html" %}
+{% block title %}{{ player|fullname }} — ChGK Model{% endblock %}
+
+{% block head_extra %}
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+{% endblock %}
+
+{% block content %}
+<div class="mb-6">
+  <h1 class="text-2xl font-semibold">{{ player|fullname }}</h1>
+  <div class="text-sm text-slate-600 mt-1">
+    θ = <span class="font-medium num">{{ "%.3f"|format(player.theta) }}</span>
+    {% if rank and rank.rank %}
+    · место в рейтинге:
+      <a href="/?min_games={{ rank.min_games }}" class="text-indigo-700 hover:underline">
+        <span class="num font-medium">#{{ rank.rank }}</span>
+        <span class="text-slate-400">из {{ rank.total }}</span>
+      </a>
+      <span class="text-slate-400">(топ {{ "%.1f"|format(rank.pct_top) }}%, среди игроков с ≥{{ rank.min_games }} играми)</span>
+    {% elif rank %}
+    · <span class="text-slate-500">не в рейтинге (нужно ≥{{ rank.min_games }} игр)</span>
+    {% endif %}
+    · игр: <span class="num">{{ player.games }}</span>
+    {% if player.last_game_date %}
+    · последняя игра: {{ player.last_game_date.isoformat() }}
+    {% endif %}
+    · ID: {{ player.player_id }}
+  </div>
+</div>
+
+<section class="bg-white border border-slate-200 rounded shadow-sm mb-6">
+  <h2 class="px-4 py-2 text-sm font-medium text-slate-600 border-b border-slate-100">θ во времени</h2>
+  <div id="theta-chart" style="height: 360px;"></div>
+  {% if player.games is not none and player.games < 15 %}
+  <p class="px-4 py-2 text-xs text-amber-700 bg-amber-50 border-t border-amber-200">
+    У игрока пока {{ player.games }} {{ 'игра' if player.games == 1 else ('игры' if player.games < 5 else 'игр') }} —
+    модель сейчас активно подбирает уровень, и θ будет меняться сильно с каждым турниром.
+    Стабилизация наступает примерно после 10–15 игр.
+  </p>
+  {% endif %}
+</section>
+
+{% if yearly %}
+<section class="bg-white border border-slate-200 rounded shadow-sm mb-6">
+  <div class="flex items-baseline justify-between px-4 py-2 border-b border-slate-100">
+    <h2 class="text-sm font-medium text-slate-600">Относительная позиция по годам</h2>
+    <span class="text-xs text-slate-500">θ на конец года, относительно активных (≥10 игр/год)</span>
+  </div>
+  <div class="overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead class="bg-slate-100 text-slate-600 uppercase text-xs">
+        <tr>
+          <th class="px-3 py-2 text-left">Год</th>
+          <th class="px-3 py-2 text-right">Игр</th>
+          <th class="px-3 py-2 text-right">θ на конец года</th>
+          <th class="px-3 py-2 text-right">Перцентиль</th>
+          <th class="px-3 py-2 text-right">θ медиана</th>
+          <th class="px-3 py-2 text-right">θ p95</th>
+          <th class="px-3 py-2 text-right">θ p99</th>
+          <th class="px-3 py-2 text-right">всего активных</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in yearly %}
+        <tr class="border-t border-slate-100 hover:bg-slate-50">
+          <td class="px-3 py-2 font-medium">{{ r.yr }}</td>
+          <td class="px-3 py-2 text-right num text-slate-600">{{ r.n_games }}</td>
+          <td class="px-3 py-2 text-right num font-medium">{{ "%+.3f"|format(r.end_theta) }}</td>
+          <td class="px-3 py-2 text-right num">
+            {% if r.pct_below is not none %}
+              {{ "%.1f"|format(100 * r.pct_below) }}%
+              <span class="text-slate-400">(топ&nbsp;{{ "%.1f"|format(100 * (1 - r.pct_below)) }}%)</span>
+            {% endif %}
+          </td>
+          <td class="px-3 py-2 text-right num text-slate-500">{{ "%+.3f"|format(r.p50) }}</td>
+          <td class="px-3 py-2 text-right num text-slate-500">{{ "%+.3f"|format(r.p95) }}</td>
+          <td class="px-3 py-2 text-right num text-slate-500">{{ "%+.3f"|format(r.p99) }}</td>
+          <td class="px-3 py-2 text-right num text-slate-500">{{ r["pop"] }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="px-4 py-2 text-xs text-slate-500 border-t border-slate-100">
+    θ-шкала со временем «дрейфует»: за тот же реальный уровень в 2025 модель покажет меньшее θ, чем в 2021
+    (в системе нет якоря на медиане/топе популяции). Чтобы отделить настоящее изменение от дрейфа,
+    смотрите на колонку «перцентиль» — она инвариантна к сдвигу шкалы.
+  </div>
+</section>
+{% endif %}
+
+<section class="bg-white border border-slate-200 rounded shadow-sm mb-6">
+  <div class="flex items-baseline justify-between px-4 py-2 border-b border-slate-100">
+    <h2 class="text-sm font-medium text-slate-600">Турниры ({{ games|length }})</h2>
+    <div class="text-xs text-slate-500">
+      {% set total_actual = games|sum(attribute='score_actual') %}
+      {% set total_expected = games|sum(attribute='expected_takes') %}
+      {% if games and total_expected > 0 %}
+      Σ взято: <span class="num">{{ total_actual }}</span>
+      · Σ ожидание: <span class="num">{{ "%.1f"|format(total_expected) }}</span>
+      · Δ: <span class="num">{{ "%+.1f"|format(total_actual - total_expected) }}</span>
+      {% endif %}
+    </div>
+  </div>
+  <div class="overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead class="bg-slate-100 text-slate-600 uppercase text-xs">
+        <tr>
+          <th class="px-3 py-2 text-left">Дата</th>
+          <th class="px-3 py-2 text-left">Турнир</th>
+          <th class="px-3 py-2 text-left">Тип</th>
+          <th class="px-3 py-2 text-left">Команда</th>
+          <th class="px-3 py-2 text-right">N игр.</th>
+          <th class="px-3 py-2 text-right">Взято</th>
+          <th class="px-3 py-2 text-right">Ожидание</th>
+          <th class="px-3 py-2 text-right">Δ</th>
+          <th class="px-3 py-2 text-right">Место</th>
+          <th class="px-3 py-2 text-right">θ после</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for g in games %}
+        <tr class="border-t border-slate-100 hover:bg-slate-50">
+          <td class="px-3 py-2 text-slate-600">{{ g.start_date.isoformat() if g.start_date else "" }}</td>
+          <td class="px-3 py-2"><a href="/tournament/{{ g.tournament_id }}" class="text-indigo-700 hover:underline">{{ g.title }}</a></td>
+          <td class="px-3 py-2 text-slate-600">{{ g.type }}</td>
+          <td class="px-3 py-2"><a href="/team/{{ g.team_id }}" class="text-indigo-700 hover:underline">{{ g.team_name }}</a></td>
+          <td class="px-3 py-2 text-right num text-slate-600">{{ g.n_players_active }}</td>
+          <td class="px-3 py-2 text-right num font-medium">{{ g.score_actual }} / {{ g.n_questions }}</td>
+          <td class="px-3 py-2 text-right num text-slate-600">{{ "%.1f"|format(g.expected_takes) if g.expected_takes is not none else "" }}</td>
+          <td class="px-3 py-2 text-right num
+            {% if g.expected_takes is not none and g.score_actual is not none %}
+              {% if g.score_actual - g.expected_takes > 0 %}text-emerald-600{% elif g.score_actual - g.expected_takes < 0 %}text-rose-600{% endif %}
+            {% endif %}">
+            {% if g.expected_takes is not none and g.score_actual is not none %}{{ "%+.1f"|format(g.score_actual - g.expected_takes) }}{% endif %}
+          </td>
+          <td class="px-3 py-2 text-right num text-slate-600">{{ g.place|int if g.place else "" }}</td>
+          <td class="px-3 py-2 text-right num">{{ "%.3f"|format(g.theta_after) if g.theta_after is not none else "" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+{% if teammates %}
+<section class="bg-white border border-slate-200 rounded shadow-sm mb-6">
+  <h2 class="px-4 py-2 text-sm font-medium text-slate-600 border-b border-slate-100">Топ сокомандников (по числу совместных игр)</h2>
+  <table class="w-full text-sm">
+    <thead class="bg-slate-100 text-slate-600 uppercase text-xs">
+      <tr>
+        <th class="px-3 py-2 text-left">Игрок</th>
+        <th class="px-3 py-2 text-right">θ</th>
+        <th class="px-3 py-2 text-right">Совм. игр</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for t in teammates %}
+      <tr class="border-t border-slate-100 hover:bg-slate-50">
+        <td class="px-3 py-2"><a href="/player/{{ t.player_id }}" class="text-indigo-700 hover:underline">{{ t|fullname }}</a></td>
+        <td class="px-3 py-2 text-right num">{{ "%.3f"|format(t.theta) }}</td>
+        <td class="px-3 py-2 text-right num text-slate-600">{{ t.n_games_together }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+<script>
+(function() {
+  const data = {{ history_json|safe }};
+  if (!data.length) return;
+  const x = data.map(d => d.date);
+  const y = data.map(d => d.theta);
+  const text = data.map(d => d.title || "");
+  Plotly.newPlot('theta-chart', [{
+    x: x, y: y, text: text, type: 'scatter', mode: 'lines+markers',
+    line: { color: '#4f46e5', width: 1.5 },
+    marker: { size: 4, color: '#4f46e5' },
+    hovertemplate: '%{x}<br><b>%{text}</b><br>θ = %{y:.3f}<extra></extra>',
+  }], {
+    margin: { l: 50, r: 20, t: 10, b: 40 },
+    xaxis: { type: 'date', gridcolor: '#f1f5f9' },
+    yaxis: { title: 'θ', gridcolor: '#f1f5f9' },
+    plot_bgcolor: 'white',
+  }, { displayModeBar: false, responsive: true });
+})();
+</script>
+{% endblock %}
