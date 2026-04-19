@@ -52,12 +52,26 @@
         </thead>
         <tbody>
           {% for g in games %}
+          {% set tour_roster = rosters_by_tournament.get(g.tournament_id, []) %}
           <tr class="border-t border-slate-100 hover:bg-slate-50">
             <td class="px-3 py-2 text-slate-600">{{ g.start_date.isoformat() if g.start_date else "" }}</td>
             <td class="px-3 py-2"><a href="/tournament/{{ g.tournament_id }}" class="text-indigo-700 hover:underline">{{ g.title }}</a></td>
             <td class="px-3 py-2 text-slate-600">{{ g.type }}</td>
             <td class="px-3 py-2 text-slate-700">{{ g.team_name }}</td>
-            <td class="px-3 py-2 text-right num text-slate-600">{{ g.n_players_active }}</td>
+            <td class="px-3 py-2 text-right num">
+              {% if tour_roster %}
+              <button type="button"
+                      class="roster-toggle inline-flex items-center gap-1 text-indigo-700 hover:text-indigo-900 hover:underline cursor-pointer"
+                      data-target="roster-{{ g.tournament_id }}"
+                      aria-expanded="false"
+                      title="Показать состав">
+                <span class="chevron text-xs text-slate-400 transition-transform">▸</span>
+                <span>{{ g.n_players_active }}</span>
+              </button>
+              {% else %}
+              <span class="text-slate-600">{{ g.n_players_active }}</span>
+              {% endif %}
+            </td>
             <td class="px-3 py-2 text-right num font-medium">{{ g.score_actual }} / {{ g.n_questions }}</td>
             <td class="px-3 py-2 text-right num text-slate-600">{{ "%.1f"|format(g.expected_takes) if g.expected_takes is not none else "" }}</td>
             <td class="px-3 py-2 text-right num
@@ -68,6 +82,24 @@
             </td>
             <td class="px-3 py-2 text-right num text-slate-600">{{ g.place|int if g.place else "" }}</td>
           </tr>
+          {% if tour_roster %}
+          <tr id="roster-{{ g.tournament_id }}" class="roster-row hidden bg-slate-50/70 border-t border-slate-100">
+            <td></td>
+            <td colspan="8" class="px-3 py-2">
+              <div class="text-xs text-slate-500 mb-1">Состав в этом турнире:</div>
+              <ul class="flex flex-wrap gap-x-4 gap-y-1 text-sm">
+                {% for p in tour_roster %}
+                <li class="whitespace-nowrap">
+                  <a href="/player/{{ p.player_id }}" class="text-indigo-700 hover:underline">{{ p|fullname }}</a>
+                  {% if p.theta_after is not none %}
+                  <span class="num text-slate-500 text-xs">θ={{ "%.2f"|format(p.theta_after) }}</span>
+                  {% endif %}
+                </li>
+                {% endfor %}
+              </ul>
+            </td>
+          </tr>
+          {% endif %}
           {% endfor %}
         </tbody>
       </table>
@@ -98,6 +130,19 @@
     </table>
   </section>
 </div>
+
+<script>
+document.querySelectorAll('.roster-toggle').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    const row = document.getElementById(btn.dataset.target);
+    if (!row) return;
+    const open = row.classList.toggle('hidden') === false;
+    btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    const chev = btn.querySelector('.chevron');
+    if (chev) chev.style.transform = open ? 'rotate(90deg)' : '';
+  });
+});
+</script>
 
 <script>
 (function() {

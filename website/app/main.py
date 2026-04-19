@@ -445,6 +445,29 @@ def team_page(request: Request, team_id: int):
         [team_id],
     )
 
+    # Per-tournament roster: who actually played in each game, with their
+    # θ snapshot right after that tournament.  One batched query, grouped
+    # by tournament_id in Python so the template can render expandable
+    # rows under each game.
+    roster_rows = db.query(
+        """
+        SELECT
+            pg.tournament_id,
+            pg.player_id,
+            p.last_name,
+            p.first_name,
+            pg.theta_after
+        FROM player_games pg
+        JOIN players p USING (player_id)
+        WHERE pg.team_id = ?
+        ORDER BY pg.tournament_id, pg.theta_after DESC NULLS LAST
+        """,
+        [team_id],
+    )
+    rosters_by_tournament: dict[int, list[dict]] = {}
+    for r in roster_rows:
+        rosters_by_tournament.setdefault(r["tournament_id"], []).append(r)
+
     # Aggregate summary
     summary_row = db.query_one(
         """
@@ -481,6 +504,7 @@ def team_page(request: Request, team_id: int):
             "team_name": team_name,
             "games": games,
             "roster": roster,
+            "rosters_by_tournament": rosters_by_tournament,
             "summary": summary_row,
             "trend_json": json.dumps(trend_json, ensure_ascii=False),
         },
