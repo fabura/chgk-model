@@ -290,6 +290,58 @@ Reasonable options:
 - optimize a weighted combination of logloss and AUC
 - compare configs on calibration + ranking dashboards
 
+## Tried-but-not-helpful: making `ε_t` more sensitive to elite events (2026-04)
+
+Symptom: on elite offline events (e.g. ЧР 11749, 60 teams × 90 questions),
+the model over-predicts each team's score by ~7-8 takes.  The realised
+average is 35.5, the expected (using all model parameters: `b`, `a`,
+`δ_t = μ_type + ε_t`, `δ_size`, `δ_pos` and θ-at-start-of-tournament from
+history) is ~43.  The learned `ε_t` for that tournament is only +0.10.
+
+Two interventions were tested and reverted.
+
+### Lower `reg_eps` from 0.20 → 0.05
+
+The per-step shrinkage `eps ← eps · (1 − η·reg_eps)` is applied on every
+observation, so for tournaments with thousands of obs it could in principle
+crush ε_t toward 0 faster than it grows. Lowering `reg_eps` to 0.05 left
+`ε_t` essentially unchanged (std 0.128 → 0.128, range [-0.69, +0.62] → ~same).
+
+Reason: weekly within-type centering `tournaments.center(games_this_week)`
+dominates: it forces `mean_within_week_within_type(ε) = 0` after every week,
+so any persistent build-up is removed regardless of the per-step shrinkage.
+
+### Weighted within-week centering
+
+Replaced unweighted mean with a weight-by-`n_obs(g)` mean in `center()`,
+hoping a small weak tournament could no longer drag down the bar set by a
+large hard one. Result: `ε_t` std rose marginally (0.128 → 0.137) and the
+overall residual improved (-2.45 → -2.12 takes/team), but **`ε_t` for the
+biggest tournaments became smaller**, not larger:
+
+- ЧР 11749: ε_t went from +0.10 → +0.04, expected 43.3 → 44.8, delta worsened.
+
+Reason: when a single tournament dominates the weekly weighted mean, that
+mean approaches its own ε. Subtracting it then sets that tournament's ε to
+≈ 0. This perverse self-cancellation makes weighted centering actively
+worse for the very tournaments we wanted to lift.
+
+### Conclusion
+
+Within-week centering is the dominant identifiability constraint on `ε_t`
+and is fundamentally at odds with letting individual elite tournaments
+carry a large positive residual. Realistic options for future work:
+
+- replace centering with an L2 prior on `ε_t` and a separate L2 on
+  `μ_type` (both shrink toward 0, so identifiability is statistical
+  rather than algebraic);
+- multi-epoch training so `ε_t` has more passes to grow;
+- a per-tournament free intercept on `b` (essentially, let `b` for every
+  question of the same tournament inherit a tournament-level offset that
+  is L2-regularised but never centered).
+
+These are deeper refactors than a hyperparameter knob and are deferred.
+
 ## Recommended current default
 
 Use the code defaults from `Config()` / CLI defaults unless there is a
