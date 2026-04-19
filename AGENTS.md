@@ -12,7 +12,7 @@ Guidance for AI agents working with this codebase.
 
 from binary team answers (taken / not taken) and team rosters. Data comes from the rating DB: `tournaments`, `tournament_results.points_mask`, `tournament_rosters`.
 
-Core formula (noisy-OR): 
+Core formula (noisy-OR):
 `z_k = -(b_i + δ) + a_i * θ_k` → `λ_k = exp(z_k)` → `S = Σ_k λ_k` → `p_take = 1 - exp(-S)`
 
 `δ = μ_type[type_t] + ε_t + δ_size[clip(team_size, 1, K)] + δ_pos[q_index_in_tournament % tour_len]` where:
@@ -35,23 +35,48 @@ Sequential model: computes player strength changes week by week, tournament by t
 
 - **Location**: `rating/` package
 - **Run**: `python -m rating --mode cached --cache_file data.npz`
-- **Important defaults**: tuned `t6` mode handling from `docs/async_mode_experiments.md`, per-player calendar decay (`use_calendar_decay=True`, `rho_calendar=1.0`) — see `docs/calendar_decay_experiments.md`, learned per-team-size effect (`use_team_size_effect=True`, anchor at 6) — see `docs/team_size_experiments.md`, and learned per-position-in-tour effect (`use_pos_effect=True`, anchor at 0, `tour_len=12`) — see `docs/position_in_tour_experiments.md`. Backtest logloss on the full DB: **0.522** (was 0.602 with the old per-tournament decay; 0.532 before adding team-size; 0.527 before adding the position effect).
-- **Hyperparameters**: `eta0`, `rho`, `rho_calendar`, `decay_period_days`, `cold_init_factor`, `w_online`, `w_online_questions`, `w_online_log_a`, `w_async_mode`, `w_async_residual`, `eta_mu`, `eta_eps`, `eta_size`, `eta_pos`, `reg_mu_type`, `reg_eps`, `reg_size`, `reg_pos`, `reg_theta`, `reg_b`, `reg_log_a`
+- **Important defaults**:
+  - tuned `t6` mode handling — see `docs/async_mode_experiments.md`
+  - per-player calendar decay (`use_calendar_decay=True`,
+    `rho_calendar=1.0`) — see `docs/calendar_decay_experiments.md`
+  - learned per-team-size effect (`use_team_size_effect=True`,
+    anchor at 6) — see `docs/team_size_experiments.md`
+  - learned per-position-in-tour effect (`use_pos_effect=True`,
+    anchor at 0, `tour_len=12`) — see `docs/position_in_tour_experiments.md`
+  - fixed cold-start prior (`cold_init_theta=-1.0`,
+    `cold_init_use_team_mean=False`) plus chess-Elo "rookie boost"
+    (`games_offset=0.25`, so first-game η = 2·η0) — breaks the
+    team-mean inheritance feedback loop that produced multi-year
+    population θ drift; rationale and the 12-cell sweep that picked
+    these defaults are in `scripts/exp_cold_start_grid.py` (and the
+    extra boundary sweep in `..._extra.py`).
+  - Backtest logloss on the full DB: **0.522** (was 0.602 with the
+    old per-tournament decay; 0.532 before adding team-size; 0.527
+    before the position effect; ~1.3 % further improvement from the
+    fixed cold-start prior).
+- **Hyperparameters**: `eta0`, `rho`, `rho_calendar`, `decay_period_days`,
+  `cold_init_theta`, `cold_init_use_team_mean`, `cold_init_factor`,
+  `games_offset`, `w_online`, `w_online_questions`, `w_online_log_a`,
+  `w_async_mode`, `w_async_residual`, `eta_mu`, `eta_eps`, `eta_size`,
+  `eta_pos`, `reg_mu_type`, `reg_eps`, `reg_size`, `reg_pos`, `reg_theta`,
+  `reg_b`, `reg_log_a`, `team_size_max`, `team_size_anchor`,
+  `w_size_offline/sync/async`, `tour_len`, `pos_anchor`. Full list in
+  `Config` (`rating/engine.py`).
 - **Paired tournaments**: Uses `canonical_q_idx` — sync+async pairs share question params (b, a)
 - **Tournament ordering**: By `start_datetime` (date of start, not end)
 
 | File | Role |
 |------|------|
 | `rating/model.py` | Noisy-OR `forward`, gradients (stable `expm1` formulation) |
-| `rating/players.py` | `PlayerState` — θ, adaptive η = η0/√(1+games) |
+| `rating/players.py` | `PlayerState` — θ, adaptive η = η0/√(games_offset + games); fixed-prior or team-mean cold-start |
 | `rating/questions.py` | `QuestionState` — b, log_a, init from take rate |
-| `rating/decay.py` | θ ← ρ·θ between tournaments |
-| `rating/tournaments.py` | `TournamentState` — `μ_type + ε_t`, centering, type prior |
+| `rating/decay.py` | θ ← ρ·θ between tournaments (or per-week calendar decay) |
+| `rating/tournaments.py` | `TournamentState` — `μ_type + ε_t`, weekly within-type centering, type prior |
 | `rating/engine.py` (`delta_size`) | per-team-size shift, anchored at 6, learned online |
 | `rating/engine.py` (`delta_pos`) | per-position-in-tour shift (length `tour_len`, anchored at 0), learned online |
-| `rating/engine.py` | `run_sequential()` — chronological online SGD |
+| `rating/engine.py` | `Config` + `run_sequential()` — chronological online SGD |
 | `rating/backtest.py` | Time-split evaluation (logloss, Brier, AUC) |
-| `rating/io.py` | `load_results_npz()` — load compact results |
+| `rating/io.py` | `load_results_npz()` / `save_results_npz()` — compact results |
 
 ```bash
 # From DB (prefer .npz — compressed, faster load)
@@ -70,6 +95,47 @@ python -m rating --mode cached --cache_file data.npz \
     --questions_out results/seq_questions.csv
 ```
 
+## Website (`website/`)
+
+Read-only FastAPI + Jinja2 frontend over a baked DuckDB (~390 MB):
+
+| Path | Role |
+|------|------|
+| `website/build/build_db.py` | Joins `data.npz`, `results/seq.npz` and the questions sqlite into `website/data/chgk.duckdb`; precomputes per-team expected takes from pre-tournament θ snapshots |
+| `website/app/main.py` | Routes: `/`, `/player/{id}`, `/team/{id}`, `/tournament/{id}`, `/search`, `/methodology`, `/admin/reload-db` (guarded by `X-Admin-Token`) |
+| `website/app/db.py` | Single read-only DuckDB connection, re-opened on hot reload |
+| `website/app/templates/` | `top_players.html`, `player.html` (with cold-start warning for <15-game rookies), `team.html`, `tournament.html` (expected-vs-actual takes), `methodology.html`, `search.html`, `base.html` |
+| `website/Dockerfile` | Production image |
+
+Local secrets (`.admin_token`) and the on-disk DuckDB are gitignored
+(`website/.gitignore` covers `data/*.duckdb*`).
+
+## Daily refresh pipeline (`scripts/refresh_*.sh`)
+
+End-to-end nightly refresh, single-instance via PID lock at
+`logs/refresh.lock`:
+
+1. `scripts/refresh_postgres.sh` — downloads the most recent
+   `YYYY-MM-DD_rating.backup` from R2 (walks back day by day if today's
+   dump isn't out yet — backups appear ~23:00 UTC), validates with
+   `pg_restore --list` **before** touching the running DB, then
+   re-restores into the local docker-compose postgres.
+2. `python -m rating --mode db --cache_file data.npz --results_npz results/seq.npz`
+   — pulls `data.npz` from PG and trains in a single CLI call.
+3. `python -m website.build.build_db` → `chgk.duckdb.new`.
+4. Atomic `mv .new → .duckdb`, then `POST /admin/reload-db` to swap
+   the inode under the running uvicorn.
+
+```bash
+./scripts/refresh_data.sh                  # full refresh
+./scripts/refresh_data.sh --skip-postgres  # reuse current PG state
+./scripts/refresh_data.sh --skip-train     # reuse data.npz + seq.npz
+./scripts/refresh_data.sh --skip-build     # don't rebuild DuckDB
+SKIP_RELOAD=1 ./scripts/refresh_data.sh    # don't ping the website
+```
+
+End-to-end takes ~20 min on macOS (most of it is the train pass).
+
 ## Key files
 
 | File | Role |
@@ -80,6 +146,7 @@ python -m rating --mode cached --cache_file data.npz \
 
 1. **Load**: `load_from_db()` or `load_cached()` → arrays + `IndexMaps`
 2. **Sequential**: `run_sequential(arrays, maps)` — processes tournaments by date
+3. **Bake**: `website/build/build_db.py` produces the website DuckDB
 
 ## Index mapping
 
@@ -99,12 +166,14 @@ python -m rating --mode cached --cache_file data.npz \
 - **Disable tournament offsets** → `--no-tournament-delta` or `Config(use_tournament_delta=False)`
 - **Add DB filter** → `load_from_db()` in `data.py`
 - **Export sequential results** → `--results_npz` (compact) or `--players_out`, `--questions_out`, `--history_out` (CSV)
+- **Refresh production data** → `./scripts/refresh_data.sh` (see above)
+- **Hot-reload website only** → `curl -X POST -H "X-Admin-Token: $(cat website/.admin_token)" http://127.0.0.1:8765/admin/reload-db`
 - **Interpret θ** → `docs/interpretation.md`
 
 ## Cache
 
 - **`.npz`** — compressed, ~50× smaller than `.pkl`, faster load. Prefer for new caches.
-- **Convert** existing `.pkl` → `.npz`:  
+- **Convert** existing `.pkl` → `.npz`:
   `python data.py --convert_cache data/cache_all.pkl data/cache_all.npz`
 
 ## Setup
@@ -116,6 +185,12 @@ pip install -r requirements.txt
 
 ## Scripts
 
+- `scripts/refresh_data.sh`, `scripts/refresh_postgres.sh` — daily refresh pipeline
+- `scripts/exp_cold_start_grid.py`, `scripts/exp_cold_start_grid_extra.py` — `(θ_init, games_offset)` sweeps
+- `scripts/run_simple_experiments.py` — single-knob configuration sweeps (calendar decay etc.)
+- `scripts/compare_to_baselines.py` — side-by-side variant comparison on the backtest split
+- `scripts/question_uncertainties.py` — posterior std on b / a per question
+- `scripts/show_top_players.py` — current top-N by θ with name lookup
 - `scripts/theta_to_prob.py` — convert θ to probability
 - `scripts/lookup_players.py` — player lookup
 - `scripts/build_strongest_100plus.py`, `scripts/count_*.py` — analysis
@@ -124,8 +199,7 @@ pip install -r requirements.txt
 
 - `docs/current_model_mechanics.md` — detailed model and filters
 - `docs/interpretation.md` — θ interpretation and tables
-- `docs/async_mode_experiments.md` — verified hypotheses, backtest results, chosen defaults, future work
-- `docs/calendar_decay_experiments.md` — calendar-based decay vs the legacy per-tournament one
+- `docs/async_mode_experiments.md` — async/sync/offline mode effects, verified hypotheses, chosen `t6` defaults
+- `docs/calendar_decay_experiments.md` — calendar-based decay sweep, why per-tournament decay was wrong, current defaults
 - `docs/team_size_experiments.md` — per-team-size difficulty shift (δ_size) and backtest gains
 - `docs/position_in_tour_experiments.md` — per-position-in-tour shift (δ_pos), empirical curve, anchor choice, backtest gains
-- `docs/calendar_decay_experiments.md` — calendar-based decay sweep, why per-tournament decay was wrong, current defaults
