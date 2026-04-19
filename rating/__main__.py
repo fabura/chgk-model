@@ -225,6 +225,30 @@ def main() -> int:
         help="L2-style shrinkage for delta_pos.",
     )
     hp.add_argument(
+        "--recenter_period_days",
+        type=float,
+        default=365.0,
+        help="Period (days) between gauge re-centerings; 0 to disable.",
+    )
+    hp.add_argument(
+        "--recenter_target",
+        type=float,
+        default=-0.70,
+        help="Target median θ of active veterans after each re-centering.",
+    )
+    hp.add_argument(
+        "--recenter_min_games",
+        type=int,
+        default=200,
+        help="Min games to count a player as 'veteran' for re-centering.",
+    )
+    hp.add_argument(
+        "--recenter_active_days",
+        type=int,
+        default=365,
+        help="Days since last game to count a veteran as 'active'.",
+    )
+    hp.add_argument(
         "--no-tournament-delta",
         action="store_true",
         help="Disable tournament difficulty offsets",
@@ -318,6 +342,10 @@ def main() -> int:
         reg_pos=args.reg_pos,
         use_tournament_delta=not args.no_tournament_delta,
         use_delta_type_prior=args.delta_type_prior,
+        recenter_period_days=args.recenter_period_days,
+        recenter_target=args.recenter_target,
+        recenter_min_games=args.recenter_min_games,
+        recenter_active_days=args.recenter_active_days,
     )
 
     # --- load data ---

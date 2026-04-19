@@ -156,6 +156,30 @@ class Config:
     use_tournament_delta: bool = True
     use_delta_type_prior: bool = False
 
+    # Periodic gauge re-centering to neutralise the multi-year θ drift.
+    #
+    # The noisy-OR model is gauge-invariant: shifting θ → θ+Δ and
+    # b → b + a·Δ leaves predictions unchanged.  Without an anchor the
+    # cold-start of new rookies (every newcomer enters at
+    # ``cold_init_theta=-1.0``) slowly drags the population mean
+    # downward over years, so a top player's θ in 2017 (≈ 1.4) and in
+    # 2026 (≈ 1.0) are not directly comparable even when their relative
+    # rank is similar.
+    #
+    # When ``recenter_period_days > 0`` we apply, every ~year, a
+    # gauge transform that pins the median θ of "active veterans"
+    # (``games >= recenter_min_games`` and seen within
+    # ``recenter_active_days``) to ``recenter_target``:
+    #   Δ = recenter_target - median(θ_active_veterans)
+    #   θ_k    += Δ            for every player
+    #   b_i    += a_i · Δ      for every (canonical) question
+    # Predictions are exactly invariant; the only effect is to keep the
+    # absolute θ scale stable across years.
+    recenter_period_days: float = 365.0  # 0 = disable
+    recenter_min_games: int = 200
+    recenter_active_days: int = 365
+    recenter_target: float = -0.70  # tuned via backtest sweep (best logloss/AUC)
+
 
 # ======================================================================
 # Result container
@@ -346,6 +370,12 @@ def run_sequential(
     last_week: int | None = None
     games_this_week: list[int] = []
 
+    # Track epoch boundary for periodic gauge re-centering (drift fix).
+    last_recenter_epoch: int | None = None
+    recenter_period = float(getattr(cfg, "recenter_period_days", 0.0) or 0.0)
+    recenter_enabled = recenter_period > 0
+    recenter_log: list[tuple[int, float, float, int]] = []
+
     total_loglik = 0.0
     total_obs_count = 0
     zero_mu_type = np.zeros(3, dtype=np.float64)
@@ -418,6 +448,46 @@ def run_sequential(
                 tournaments.center(games_this_week)
                 games_this_week = []
             last_week = current_week
+
+        # 0b. Year/epoch boundary: gauge re-center to keep median θ of
+        #     active veterans pinned to cfg.recenter_target.  Strictly a
+        #     gauge transform (θ ↑Δ, b ↑a·Δ): predictions are invariant.
+        if recenter_enabled and gdo is not None and g < len(gdo) and int(gdo[g]) >= 0:
+            current_ord_for_year = int(gdo[g])
+            current_epoch = int(current_ord_for_year // recenter_period)
+            if last_recenter_epoch is None:
+                last_recenter_epoch = current_epoch
+            elif current_epoch > last_recenter_epoch:
+                cutoff_ord = current_ord_for_year - cfg.recenter_active_days
+                seen_mask = players.seen if hasattr(players, "seen") else None
+                games_arr = players.games
+                last_seen_arr = players.last_seen_ordinal
+                active_mask = (
+                    (games_arr >= cfg.recenter_min_games)
+                    & (last_seen_arr >= cutoff_ord)
+                )
+                if seen_mask is not None:
+                    active_mask &= seen_mask
+                n_active = int(active_mask.sum())
+                if n_active >= 50:
+                    med = float(np.median(players.theta[active_mask]))
+                    delta = float(cfg.recenter_target) - med
+                    if abs(delta) > 1e-9:
+                        players.theta += delta
+                        # b → b + a·Δ to preserve predictions exactly.
+                        a_vals = np.exp(np.clip(questions.log_a, -3.0, 3.0))
+                        questions.b += a_vals * delta
+                        recenter_log.append(
+                            (current_ord_for_year, med, delta, n_active)
+                        )
+                        if verbose:
+                            print(
+                                f"  [recenter] ord={current_ord_for_year} "
+                                f"epoch={current_epoch} "
+                                f"median_active={med:+.4f} → target={cfg.recenter_target:+.2f} "
+                                f"Δ={delta:+.4f} n_active={n_active}"
+                            )
+                last_recenter_epoch = current_epoch
 
         # 1. Decay -------------------------------------------------------
         # Calendar-based decay is applied later, *after* we collect the

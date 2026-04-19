@@ -428,6 +428,7 @@ def load_from_db(
     tournament_dl_filter: str = "all",
     min_tournament_date: Optional[str] = "2015-01-01",
     min_games: int = 10,
+    exclude_seasonal_aggregates: bool = True,
     show_progress: bool = True,
     seed: int = 42,
 ) -> Tuple[list[Sample], IndexMaps]:
@@ -450,6 +451,13 @@ def load_from_db(
       * "both": tournaments present in both true_dls and ndcg.
     - min_games: players with fewer games (total in DB) are treated as inactive and removed
       from rosters; teams are dropped only if roster becomes empty. Default 10.
+    - exclude_seasonal_aggregates: drop "season-total" tournaments where the rating DB
+      stores the cumulative season as multiple snapshots, but `points_mask` reflects
+      only one segment of it.  Caught either by title (`Общий зачёт`) or by the
+      heuristic `type IN (offline,async) AND questions_count >= 100 AND avg(score)
+      / questions_count < 0.30`.  These would otherwise feed the model a
+      catastrophic "team got 19 / 360" signal that drags θ down for everyone in
+      the rosters by ~0.3–0.4 in a single day.  Default True.
     - Results: only rows where points_mask IS NOT NULL; teams/tournaments
       without question-level data never contribute samples.
     - Maps: tournament_id -> game, (tournament_id, question_index) -> global question index.
@@ -563,6 +571,61 @@ def load_from_db(
             )
         except Exception:
             pass
+    if exclude_seasonal_aggregates and rows:
+        # Season-total tournaments stored as N snapshots: the rating DB carries
+        # one row per intermediate sum (181, 217, 253, ... questions),
+        # but `points_mask` reflects only one segment.  Feeding this to the
+        # model gives a "team got 19 / 360" signal that drags θ down ~0.3-0.4
+        # for everyone in the rosters in a single day.
+        # Catch them by:
+        #   - native rating-DB type "общий зачёт"  (101 tournaments since 2015),
+        #   - or non-sync games with >=100 questions and avg(score)/n_q < 0.20
+        #     — picks up city/student leagues whose `points_mask` is broken or
+        #     truncated to a single round (avg score=0, ratio=0).
+        candidate_ids = [int(r[0]) for r in rows if r[0] is not None]
+        cur.execute(
+            """
+            SELECT t.id, COALESCE(LOWER(t.type), ''),
+                   COALESCE(t.questions_count, 0),
+                   AVG(LENGTH(REPLACE(r.points_mask, '0', '')))::double precision AS avg_score
+            FROM public.tournaments t
+            JOIN public.tournament_results r ON r.tournament_id = t.id
+            WHERE t.id = ANY(%s) AND r.points_mask IS NOT NULL
+            GROUP BY t.id, t.type, t.questions_count
+            """,
+            (candidate_ids,),
+        )
+        flagged: set[int] = set()
+        flagged_by_type = 0
+        flagged_by_ratio = 0
+        for tid, type_str, n_q, avg_sc in cur.fetchall():
+            ts = (type_str or "").strip()
+            if ts == "общий зачёт" or ts == "общий зачет":
+                flagged.add(int(tid))
+                flagged_by_type += 1
+                continue
+            if n_q < 100 or avg_sc is None or n_q <= 0:
+                continue
+            ratio = float(avg_sc) / float(n_q)
+            if ratio >= 0.20:
+                continue
+            # Real synchrons can have a low take-rate on hard packs; only
+            # filter offline / async, where low ratio implies broken mask.
+            is_non_sync = (
+                "обычный" in ts or "очник" in ts or "offline" in ts
+                or "асинхрон" in ts or "async" in ts
+            )
+            if is_non_sync:
+                flagged.add(int(tid))
+                flagged_by_ratio += 1
+        if flagged:
+            n_before = len(rows)
+            rows = [r for r in rows if int(r[0]) not in flagged]
+            print(
+                f"Excluded {n_before - len(rows)} season-aggregate tournaments "
+                f"({flagged_by_type} by type='общий зачёт', "
+                f"{flagged_by_ratio} by low-ratio heuristic)."
+            )
     if max_tournaments and len(rows) > max_tournaments:
         rng = random.Random(seed)
         rows = rng.sample(rows, max_tournaments)

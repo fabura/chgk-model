@@ -60,8 +60,24 @@ Sequential model: computes player strength changes week by week, tournament by t
   `w_async_mode`, `w_async_residual`, `eta_mu`, `eta_eps`, `eta_size`,
   `eta_pos`, `reg_mu_type`, `reg_eps`, `reg_size`, `reg_pos`, `reg_theta`,
   `reg_b`, `reg_log_a`, `team_size_max`, `team_size_anchor`,
-  `w_size_offline/sync/async`, `tour_len`, `pos_anchor`. Full list in
-  `Config` (`rating/engine.py`).
+  `w_size_offline/sync/async`, `tour_len`, `pos_anchor`,
+  `recenter_period_days`, `recenter_target`, `recenter_min_games`,
+  `recenter_active_days`. Full list in `Config` (`rating/engine.py`).
+- **Drift fix (yearly gauge re-centering)**: every
+  `recenter_period_days` (365 by default) the median θ of "active
+  veterans" (`games >= recenter_min_games=200`, seen within
+  `recenter_active_days=365`) is pinned to `recenter_target` (default
+  **−0.70**, tuned via backtest sweep). Implemented as a strict gauge
+  transform — `θ ↑ Δ`, `b ↑ a·Δ` — so predictions are exactly
+  invariant; the only effect is to keep absolute θ comparable across
+  years and stop the multi-year cold-start drift (median θ used to
+  drift from −0.15 in 2020 to −0.66 in 2025; now pinned at −0.70 with
+  per-year Δ < 0.04). Also yields a small predictive-quality win
+  (logloss 0.5350 at target=−0.80, 0.5357 at −0.70 vs 0.5486 with
+  re-centering disabled). Filter for "season aggregate" tournaments
+  (`exclude_seasonal_aggregates=True` in `data.py`) is applied at load
+  time before training to remove "12 граней"-style broken
+  `points_mask` rows.
 - **Paired tournaments**: Uses `canonical_q_idx` — sync+async pairs share question params (b, a)
 - **Tournament ordering**: By `start_datetime` (date of start, not end)
 
