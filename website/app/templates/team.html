@@ -24,10 +24,21 @@
 </div>
 
 <section class="bg-white border border-slate-200 rounded shadow-sm mb-6">
-  <h2 class="px-4 py-2 text-sm font-medium text-slate-600 border-b border-slate-100">
-    Результаты во времени
+  <h2 class="px-4 py-2 text-sm font-medium text-slate-600 border-b border-slate-100 flex items-baseline justify-between">
+    <span>Сила команды по турам</span>
+    <span class="text-xs font-normal text-slate-500">
+      θ-эквивалент, сравним со <a href="/" class="text-indigo-700 hover:underline">шкалой игроков</a>
+    </span>
   </h2>
   <div id="trend-chart" style="height: 320px;"></div>
+  <p class="px-4 py-2 text-xs text-slate-500 border-t border-slate-100">
+    Каждая точка — «эффективное» θ команды в туре: какое θ нужно было бы
+    игрокам команды (того же фактического состава), чтобы по модели взять
+    ровно столько же вопросов на этом пакете. Сложность пакета, тип турнира,
+    позиции вопросов и размер состава вычтены — поэтому линия одной команды
+    сопоставима через годы и пакеты, а само значение в той же шкале, что и
+    рейтинги игроков.
+  </p>
 </section>
 
 <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
@@ -47,6 +58,7 @@
             <th class="px-3 py-2 text-right">Взято</th>
             <th class="px-3 py-2 text-right">Ожид.</th>
             <th class="px-3 py-2 text-right">Δ</th>
+            <th class="px-3 py-2 text-right" title="Эффективная θ команды на турнире (см. подсказку у графика выше)">θ тура</th>
             <th class="px-3 py-2 text-right">Место</th>
           </tr>
         </thead>
@@ -80,12 +92,15 @@
               {% endif %}">
               {% if g.expected_takes is not none and g.score_actual is not none %}{{ "%+.1f"|format(g.score_actual - g.expected_takes) }}{% endif %}
             </td>
+            <td class="px-3 py-2 text-right num text-slate-600">
+              {% if g.team_theta_implied is not none %}{{ "%+.2f"|format(g.team_theta_implied) }}{% endif %}
+            </td>
             <td class="px-3 py-2 text-right num text-slate-600">{{ g.place|int if g.place else "" }}</td>
           </tr>
           {% if tour_roster %}
           <tr id="roster-{{ g.tournament_id }}" class="roster-row hidden bg-slate-50/70 border-t border-slate-100">
             <td></td>
-            <td colspan="8" class="px-3 py-2">
+            <td colspan="9" class="px-3 py-2">
               <div class="text-xs text-slate-500 mb-1">Состав в этом турнире:</div>
               <ul class="flex flex-wrap gap-x-4 gap-y-1 text-sm">
                 {% for p in tour_roster %}
@@ -147,22 +162,47 @@ document.querySelectorAll('.roster-toggle').forEach((btn) => {
 <script>
 (function() {
   const data = {{ trend_json|safe }};
-  if (!data.length) return;
-  const x = data.map(d => d.date);
-  const actual = data.map(d => d.actual);
-  const expected = data.map(d => d.expected);
-  const text = data.map(d => d.title || "");
+  // Filter to points that have an implied theta and a date.
+  const pts = data.filter(d => d.date && d.theta !== null && d.theta !== undefined);
+  if (!pts.length) return;
+  const x = pts.map(d => d.date);
+  const theta = pts.map(d => d.theta);
+  const text = pts.map(d => d.title || "");
+  const customdata = pts.map(d => [
+    d.actual,
+    d.n_questions,
+    (d.expected !== null && d.expected !== undefined) ? d.expected : NaN,
+  ]);
+
+  // Rolling-mean line over the last K games to smooth pack noise.
+  const K = Math.max(3, Math.min(11, Math.floor(theta.length / 12)));
+  const smooth = theta.map((_, i) => {
+    const lo = Math.max(0, i - K + 1);
+    let s = 0, n = 0;
+    for (let j = lo; j <= i; j++) { s += theta[j]; n++; }
+    return s / n;
+  });
+
   Plotly.newPlot('trend-chart', [
-    { x, y: actual, text, type: 'scatter', mode: 'lines+markers', name: 'взято',
-      line: { color: '#4f46e5', width: 1.5 }, marker: { size: 4 },
-      hovertemplate: '%{x}<br><b>%{text}</b><br>взято: %{y}<extra></extra>' },
-    { x, y: expected, text, type: 'scatter', mode: 'lines', name: 'ожидание модели',
-      line: { color: '#94a3b8', width: 1.2, dash: 'dot' },
-      hovertemplate: '%{x}<br><b>%{text}</b><br>ожидание: %{y:.1f}<extra></extra>' },
+    {
+      x, y: theta, text, customdata,
+      type: 'scatter', mode: 'markers', name: 'тур',
+      marker: { size: 5, color: '#94a3b8', opacity: 0.7 },
+      hovertemplate:
+        '%{x}<br><b>%{text}</b>' +
+        '<br>θ команды: %{y:.2f}' +
+        '<br>взято: %{customdata[0]} / %{customdata[1]}' +
+        '<br>ожидание: %{customdata[2]:.1f}<extra></extra>',
+    },
+    {
+      x, y: smooth, type: 'scatter', mode: 'lines', name: `скользящее ср. (${K})`,
+      line: { color: '#4f46e5', width: 2 },
+      hoverinfo: 'skip',
+    },
   ], {
-    margin: { l: 40, r: 20, t: 10, b: 40 },
+    margin: { l: 45, r: 20, t: 10, b: 40 },
     xaxis: { type: 'date', gridcolor: '#f1f5f9' },
-    yaxis: { title: 'взятий за тур', gridcolor: '#f1f5f9', rangemode: 'tozero' },
+    yaxis: { title: 'θ команды (на турнире)', gridcolor: '#f1f5f9', zeroline: true, zerolinecolor: '#cbd5e1' },
     plot_bgcolor: 'white',
     legend: { orientation: 'h', x: 0, y: 1.05 },
   }, { displayModeBar: false, responsive: true });

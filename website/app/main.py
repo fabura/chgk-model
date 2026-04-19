@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -60,29 +61,257 @@ templates.env.filters["signed"] = _fmt_signed
 # ---------------------------------------------------------------------------
 
 
+_TYPE_LABELS = {
+    "offline": "очный",
+    "sync": "синхрон",
+    "async": "асинхрон",
+}
+
+
+def _type_label(t: Optional[str]) -> str:
+    return _TYPE_LABELS.get(t or "", t or "—")
+
+
+templates.env.filters["type_label"] = _type_label
+
+
+def _build_page_links(page: int, total_pages: int, window: int = 2) -> list[Optional[int]]:
+    """
+    Build a paginator: list of page numbers (1-indexed) and ``None`` for
+    "…" gaps.  Always includes the first and last pages plus a ``window``
+    around the current one, so the bar stays compact even on 200+ pages.
+    """
+    if total_pages <= 1:
+        return [1] if total_pages == 1 else []
+    pages: set[int] = {1, total_pages}
+    for i in range(page - window, page + window + 1):
+        if 1 <= i <= total_pages:
+            pages.add(i)
+    out: list[Optional[int]] = []
+    prev = 0
+    for p in sorted(pages):
+        if p > prev + 1:
+            out.append(None)
+        out.append(p)
+        prev = p
+    return out
+
+
 @app.get("/", response_class=HTMLResponse)
 def home(
     request: Request,
     min_games: int = Query(50, ge=1, le=10_000),
-    limit: int = Query(100, ge=10, le=2000),
+    per_page: int = Query(100, ge=10, le=500),
+    page: int = Query(1, ge=1),
 ):
-    """Top players by theta."""
+    """Top players by theta_display (raw theta, shrunk for inactivity)."""
+    total = (
+        db.query_one(
+            "SELECT COUNT(*) AS n FROM players WHERE games >= ?",
+            [min_games],
+        )
+        or {"n": 0}
+    )["n"]
+    total_pages = max(1, math.ceil(total / per_page))
+    page = min(page, total_pages)  # clamp to last page if user overshoots
+    offset = (page - 1) * per_page
+
     rows = db.query(
         """
-        SELECT player_id, last_name, first_name, theta, games, last_game_date
+        SELECT player_id, last_name, first_name, theta, theta_display,
+               games, last_game_date
         FROM players
         WHERE games >= ?
-        ORDER BY theta DESC
-        LIMIT ?
+        ORDER BY theta_display DESC, player_id ASC
+        LIMIT ? OFFSET ?
         """,
-        [min_games, limit],
+        [min_games, per_page, offset],
     )
     for i, r in enumerate(rows, start=1):
-        r["rank"] = i
+        r["rank"] = offset + i
     return templates.TemplateResponse(
         request,
         "top_players.html",
-        {"players": rows, "min_games": min_games, "limit": limit},
+        {
+            "players": rows,
+            "min_games": min_games,
+            "per_page": per_page,
+            "page": page,
+            "total_pages": total_pages,
+            "total": total,
+            "page_links": _build_page_links(page, total_pages),
+        },
+    )
+
+
+@app.get("/tournaments", response_class=HTMLResponse)
+def tournaments_list(
+    request: Request,
+    type: str = Query("", pattern=r"^(|offline|sync|async)$"),
+    per_page: int = Query(100, ge=10, le=500),
+    page: int = Query(1, ge=1),
+):
+    """List of all tournaments, sorted by date desc, with optional type filter."""
+    where = ""
+    params: list = []
+    if type:
+        where = "WHERE type = ?"
+        params.append(type)
+
+    total = (
+        db.query_one(f"SELECT COUNT(*) AS n FROM tournaments {where}", params)
+        or {"n": 0}
+    )["n"]
+    total_pages = max(1, math.ceil(total / per_page))
+    page = min(page, total_pages)
+    offset = (page - 1) * per_page
+
+    rows = db.query(
+        f"""
+        SELECT tournament_id, title, type, start_date,
+               n_questions, n_teams, delta_t
+        FROM tournaments
+        {where}
+        ORDER BY start_date DESC NULLS LAST, tournament_id DESC
+        LIMIT ? OFFSET ?
+        """,
+        params + [per_page, offset],
+    )
+
+    return templates.TemplateResponse(
+        request,
+        "tournaments_list.html",
+        {
+            "tournaments": rows,
+            "type": type,
+            "per_page": per_page,
+            "page": page,
+            "total_pages": total_pages,
+            "total": total,
+            "page_links": _build_page_links(page, total_pages),
+            "type_options": [
+                ("", "все"),
+                ("offline", "очный"),
+                ("sync", "синхрон"),
+                ("async", "асинхрон"),
+            ],
+        },
+    )
+
+
+# Cached SQL for the teams ranking page.  The "current strength" of a
+# team is the average ``theta_display`` of the up-to-6 players who
+# appeared most often in that team over the last ``window`` days
+# (relative to the latest tournament in the database).  Only teams
+# active in that window are listed.
+_TEAMS_RANK_SQL = """
+WITH cutoff AS (
+    SELECT MAX(start_date) - INTERVAL ({window}) DAY AS dt FROM tournaments
+),
+recent_pg AS (
+    SELECT pg.team_id, pg.player_id, COUNT(*) AS n_app
+    FROM player_games pg
+    JOIN tournaments t USING (tournament_id)
+    WHERE t.start_date >= (SELECT dt FROM cutoff)
+    GROUP BY pg.team_id, pg.player_id
+),
+ranked AS (
+    SELECT r.team_id, r.player_id, r.n_app, p.theta_display,
+           ROW_NUMBER() OVER (
+               PARTITION BY r.team_id
+               ORDER BY r.n_app DESC, p.theta_display DESC, r.player_id
+           ) AS rk
+    FROM recent_pg r JOIN players p USING (player_id)
+),
+base AS (
+    SELECT team_id,
+           AVG(theta_display) AS base_theta,
+           COUNT(*) AS n_base
+    FROM ranked WHERE rk <= 6
+    GROUP BY team_id
+),
+team_meta AS (
+    SELECT tg.team_id,
+           arg_max(tg.team_name, t.start_date) AS team_name,
+           COUNT(*) AS n_recent_games,
+           MAX(t.start_date) AS last_played
+    FROM team_games tg
+    JOIN tournaments t USING (tournament_id)
+    WHERE t.start_date >= (SELECT dt FROM cutoff)
+    GROUP BY tg.team_id
+)
+"""
+
+
+@app.get("/teams", response_class=HTMLResponse)
+def teams_list(
+    request: Request,
+    min_games: int = Query(3, ge=1, le=200),
+    min_base: int = Query(4, ge=1, le=6),
+    window: int = Query(365, ge=30, le=3650),
+    per_page: int = Query(100, ge=10, le=500),
+    page: int = Query(1, ge=1),
+):
+    """Teams sorted by current base-roster strength (top-6 regulars in the window).
+
+    Filters out teams whose "core" has fewer than ``min_base`` distinct regulars,
+    so that lone-wolf single-player teams do not dominate the leaderboard.
+    """
+    sql_head = _TEAMS_RANK_SQL.format(window=int(window))
+
+    total = (
+        db.query_one(
+            sql_head
+            + """
+            SELECT COUNT(*) AS n
+            FROM base b JOIN team_meta m USING (team_id)
+            WHERE m.n_recent_games >= ? AND b.n_base >= ?
+            """,
+            [min_games, min_base],
+        )
+        or {"n": 0}
+    )["n"]
+    total_pages = max(1, math.ceil(total / per_page))
+    page = min(page, total_pages)
+    offset = (page - 1) * per_page
+
+    rows = db.query(
+        sql_head
+        + """
+        SELECT m.team_id, m.team_name, b.base_theta, b.n_base,
+               m.n_recent_games, m.last_played
+        FROM base b JOIN team_meta m USING (team_id)
+        WHERE m.n_recent_games >= ? AND b.n_base >= ?
+        ORDER BY b.base_theta DESC, m.team_id
+        LIMIT ? OFFSET ?
+        """,
+        [min_games, min_base, per_page, offset],
+    )
+    for i, r in enumerate(rows, start=1):
+        r["rank"] = offset + i
+
+    cutoff_row = db.query_one(
+        "SELECT MAX(start_date) AS today, "
+        "MAX(start_date) - INTERVAL (?) DAY AS cutoff FROM tournaments",
+        [int(window)],
+    ) or {"today": None, "cutoff": None}
+
+    return templates.TemplateResponse(
+        request,
+        "teams_list.html",
+        {
+            "teams": rows,
+            "min_games": min_games,
+            "min_base": min_base,
+            "window": window,
+            "per_page": per_page,
+            "page": page,
+            "total_pages": total_pages,
+            "total": total,
+            "page_links": _build_page_links(page, total_pages),
+            "ref_today": cutoff_row.get("today"),
+            "ref_cutoff": cutoff_row.get("cutoff"),
+        },
     )
 
 
@@ -98,12 +327,14 @@ def player_profile(
     if player is None:
         raise HTTPException(status_code=404, detail="player not found")
 
-    # Rank by θ among players with ≥ ``min_games`` games (overall).
+    # Rank by theta_display (raw θ shrunk for inactivity) among players
+    # with ≥ ``min_games`` games (overall).  Using theta_display keeps the
+    # rank consistent with the public top-N board.
     rank_row = db.query_one(
         """
         WITH eligible AS (
-            SELECT player_id, theta,
-                   RANK() OVER (ORDER BY theta DESC) AS rk,
+            SELECT player_id, theta_display,
+                   RANK() OVER (ORDER BY theta_display DESC) AS rk,
                    COUNT(*) OVER () AS pop
             FROM players
             WHERE games >= ?
@@ -417,6 +648,7 @@ def team_page(request: Request, team_id: int):
             tg.n_players_active,
             tg.score_actual,
             tg.expected_takes,
+            tg.team_theta_implied,
             tg.place
         FROM team_games tg
         JOIN tournaments t USING (tournament_id)
@@ -483,14 +715,20 @@ def team_page(request: Request, team_id: int):
         [team_id],
     )
 
-    # θ-trend chart data: average roster θ per tournament (using current θ;
-    # quick proxy for a "team strength over time" line).
+    # Team-strength trend: implied θ per tournament (per-player skill that a
+    # hypothetical team of identical players of the same actual size would
+    # need to take exactly score_actual on this pack — strips out δ_t,
+    # δ_size, δ_pos, so the line is comparable across tournaments).  Raw
+    # take counts are useless on their own because pack difficulty varies a
+    # lot between tournaments.
     trend_json = [
         {
             "date": (g["start_date"].isoformat() if g["start_date"] else None),
             "tournament_id": g["tournament_id"],
             "title": g["title"],
+            "theta": g["team_theta_implied"],
             "actual": g["score_actual"],
+            "n_questions": g["n_questions"],
             "expected": g["expected_takes"],
         }
         for g in reversed(games)  # chronological order for the chart

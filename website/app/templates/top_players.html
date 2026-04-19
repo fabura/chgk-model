@@ -1,19 +1,41 @@
 {% extends "base.html" %}
+{% import "_macros.html" as ui %}
 {% block title %}Топ игроков — ChGK Model{% endblock %}
 
+{# Pagination URL helper — keeps min_games + per_page in every link. #}
+{% macro page_url(p) -%}
+?min_games={{ min_games }}&per_page={{ per_page }}&page={{ p }}
+{%- endmacro %}
+
 {% block content %}
-<div class="flex items-baseline justify-between mb-4">
+<div class="flex items-baseline justify-between mb-4 flex-wrap gap-y-2">
   <h1 class="text-2xl font-semibold">Топ игроков по θ</h1>
   <form method="get" class="flex items-center gap-2 text-sm text-slate-600">
     <label for="min_games">мин. игр:</label>
     <input id="min_games" type="number" name="min_games" value="{{ min_games }}" min="1" max="10000"
            class="w-20 border border-slate-300 rounded px-2 py-0.5">
-    <label for="limit">показать:</label>
-    <input id="limit" type="number" name="limit" value="{{ limit }}" min="10" max="2000"
-           class="w-24 border border-slate-300 rounded px-2 py-0.5">
+    <label for="per_page">на странице:</label>
+    <select id="per_page" name="per_page"
+            class="border border-slate-300 rounded px-2 py-0.5 bg-white">
+      {% for opt in [50, 100, 200, 500] %}
+      <option value="{{ opt }}" {% if opt == per_page %}selected{% endif %}>{{ opt }}</option>
+      {% endfor %}
+    </select>
+    {# Reset to page 1 whenever the filter changes — otherwise the user
+       could end up on a now-empty page after changing min_games. #}
+    <input type="hidden" name="page" value="1">
     <button type="submit" class="bg-indigo-600 text-white px-3 py-1 rounded hover:bg-indigo-700">Обновить</button>
   </form>
 </div>
+
+<p class="text-xs text-slate-500 mb-3">
+  Сортировка по «текущему» θ: после года без игр θ медленно сдвигается к 0
+  (полураспад ≈ 4 года). Сырое θ модели — в скобках, см.
+  <a href="/methodology" class="text-indigo-700 hover:underline">методологию</a>.
+  {% if total %}
+  · всего {{ total }} игроков с ≥ {{ min_games }} играми; страница {{ page }} из {{ total_pages }}.
+  {% endif %}
+</p>
 
 <div class="bg-white rounded shadow border border-slate-200 overflow-hidden">
   <table class="w-full text-sm">
@@ -21,26 +43,38 @@
       <tr>
         <th class="px-3 py-2 text-right">#</th>
         <th class="px-3 py-2 text-left">Игрок</th>
-        <th class="px-3 py-2 text-right">θ</th>
+        <th class="px-3 py-2 text-right">θ (текущ.)</th>
+        <th class="px-3 py-2 text-right">θ (модель)</th>
         <th class="px-3 py-2 text-right">Игры</th>
         <th class="px-3 py-2 text-left">Последняя игра</th>
       </tr>
     </thead>
     <tbody>
       {% for p in players %}
+      {% set diff = (p.theta - p.theta_display) %}
       <tr class="border-t border-slate-100 hover:bg-slate-50">
         <td class="px-3 py-2 text-right num text-slate-400">{{ p.rank }}</td>
         <td class="px-3 py-2">
           <a href="/player/{{ p.player_id }}" class="text-indigo-700 hover:underline">{{ p|fullname }}</a>
         </td>
-        <td class="px-3 py-2 text-right num font-medium">{{ "%.3f"|format(p.theta) }}</td>
+        <td class="px-3 py-2 text-right num font-medium">{{ "%.3f"|format(p.theta_display) }}</td>
+        <td class="px-3 py-2 text-right num text-slate-500"
+            {% if diff > 0.001 %}title="θ снижено на {{ '%.3f'|format(diff) }} из-за неактивности"{% endif %}>
+          {{ "%.3f"|format(p.theta) }}{% if diff > 0.001 %}<span class="text-amber-600 ml-1">↓</span>{% endif %}
+        </td>
         <td class="px-3 py-2 text-right num text-slate-600">{{ p.games }}</td>
         <td class="px-3 py-2 text-slate-600">
-          {{ p.last_game_date.isoformat() if p.last_game_date else "" }}
+          {{ p.last_game_date.isoformat() if p.last_game_date else "—" }}
         </td>
       </tr>
       {% endfor %}
     </tbody>
   </table>
 </div>
+
+{% if total_pages > 1 %}
+<div class="mt-4 flex justify-center">
+  {{ ui.paginator(page, total_pages, page_links, page_url) }}
+</div>
+{% endif %}
 {% endblock %}

@@ -1,0 +1,39 @@
+{# Shared Jinja macros.  Import with:
+   {% import "_macros.html" as ui %}
+   then call e.g.  {{ ui.paginator(page, total_pages, page_links, my_url_macro) }} #}
+
+{# Compact paginator: «← пред.» + numeric pages w/ ellipses + «след. →».
+   ``page_url`` must be a macro / callable that returns the URL for a
+   given page number, e.g.:
+       {% macro page_url(p) %}?foo=bar&page={{ p }}{% endmacro %}
+#}
+{%- macro paginator(page, total_pages, page_links, page_url) -%}
+{% if total_pages > 1 %}
+<nav class="flex flex-wrap items-center gap-1 text-sm" aria-label="Пагинация">
+  {% if page > 1 %}
+    <a href="{{ page_url(page - 1) }}"
+       class="px-2 py-1 rounded border border-slate-300 text-slate-700 hover:bg-slate-100">← пред.</a>
+  {% else %}
+    <span class="px-2 py-1 rounded border border-slate-200 text-slate-300 cursor-not-allowed">← пред.</span>
+  {% endif %}
+
+  {% for p in page_links %}
+    {% if p is none %}
+      <span class="px-2 text-slate-400">…</span>
+    {% elif p == page %}
+      <span class="px-3 py-1 rounded bg-indigo-600 text-white font-medium num">{{ p }}</span>
+    {% else %}
+      <a href="{{ page_url(p) }}"
+         class="px-3 py-1 rounded border border-slate-300 text-slate-700 hover:bg-slate-100 num">{{ p }}</a>
+    {% endif %}
+  {% endfor %}
+
+  {% if page < total_pages %}
+    <a href="{{ page_url(page + 1) }}"
+       class="px-2 py-1 rounded border border-slate-300 text-slate-700 hover:bg-slate-100">след. →</a>
+  {% else %}
+    <span class="px-2 py-1 rounded border border-slate-200 text-slate-300 cursor-not-allowed">след. →</span>
+  {% endif %}
+</nav>
+{% endif %}
+{%- endmacro -%}

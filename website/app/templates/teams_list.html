@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{% block title %}Команды — ChGK Model{% endblock %}
+
+{% macro page_url(p) -%}
+?min_games={{ min_games }}&min_base={{ min_base }}&window={{ window }}&per_page={{ per_page }}&page={{ p }}
+{%- endmacro %}
+
+{% block content %}
+<div class="flex items-baseline justify-between mb-4 flex-wrap gap-y-2">
+  <h1 class="text-2xl font-semibold">Команды по силе текущего состава</h1>
+  <form method="get" class="flex items-center gap-2 text-sm text-slate-600 flex-wrap">
+    <label for="window">окно (дн.):</label>
+    <input id="window" type="number" name="window" value="{{ window }}" min="30" max="3650"
+           class="w-24 border border-slate-300 rounded px-2 py-0.5">
+    <label for="min_games">мин. турниров:</label>
+    <input id="min_games" type="number" name="min_games" value="{{ min_games }}" min="1" max="200"
+           class="w-20 border border-slate-300 rounded px-2 py-0.5">
+    <label for="min_base">мин. в ядре:</label>
+    <select id="min_base" name="min_base"
+            class="border border-slate-300 rounded px-2 py-0.5 bg-white">
+      {% for opt in [1, 2, 3, 4, 5, 6] %}
+      <option value="{{ opt }}" {% if opt == min_base %}selected{% endif %}>{{ opt }}</option>
+      {% endfor %}
+    </select>
+    <label for="per_page">на странице:</label>
+    <select id="per_page" name="per_page"
+            class="border border-slate-300 rounded px-2 py-0.5 bg-white">
+      {% for opt in [50, 100, 200, 500] %}
+      <option value="{{ opt }}" {% if opt == per_page %}selected{% endif %}>{{ opt }}</option>
+      {% endfor %}
+    </select>
+    <input type="hidden" name="page" value="1">
+    <button type="submit" class="bg-indigo-600 text-white px-3 py-1 rounded hover:bg-indigo-700">Обновить</button>
+  </form>
+</div>
+
+<p class="text-xs text-slate-500 mb-3">
+  «Сила базового состава» — среднее текущее θ у шести игроков, чаще всего
+  игравших за команду в последние {{ window }} дней{% if ref_cutoff and ref_today %}
+  (с {{ ref_cutoff.isoformat() }} по {{ ref_today.isoformat() }}){% endif %}.
+  Команды без активности в этом окне в список не входят. В таблице учитываются
+  только составы, сыгравшие в окне ≥ {{ min_games }} турниров и имеющие в ядре
+  ≥ {{ min_base }} игроков (иначе одиночки и дуэты доминировали бы рейтинг).
+  {% if total %}
+  · всего {{ total }} активных команд; страница {{ page }} из {{ total_pages }}.
+  {% endif %}
+</p>
+
+<div class="bg-white rounded shadow border border-slate-200 overflow-hidden">
+  <table class="w-full text-sm">
+    <thead class="bg-slate-100 text-slate-600 uppercase text-xs">
+      <tr>
+        <th class="px-3 py-2 text-right">#</th>
+        <th class="px-3 py-2 text-left">Команда</th>
+        <th class="px-3 py-2 text-right">θ ядра</th>
+        <th class="px-3 py-2 text-right">Игроков<br>в ядре</th>
+        <th class="px-3 py-2 text-right">Турниров<br>в окне</th>
+        <th class="px-3 py-2 text-left">Последняя игра</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for t in teams %}
+      <tr class="border-t border-slate-100 hover:bg-slate-50">
+        <td class="px-3 py-2 text-right num text-slate-400">{{ t.rank }}</td>
+        <td class="px-3 py-2">
+          <a href="/team/{{ t.team_id }}" class="text-indigo-700 hover:underline">
+            {{ t.team_name or ("команда #" ~ t.team_id) }}
+          </a>
+        </td>
+        <td class="px-3 py-2 text-right num font-medium">{{ "%.3f"|format(t.base_theta) }}</td>
+        <td class="px-3 py-2 text-right num text-slate-600">{{ t.n_base }}</td>
+        <td class="px-3 py-2 text-right num text-slate-600">{{ t.n_recent_games }}</td>
+        <td class="px-3 py-2 text-slate-600 whitespace-nowrap">
+          {{ t.last_played.isoformat() if t.last_played else "—" }}
+        </td>
+      </tr>
+      {% endfor %}
+      {% if not teams %}
+      <tr><td colspan="6" class="px-3 py-6 text-center text-slate-400">Ничего не найдено.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+
+{% if total_pages > 1 %}
+<div class="mt-4 flex justify-center">
+  {{ ui.paginator(page, total_pages, page_links, page_url) }}
+</div>
+{% endif %}
+{% endblock %}

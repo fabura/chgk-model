@@ -32,6 +32,75 @@ sys.path.insert(0, str(REPO_ROOT))
 from data import load_cached  # noqa: E402
 from rating.io import load_results_npz  # noqa: E402
 
+
+# ---------------------------------------------------------------------------
+# Display-time inactivity decay
+#
+# The model deliberately does not decay θ over calendar time
+# (`rho_calendar = 1.0`, see docs/calendar_decay_experiments.md):
+# every bit of decay during training cost backtest accuracy.  But for
+# a "current strength" board the raw θ leaves long-retired players at
+# the very top (their last θ from years ago is still their score).
+#
+# We fix this at display time only, by precomputing a `theta_display`
+# column that shrinks θ toward `DISPLAY_DECAY_PRIOR` once a player has
+# been inactive for more than a `DISPLAY_DECAY_GRACE_DAYS` window.
+# Decay is exponential with the configured half-life, but it MUST
+# NEVER improve a player's standing — so for θ already below the
+# prior we just keep θ unchanged (otherwise weak inactive players
+# would be silently lifted toward the prior and could overtake weak
+# active ones in the ranking):
+#
+#     factor        = 0.5 ** (max(0, days_inactive - grace) / halflife)
+#     decayed       = prior + (θ - prior) * factor       # toward prior
+#     theta_display = min(θ, decayed)                    # never make stronger
+#
+# Defaults: 1-year grace (so a normal off-season doesn't penalise),
+# 4-year half-life (very slow), shrink toward 0 (the population centre
+# after weekly within-type centering).  Concrete impact:
+#
+#   θ = +1.0, inactive…    θ = -1.0, inactive…
+#     0–1y → +1.00            0–1y → -1.00
+#     2y   → +0.84            2y   → -1.00  (clamped; would-be -0.84)
+#     3y   → +0.71            3y   → -1.00  (clamped; would-be -0.71)
+#     5y   → +0.50            5y   → -1.00  (clamped; would-be -0.50)
+#    10y   → +0.21           10y   → -1.00  (clamped; would-be -0.21)
+#
+# In words: decay only matters for the upper tail (the "current top
+# 1000" board); for everyone at or below the population centre it's a
+# no-op.  This matches user intuition that "a player who hasn't
+# played in years is at most as strong as their last estimate, never
+# stronger than that, regardless of where on the scale they sit".
+# ---------------------------------------------------------------------------
+DISPLAY_DECAY_GRACE_DAYS = 365
+DISPLAY_DECAY_HALFLIFE_DAYS = 4 * 365
+DISPLAY_DECAY_PRIOR = 0.0
+
+
+def compute_theta_display(
+    theta: float,
+    last_game_date: Optional[date],
+    today: date,
+    *,
+    grace_days: int = DISPLAY_DECAY_GRACE_DAYS,
+    halflife_days: int = DISPLAY_DECAY_HALFLIFE_DAYS,
+    prior: float = DISPLAY_DECAY_PRIOR,
+) -> float:
+    """Return θ shrunk toward ``prior`` for inactive players, clamped so
+    decay never makes anyone stronger (see module docstring)."""
+    if last_game_date is None:
+        return float(theta)
+    days_inactive = (today - last_game_date).days
+    if days_inactive <= grace_days:
+        return float(theta)
+    excess = days_inactive - grace_days
+    factor = 0.5 ** (excess / halflife_days)
+    decayed = prior + (float(theta) - prior) * factor
+    # Clamp: decay must only push players *down* (further from the top
+    # of the ranking).  For θ < prior the formula above would inflate
+    # them toward the prior, which is the opposite of what we want.
+    return float(min(float(theta), decayed))
+
 try:
     import duckdb
 except ImportError:
@@ -403,6 +472,54 @@ def _build_theta_before_map(
     return out
 
 
+def _solve_implied_theta(
+    a_arr: np.ndarray,
+    b_eff: np.ndarray,
+    n: int,
+    score_actual: float,
+    *,
+    lo: float = -8.0,
+    hi: float = 8.0,
+    iters: int = 40,
+) -> float:
+    """
+    Solve for θ_team such that a hypothetical team of ``n`` identical
+    players, each of strength θ_team, would take exactly ``score_actual``
+    questions on this pack:
+
+        S_pred(θ) = Σ_q [1 − exp(−n · exp(a_q · θ − b_eff[q]))]
+
+    ``b_eff`` already bakes in δ_t, δ_size (for the actual team size) and
+    δ_pos − δ_pos[anchor].  S_pred is monotone increasing in θ, so a
+    plain bisection converges quickly.  Returns ``lo`` / ``hi`` if the
+    score is outside the achievable range (e.g. impossible perfect /
+    zero score for that pack and team size).
+    """
+    if n <= 0:
+        return float("nan")
+
+    def predicted(theta: float) -> float:
+        z = a_arr * theta - b_eff
+        # Clip extremely negative z to avoid 0 contribution noise (still O.K.).
+        lam = np.exp(z)
+        # p_q = 1 − exp(−n·λ_q) — stable formulation via expm1.
+        return float(np.sum(-np.expm1(-n * lam)))
+
+    s_lo = predicted(lo)
+    s_hi = predicted(hi)
+    if score_actual <= s_lo:
+        return lo
+    if score_actual >= s_hi:
+        return hi
+    for _ in range(iters):
+        mid = 0.5 * (lo + hi)
+        if predicted(mid) < score_actual:
+            lo = mid
+        else:
+            hi = mid
+    return 0.5 * (lo + hi)
+
+
 def compute_expected_takes(
     rosters_by_tid: dict[int, list[tuple[int, list[int]]]],
     questions_by_tid: dict[int, list[tuple[int, float, float, int]]],
@@ -417,6 +534,7 @@ def compute_expected_takes(
     delta_pos: Optional[np.ndarray],
     pos_anchor: Optional[int],
     theta_before: Optional[dict[tuple[int, int], float]] = None,
+    score_by_team: Optional[dict[tuple[int, int], int]] = None,
 ):
     """
     For each (tournament, team) compute the model's expected number of takes:
@@ -432,12 +550,22 @@ def compute_expected_takes(
     rating *as it was before the tournament* (eliminating the time-bias
     that final θ introduces for old games).  Otherwise the final θ is used.
 
+    If ``score_by_team`` is provided, also computes ``theta_implied`` per
+    (tid, team_id): the per-player θ that a team of identical players
+    of the team's actual size would need to match the observed take
+    count exactly (after stripping out δ_t, δ_size, δ_pos).  This is the
+    "effective team strength" shown on the team page chart — directly
+    comparable to per-player θ values elsewhere on the site.
+
     Returns:
       expected:        dict (tid, team_id) -> expected_takes (float)
       delta_t_by_tid:  dict tid -> δ_t (float)  (NaN if game idx unknown)
+      theta_implied:   dict (tid, team_id) -> θ_team (float)  (empty if
+                       ``score_by_team`` is None)
     """
     expected: dict[tuple[int, int], float] = {}
     delta_t_by_tid: dict[int, float] = {}
+    theta_implied: dict[tuple[int, int], float] = {}
 
     has_size = delta_size is not None and team_size_anchor is not None
     has_pos = delta_pos is not None and pos_anchor is not None
@@ -501,7 +629,14 @@ def compute_expected_takes(
             p = -np.expm1(-S)
             expected[(tid, team_id)] = float(p.sum())
 
-    return expected, delta_t_by_tid
+            if score_by_team is not None:
+                score = score_by_team.get((tid, team_id))
+                if score is not None:
+                    theta_implied[(tid, team_id)] = _solve_implied_theta(
+                        a_arr, b_eff, n, float(score)
+                    )
+
+    return expected, delta_t_by_tid, theta_implied
 
 
 # ---------------------------------------------------------------------------
@@ -522,7 +657,8 @@ CREATE TABLE players (
     player_id INTEGER PRIMARY KEY,
     last_name TEXT,
     first_name TEXT,
-    theta DOUBLE,
+    theta DOUBLE,           -- raw model output
+    theta_display DOUBLE,   -- theta shrunk for inactivity; used for ranking
     games INTEGER,
     last_game_date DATE
 );
@@ -578,6 +714,11 @@ CREATE TABLE team_games (
     n_players_active INTEGER,
     score_actual INTEGER,
     expected_takes DOUBLE,
+    -- "Effective team strength" — per-player θ that a team of identical
+    -- players (same actual roster size) would need to match score_actual
+    -- exactly, after stripping out δ_t/δ_size/δ_pos.  Comparable to the
+    -- per-player θ values shown elsewhere; used by the team page chart.
+    team_theta_implied DOUBLE,
     place DOUBLE
 );
 
@@ -655,23 +796,38 @@ def write_duckdb(
     _log("Inserting players…")
     pid_to_theta = {int(pid): float(t) for pid, t in zip(res.player_id, res.theta)}
     pid_to_games = {int(pid): int(g) for pid, g in zip(res.player_id, res.games)}
-    # Last game date: derive from history (max game_idx → date_ordinal)
+    # Last game date per DB player_id: derive from history.  Note that the
+    # history arrays already store DB IDs (``history_player_id`` ∈ DB
+    # player_id, ``history_game_id`` ∈ DB tournament_id).  ``game_date_ordinal``
+    # is indexed by the *internal* tournament index (game_idx), so we have to
+    # translate tournament_id → game_idx via ``idx_to_game_id`` before
+    # looking up the date.  The previous version of this code looked up
+    # ``gdo[tid]`` directly, which silently produced NULL or wrong dates
+    # because tournament IDs (~13 000) overshoot the gdo array length (~8 800).
     pid_last_game: dict[int, Optional[date]] = {}
     if res.history_player_id is not None:
-        # vectorised
-        order = np.argsort(res.history_game_id, kind="stable")
-        hp = res.history_player_id[order]
-        hg = res.history_game_id[order]
-        last_game_per_player: dict[int, int] = {}
-        for p, g in zip(hp.tolist(), hg.tolist()):
-            last_game_per_player[int(p)] = int(g)
+        gid_to_game_idx = {int(t): i for i, t in enumerate(maps.idx_to_game_id)}
         gdo = maps.game_date_ordinal
-        for p, g in last_game_per_player.items():
-            if 0 <= g < len(gdo):
-                pid_last_game[p] = _ord_to_date(int(gdo[g]))
+        last_tid_per_pid: dict[int, int] = {}
+        # We want the *latest* tournament per player; pick the largest
+        # game_idx (chronological ordering by start_date is what we
+        # actually want, but game_idx is built in chronological order).
+        for pid_db, tid_db in zip(
+            res.history_player_id.tolist(), res.history_game_id.tolist()
+        ):
+            g_idx = gid_to_game_idx.get(int(tid_db))
+            if g_idx is None:
+                continue
+            prev = last_tid_per_pid.get(int(pid_db))
+            if prev is None or g_idx > prev:
+                last_tid_per_pid[int(pid_db)] = g_idx
+        for pid_db, g_idx in last_tid_per_pid.items():
+            if 0 <= g_idx < len(gdo):
+                pid_last_game[pid_db] = _ord_to_date(int(gdo[g_idx]))
 
-    pid_arr, last_arr, first_arr, theta_arr, games_arr, last_dt_arr = (
-        [], [], [], [], [], []
+    today = date.today()
+    pid_arr, last_arr, first_arr, theta_arr, theta_disp_arr, games_arr, last_dt_arr = (
+        [], [], [], [], [], [], []
     )
     for pid in maps.idx_to_player_id:
         pid = int(pid)
@@ -679,18 +835,22 @@ def write_duckdb(
         pid_arr.append(pid)
         last_arr.append(meta.get("last_name") or "")
         first_arr.append(meta.get("first_name") or "")
-        theta_arr.append(pid_to_theta.get(pid, 0.0))
+        theta = pid_to_theta.get(pid, 0.0)
+        last_played = pid_last_game.get(pid)
+        theta_arr.append(theta)
+        theta_disp_arr.append(compute_theta_display(theta, last_played, today))
         games_arr.append(pid_to_games.get(pid, 0))
-        last_dt_arr.append(pid_last_game.get(pid))
+        last_dt_arr.append(last_played)
     _bulk_insert(
         con,
         "players",
-        ["player_id", "last_name", "first_name", "theta", "games", "last_game_date"],
+        ["player_id", "last_name", "first_name", "theta", "theta_display", "games", "last_game_date"],
         {
             "player_id": pa.array(pid_arr, type=pa.int32()),
             "last_name": pa.array(last_arr, type=pa.string()),
             "first_name": pa.array(first_arr, type=pa.string()),
             "theta": pa.array(theta_arr, type=pa.float64()),
+            "theta_display": pa.array(theta_disp_arr, type=pa.float64()),
             "games": pa.array(games_arr, type=pa.int32()),
             "last_game_date": pa.array(last_dt_arr, type=pa.date32()),
         },
@@ -904,7 +1064,17 @@ def write_duckdb(
     )
     _log(f"    {len(theta_before_map):,} (player, tournament) θ values")
 
-    expected, delta_t_by_tid = compute_expected_takes(
+    # Pre-compute observed score per (tid, team) so compute_expected_takes
+    # can also solve for the implied team θ.
+    score_by_team: dict[tuple[int, int], int] = {}
+    for (tid_k, team_k), result in results_rows.items():
+        mask = result.get("points_mask") if isinstance(result, dict) else None
+        if isinstance(mask, str):
+            score_by_team[(int(tid_k), int(team_k))] = sum(
+                1 for c in mask if c == "1"
+            )
+
+    expected, delta_t_by_tid, theta_implied = compute_expected_takes(
         rosters_by_tid,
         questions_by_tid,
         pid_to_theta,
@@ -917,9 +1087,11 @@ def write_duckdb(
         delta_pos=res.delta_pos,
         pos_anchor=res.pos_anchor,
         theta_before=theta_before_map or None,
+        score_by_team=score_by_team,
     )
     _log(
-        f"  computed expected_takes for {len(expected):,} teams; "
+        f"  computed expected_takes for {len(expected):,} teams "
+        f"(implied θ for {len(theta_implied):,}); "
         f"δ_t (μ_type+ε_t) ranges "
         f"[{np.nanmin(list(delta_t_by_tid.values())):+.2f}, "
         f"{np.nanmax(list(delta_t_by_tid.values())):+.2f}]"
@@ -953,6 +1125,7 @@ def write_duckdb(
     tg_nact: list[int] = []
     tg_score: list[int] = []
     tg_exp: list[float] = []
+    tg_theta: list[Optional[float]] = []
     tg_place: list[Optional[float]] = []
     pg_template: dict[int, dict[int, tuple[int, int, float]]] = {}
     # pg_template: player_id -> {tournament_id: (team_id, n_takes_team, expected_takes_team)}
@@ -970,12 +1143,14 @@ def write_duckdb(
             score_actual = 0
             place = None
         exp = expected.get((tid, team_id), 0.0)
+        ti = theta_implied.get((tid, team_id))
         tg_tid.append(int(tid))
         tg_team.append(int(team_id))
         tg_name.append(team_name.get(team_id, ""))
         tg_nact.append(n_active)
         tg_score.append(int(score_actual))
         tg_exp.append(float(exp))
+        tg_theta.append(float(ti) if ti is not None else None)
         tg_place.append(place)
         for pid in active_pids:
             pg_template.setdefault(int(pid), {})[int(tid)] = (
@@ -987,7 +1162,7 @@ def write_duckdb(
         con,
         "team_games",
         ["tournament_id", "team_id", "team_name", "n_players_active",
-         "score_actual", "expected_takes", "place"],
+         "score_actual", "expected_takes", "team_theta_implied", "place"],
         {
             "tournament_id": pa.array(tg_tid, type=pa.int32()),
             "team_id": pa.array(tg_team, type=pa.int32()),
@@ -995,6 +1170,7 @@ def write_duckdb(
             "n_players_active": pa.array(tg_nact, type=pa.int32()),
             "score_actual": pa.array(tg_score, type=pa.int32()),
             "expected_takes": pa.array(tg_exp, type=pa.float64()),
+            "team_theta_implied": pa.array(tg_theta, type=pa.float64()),
             "place": pa.array(tg_place, type=pa.float64()),
         },
     )

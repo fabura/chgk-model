@@ -101,14 +101,52 @@ Read-only FastAPI + Jinja2 frontend over a baked DuckDB (~390 MB):
 
 | Path | Role |
 |------|------|
-| `website/build/build_db.py` | Joins `data.npz`, `results/seq.npz` and the questions sqlite into `website/data/chgk.duckdb`; precomputes per-team expected takes from pre-tournament θ snapshots |
-| `website/app/main.py` | Routes: `/`, `/player/{id}`, `/team/{id}`, `/tournament/{id}`, `/search`, `/methodology`, `/admin/reload-db` (guarded by `X-Admin-Token`) |
+| `website/build/build_db.py` | Joins `data.npz`, `results/seq.npz` and the questions sqlite into `website/data/chgk.duckdb`; precomputes per-team expected takes from pre-tournament θ snapshots, a `theta_display` (inactivity-shrunk θ) column, and a `team_theta_implied` per (team, tournament) — the per-player θ that a hypothetical team of identical players of the team's actual size would need to take exactly the observed score on that pack (strips out δ_t/δ_size/δ_pos; same scale as player θ; powers the team-page chart) |
+| `website/app/main.py` | Routes: `/`, `/teams`, `/tournaments`, `/player/{id}`, `/team/{id}`, `/tournament/{id}`, `/search`, `/methodology`, `/admin/reload-db` (guarded by `X-Admin-Token`) |
 | `website/app/db.py` | Single read-only DuckDB connection, re-opened on hot reload |
-| `website/app/templates/` | `top_players.html`, `player.html` (with cold-start warning for <15-game rookies), `team.html`, `tournament.html` (expected-vs-actual takes), `methodology.html`, `search.html`, `base.html` |
-| `website/Dockerfile` | Production image |
+| `website/app/templates/` | `top_players.html` (sorts by `theta_display`, shows raw θ in a sub-column), `tournaments_list.html` (paginated, type filter), `teams_list.html` (paginated, ranks active teams by mean `theta_display` of their top-≤6 most-frequent players in a configurable window; filter by `min_base` excludes lone-wolf teams), `player.html` (cold-start warning for <15-game rookies; inactivity warning when `theta_display` ≠ `theta`), `team.html` (expandable per-tournament rosters; trend chart uses `team_theta_implied` instead of raw take counts), `tournament.html` (expected-vs-actual takes), `methodology.html` (cold-start + inactivity-decay sections), `search.html`, `base.html`, `_macros.html` (shared paginator) |
+| `website/Dockerfile` | Production image (Python deps only — DuckDB file is bind-mounted, NOT baked) |
+| `website/deploy/` | Production deployment to a single VPS behind nginx (`docker-compose.yml` + `nginx.conf` + `deploy.sh` + `refresh-db.sh`); see `website/deploy/README.md` |
 
 Local secrets (`.admin_token`) and the on-disk DuckDB are gitignored
 (`website/.gitignore` covers `data/*.duckdb*`).
+
+### Deployment
+
+Single VPS (`65.21.62.193`), two containers on a docker bridge:
+nginx (`:80`) → app (uvicorn `:8000`).  The DuckDB file lives on the
+host at `/srv/chgk-model/data/chgk.duckdb` and is bind-mounted
+read-only — model rebuilds only re-rsync that file.
+
+```bash
+./website/deploy/deploy.sh --db          # full deploy (build image + ship + restart + DB)
+./website/deploy/deploy.sh --image-only  # only Python/template changes
+./website/deploy/refresh-db.sh           # only refresh DB after a model retrain
+```
+
+`ADMIN_TOKEN` lives in `/srv/chgk-model/.env` (chmod 600) and protects
+`/admin/reload-db`.  HTTPS is intentionally not configured yet — add
+Cloudflare or a certbot sidecar once a domain is registered.
+
+### Display-only inactivity decay
+
+The model itself does not decay θ over calendar time
+(`rho_calendar = 1.0` — see `docs/calendar_decay_experiments.md`),
+which leaves long-retired players at the very top of the raw θ board.
+The website hides this artefact by precomputing a `theta_display`
+column at build time (`compute_theta_display` in `website/build/build_db.py`):
+
+```
+factor       = 0.5 ** (max(0, days_inactive - grace) / halflife)
+theta_display = prior + (theta - prior) * factor
+```
+
+Defaults: `grace = 365 days` (no penalty for a season off),
+`halflife = 4 * 365 days` (very slow), `prior = 0.0`. So θ = 1.0
+becomes 0.84 / 0.71 / 0.50 / 0.21 after 2 / 3 / 5 / 10 years of
+inactivity. `theta_display` is what `/`, the `#rank`, and most
+profile UI use; raw `theta` is still displayed in parentheses and
+used in every historical computation (e.g. `expected_takes`).
 
 ## Daily refresh pipeline (`scripts/refresh_*.sh`)
 

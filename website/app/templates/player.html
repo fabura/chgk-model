@@ -8,8 +8,14 @@
 {% block content %}
 <div class="mb-6">
   <h1 class="text-2xl font-semibold">{{ player|fullname }}</h1>
+  {% set decay_diff = player.theta - (player.theta_display if player.theta_display is not none else player.theta) %}
   <div class="text-sm text-slate-600 mt-1">
-    θ = <span class="font-medium num">{{ "%.3f"|format(player.theta) }}</span>
+    {% if decay_diff > 0.001 %}
+      θ (текущ.) = <span class="font-medium num">{{ "%.3f"|format(player.theta_display) }}</span>
+      <span class="text-slate-400">(модель: {{ "%.3f"|format(player.theta) }}, снижено на {{ "%.3f"|format(decay_diff) }} из-за неактивности)</span>
+    {% else %}
+      θ = <span class="font-medium num">{{ "%.3f"|format(player.theta) }}</span>
+    {% endif %}
     {% if rank and rank.rank %}
     · место в рейтинге:
       <a href="/?min_games={{ rank.min_games }}" class="text-indigo-700 hover:underline">
@@ -26,6 +32,14 @@
     {% endif %}
     · ID: {{ player.player_id }}
   </div>
+  {% if decay_diff > 0.001 %}
+  <p class="mt-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2">
+    Игрок не выходил на турниры уже больше года, поэтому «текущий» θ
+    медленно сдвигается к 0 (полураспад ≈ 4 года). При возвращении
+    на игры θ снова станет равно сырому значению модели.
+    <a href="/methodology#inactivity-decay" class="text-amber-900 underline">подробнее</a>
+  </p>
+  {% endif %}
 </div>
 
 <section class="bg-white border border-slate-200 rounded shadow-sm mb-6">
