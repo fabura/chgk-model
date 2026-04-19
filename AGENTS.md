@@ -78,6 +78,19 @@ Sequential model: computes player strength changes week by week, tournament by t
   (`exclude_seasonal_aggregates=True` in `data.py`) is applied at load
   time before training to remove "12 граней"-style broken
   `points_mask` rows.
+- **Re-tuned defaults (2026-04, post-cleanup)**: after the seasonal-
+  aggregate filter and yearly re-centering, the per-update step sizes
+  needed re-tuning. A focused sweep (`/tmp/chgk_retune*.py`,
+  `results/retune_2026-04*.csv`, 38 trials) on the 20 % time-split
+  hold-out picked **`eta0=0.05`** (was 0.10), **`w_sync=0.7`** (was
+  0.9), **`w_async_mode=0.15`** (was 0.3) and
+  **`w_online_questions=0.30`** (was 0.45) as the new `Config`
+  defaults. Backtest improvement on the cleaned cache:
+  `logloss 0.5365 → 0.5331` (−0.0034), `Brier 0.1799 → 0.1786`,
+  `AUC 0.8065 → 0.8101`. The four axes proved largely additive
+  (per-axis gains stack 1:1 in the combo). Other axes
+  (`w_online`, `w_async_residual`, `eta_eps`) were flat within ±0.0001
+  and were left at their previous defaults.
 - **Paired tournaments**: Uses `canonical_q_idx` — sync+async pairs share question params (b, a)
 - **Tournament ordering**: By `start_datetime` (date of start, not end)
 

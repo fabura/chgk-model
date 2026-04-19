@@ -108,18 +108,41 @@ def tune(
     results: list[TuneResult] = []
     n = len(configs)
 
+    # Identify which fields are actually being swept (varying across
+    # configs) so we print a concise summary rather than every default.
+    swept_keys: list[str] = []
+    if configs:
+        all_keys = set().union(*(set(kw.keys()) for kw in configs))
+        for k in sorted(all_keys):
+            vals = {kw.get(k) for kw in configs}
+            if len(vals) > 1:
+                swept_keys.append(k)
+
     for i, kw in enumerate(configs):
-        cfg = Config(
-            eta0=kw.get("eta0", 0.05),
-            rho=kw.get("rho", 0.999),
-            w_online=kw.get("w_online", 0.7),
-            use_tournament_delta=kw.get("use_tournament_delta", True),
-            use_delta_type_prior=kw.get("use_delta_type_prior", False),
-        )
+        # Build Config from defaults, then override with whatever the
+        # trial supplied.  Any field of ``Config`` may be tuned this way
+        # (eta0, rho, w_online, w_sync, w_async_mode, w_async_residual,
+        # eta_mu, eta_eps, recenter_target, …).
+        try:
+            cfg = Config(**kw)
+        except TypeError as e:
+            raise TypeError(
+                f"Tune config has unknown field(s): {kw!r}.  "
+                f"Make sure every key matches a Config attribute. ({e})"
+            )
         if verbose:
+            if swept_keys:
+                summary = " ".join(
+                    f"{k}={kw.get(k, getattr(cfg, k))}"
+                    for k in swept_keys
+                )
+            else:
+                summary = (
+                    f"eta0={cfg.eta0:.4f} rho={cfg.rho:.4f} "
+                    f"w_online={cfg.w_online:.2f}"
+                )
             print(
-                f"Trial {i + 1}/{n} | "
-                f"eta0={cfg.eta0:.4f} rho={cfg.rho:.4f} w_online={cfg.w_online:.2f}",
+                f"Trial {i + 1}/{n} | {summary}",
                 end=" ... ",
                 flush=True,
             )

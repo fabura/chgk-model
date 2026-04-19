@@ -37,7 +37,7 @@ def main() -> int:
 
     hp = parser.add_argument_group("hyperparameters")
     hp.add_argument(
-        "--eta0", type=float, default=0.10, help="Base learning rate"
+        "--eta0", type=float, default=0.05, help="Base learning rate"
     )
     hp.add_argument(
         "--rho", type=float, default=0.9995, help="Rating decay"
@@ -51,7 +51,7 @@ def main() -> int:
     hp.add_argument(
         "--w_online_questions",
         type=float,
-        default=0.45,
+        default=0.30,
         help="Async/online weight for question difficulty updates",
     )
     hp.add_argument(
@@ -63,7 +63,7 @@ def main() -> int:
     hp.add_argument(
         "--w_async_mode",
         type=float,
-        default=0.3,
+        default=0.15,
         help="Async/online weight for global mode-offset updates",
     )
     hp.add_argument(

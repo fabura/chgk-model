@@ -36,16 +36,22 @@ class Config:
     evidence of player strength and question discrimination.
     """
 
-    eta0: float = 0.10
+    # Re-tuned 2026-04 on the cleaned cache (seasonal-aggregate filter +
+    # yearly gauge re-centering target=-0.70).  Previous defaults were
+    # tuned on the noisier dataset and were 2× too aggressive on eta0.
+    # See ``results/retune_2026-04_p2.csv``: the 4-axis combo below
+    # cuts backtest logloss from 0.5365 → 0.5331 (-0.0034) and lifts
+    # AUC from 0.8065 → 0.8101 (+0.0036) on the 20% hold-out.
+    eta0: float = 0.05
     rho: float = 0.9995
     w_online: float = 0.5
 
     w_offline: float = 1.0
-    w_sync: float = 0.9
-    w_online_questions: float = 0.45
+    w_sync: float = 0.7
+    w_online_questions: float = 0.30
     w_online_log_a: float = 0.05
     w_sync_mode: float = 1.0
-    w_async_mode: float = 0.3
+    w_async_mode: float = 0.15
     w_sync_residual: float = 0.9
     w_async_residual: float = 0.6
 
