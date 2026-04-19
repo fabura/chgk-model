@@ -9,9 +9,12 @@ checkpoints*
 
 # Local DB cache (too large for git)
 data.npz
+data.npz.bak
+data.npz.tmp
 
 # Run logs (anywhere)
 *.log
 
 # Experiment outputs: CSV/npz exports, tuning tables, backtest dumps (regenerate via rating / scripts)
 results/
+website/.admin_token
