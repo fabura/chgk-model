@@ -48,6 +48,10 @@ CONFIGS = {
 
     "cal_decay_0.99":  base_cfg(use_calendar_decay=True, rho_calendar=0.99),
     "cal_decay_0.995": base_cfg(use_calendar_decay=True, rho_calendar=0.995),
+    "cal_decay_0.997": base_cfg(use_calendar_decay=True, rho_calendar=0.997),
+    "cal_decay_0.998": base_cfg(use_calendar_decay=True, rho_calendar=0.998),
+    "cal_decay_0.999": base_cfg(use_calendar_decay=True, rho_calendar=0.999),
+    "cal_decay_1.000": base_cfg(use_calendar_decay=True, rho_calendar=1.0),
 
     # Combined: pick the cheapest meaningful overlay (will be revised
     # based on single-knob results)
