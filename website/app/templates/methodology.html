@@ -4,303 +4,824 @@
 {% block head_extra %}
 <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
 <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+<style>
+  /* Subtle anchor highlight when navigating from the TOC. */
+  :target { scroll-margin-top: 1rem; }
+  .toc-link { transition: color 120ms; }
+  .toc-link.is-active { color: #4338ca; font-weight: 500; }
+  /* Compact tables inside .prose */
+  .prose table { font-size: 0.875rem; margin: 0.75rem 0; }
+  .prose h2 { margin-top: 1.5rem; }
+  .prose h3 { margin-top: 1.25rem; font-size: 1rem; font-weight: 500; color: #334155; }
+</style>
 {% endblock %}
 
 {% block content %}
-<article class="prose max-w-3xl">
-  <h1 class="text-2xl font-semibold mb-4">Как устроена модель</h1>
+<div class="lg:flex lg:gap-8 max-w-6xl">
+  {# ---------- Sidebar TOC ---------- #}
+  <aside class="lg:w-64 lg:shrink-0 lg:order-2 mb-6 lg:mb-0">
+    <nav class="lg:sticky lg:top-4 bg-slate-50 border border-slate-200 rounded p-4 text-sm">
+      <div class="font-medium text-slate-700 mb-2 text-xs uppercase tracking-wide">Содержание</div>
+      <ol class="space-y-1.5 text-slate-600">
+        <li><a class="toc-link hover:text-indigo-700" href="#intro">1. Введение</a></li>
+        <li><a class="toc-link hover:text-indigo-700" href="#formula">2. Формула noisy-OR</a></li>
+        <li>
+          <a class="toc-link hover:text-indigo-700" href="#params">3. Параметры</a>
+          <ol class="pl-4 space-y-1 mt-1 text-slate-500">
+            <li><a class="toc-link hover:text-indigo-700" href="#theta">3.1 θ — сила игрока</a></li>
+            <li><a class="toc-link hover:text-indigo-700" href="#difficulty">3.2 b — сложность</a></li>
+            <li><a class="toc-link hover:text-indigo-700" href="#discrimination">3.3 a — дискриминация</a></li>
+            <li><a class="toc-link hover:text-indigo-700" href="#effective">3.4 Эффективная сложность</a></li>
+          </ol>
+        </li>
+        <li>
+          <a class="toc-link hover:text-indigo-700" href="#tournament">4. Поправки на турнир</a>
+          <ol class="pl-4 space-y-1 mt-1 text-slate-500">
+            <li><a class="toc-link hover:text-indigo-700" href="#mu-type">4.1 μ_type — формат</a></li>
+            <li><a class="toc-link hover:text-indigo-700" href="#epsilon">4.2 ε_t — пакет</a></li>
+            <li><a class="toc-link hover:text-indigo-700" href="#size">4.3 δ_size — размер команды</a></li>
+            <li><a class="toc-link hover:text-indigo-700" href="#position">4.4 δ_pos — позиция в туре</a></li>
+          </ol>
+        </li>
+        <li>
+          <a class="toc-link hover:text-indigo-700" href="#training">5. Обучение</a>
+          <ol class="pl-4 space-y-1 mt-1 text-slate-500">
+            <li><a class="toc-link hover:text-indigo-700" href="#sgd">5.1 Онлайн SGD</a></li>
+            <li><a class="toc-link hover:text-indigo-700" href="#expm1">5.2 Численная стабильность</a></li>
+            <li><a class="toc-link hover:text-indigo-700" href="#adaptive-lr">5.3 Адаптивный шаг</a></li>
+            <li><a class="toc-link hover:text-indigo-700" href="#type-weights">5.4 Веса по типу турнира</a></li>
+            <li><a class="toc-link hover:text-indigo-700" href="#cold-start">5.5 Холодный старт</a></li>
+          </ol>
+        </li>
+        <li>
+          <a class="toc-link hover:text-indigo-700" href="#regularization">6. Регуляризация и ограничения</a>
+          <ol class="pl-4 space-y-1 mt-1 text-slate-500">
+            <li><a class="toc-link hover:text-indigo-700" href="#priors">6.1 Приоры на параметры</a></li>
+            <li><a class="toc-link hover:text-indigo-700" href="#anchoring">6.2 Якорение и центрирование</a></li>
+            <li><a class="toc-link hover:text-indigo-700" href="#clipping">6.3 Клиппинг</a></li>
+          </ol>
+        </li>
+        <li>
+          <a class="toc-link hover:text-indigo-700" href="#recenter">7. Якорение шкалы во времени</a>
+          <ol class="pl-4 space-y-1 mt-1 text-slate-500">
+            <li><a class="toc-link hover:text-indigo-700" href="#drift">7.1 Проблема дрейфа</a></li>
+            <li><a class="toc-link hover:text-indigo-700" href="#gauge">7.2 Yearly re-centering</a></li>
+            <li><a class="toc-link hover:text-indigo-700" href="#retro">7.3 Ретро-коррекция истории</a></li>
+          </ol>
+        </li>
+        <li><a class="toc-link hover:text-indigo-700" href="#cleaning">8. Очистка данных</a></li>
+        <li>
+          <a class="toc-link hover:text-indigo-700" href="#tuning">9. Подбор гиперпараметров</a>
+          <ol class="pl-4 space-y-1 mt-1 text-slate-500">
+            <li><a class="toc-link hover:text-indigo-700" href="#tuning-what">9.1 Что настраивается</a></li>
+            <li><a class="toc-link hover:text-indigo-700" href="#tuning-how">9.2 Как настраивается</a></li>
+            <li><a class="toc-link hover:text-indigo-700" href="#tuning-values">9.3 Текущие значения</a></li>
+          </ol>
+        </li>
+        <li><a class="toc-link hover:text-indigo-700" href="#inactivity-decay">10. Снижение θ за неактивность</a></li>
+        <li><a class="toc-link hover:text-indigo-700" href="#expectation">11. Что показывает «ожидание»</a></li>
+        <li><a class="toc-link hover:text-indigo-700" href="#quality">12. Качество модели</a></li>
+      </ol>
+    </nav>
+  </aside>
 
-  <p>
-    Модель описывает каждого игрока одним числом, а каждый вопрос —
-    двумя. Эти три числа учатся одновременно из всей истории
-    взятий/невзятий по всем турнирам — никаких ручных оценок «это
-    сложный вопрос» или «это сильный игрок» в них не вкладывается.
-  </p>
-  <ul class="list-disc pl-6 text-sm">
-    <li><b>θ<sub>k</sub></b> — сила игрока <i>k</i> (player strength).</li>
-    <li><b>b<sub>i</sub></b> — сложность вопроса <i>i</i> (difficulty).</li>
-    <li><b>a<sub>i</sub></b> — дискриминация вопроса <i>i</i> (discrimination, она же селективность).</li>
-  </ul>
+  {# ---------- Main content ---------- #}
+  <article class="prose max-w-3xl lg:order-1 lg:flex-1">
+    <h1 class="text-2xl font-semibold mb-4">Как устроена модель</h1>
 
-  <h2 class="text-lg font-medium mt-5 mb-2">Вероятность взятия</h2>
-  <p>
-    Считаем, что каждый игрок «независимо генерирует попытку» с интенсивностью
-    \( \lambda_k = \exp(-(b_i + \delta_t) + a_i \cdot \theta_k) \), а команда
-    берёт вопрос, если хотя бы одна попытка успешна
-    (модель <i>noisy-OR</i>):
-  </p>
-  <p>
-    \[
-    p_{\text{взять}} \;=\; 1 - \exp\!\left(-\sum_{k \in \text{команда}} \lambda_k\right)
-    \]
-  </p>
-  <p class="text-sm text-slate-600">
-    Под экспонентой стоит «логарифм трудности» —
-    \( -b_i + a_i \theta_k \). Чем больше \( \theta \), тем больше шанс
-    взятия; чем больше \( b \) — тем меньше. Все три числа живут в
-    одной общей шкале (логарифмическая шкала «сколько бы попыток
-    понадобилось этому игроку на этот вопрос»), поэтому их можно
-    напрямую складывать и сравнивать.
-  </p>
+    {# ===== 1. Intro ===== #}
+    <h2 id="intro" class="text-lg font-medium mt-2">1. Введение</h2>
+    <p>
+      Модель описывает каждого игрока одним числом, а каждый вопрос — двумя.
+      Эти три числа учатся одновременно из всей истории взятий и невзятий по
+      всем турнирам — никаких ручных оценок «это сложный вопрос» или «это
+      сильный игрок» в них не вкладывается.
+    </p>
+    <ul class="list-disc pl-6 text-sm">
+      <li><b>θ<sub>k</sub></b> — сила игрока <i>k</i> (player strength).</li>
+      <li><b>b<sub>i</sub></b> — сложность вопроса <i>i</i> (difficulty).</li>
+      <li><b>a<sub>i</sub></b> — дискриминация вопроса <i>i</i> (discrimination).</li>
+    </ul>
+    <p class="text-sm text-slate-600">
+      Поверх трёх базовых параметров есть несколько мелких поправок (на
+      формат турнира, размер команды, позицию вопроса в туре) и
+      инфраструктура для устойчивости во времени (якорение шкалы,
+      регуляризация, фильтры данных). Дальше — по порядку.
+    </p>
 
-  <h2 class="text-lg font-medium mt-5 mb-2">Сила игрока θ</h2>
-  <p>
-    θ — это «универсальный скилл» игрока в шкале, общей для всех
-    игроков и всех вопросов. Сдвиг θ на +1 означает, что игрок берёт
-    в \( e \approx 2.7 \) раз больше «вопросов средней
-    дискриминации» в одиночку (точная формула — ниже).
-  </p>
-  <p class="text-sm text-slate-600">
-    Реальное распределение по 49 438 игрокам в базе:
-  </p>
-  <div class="overflow-x-auto">
-    <table class="w-full text-sm border border-slate-200">
-      <thead class="bg-slate-100 text-slate-600 text-xs">
-        <tr><th class="px-3 py-2 text-left">Перцентиль</th>
-            <th class="px-3 py-2 text-right">θ (все игроки)</th>
-            <th class="px-3 py-2 text-right">θ (≥ 30 игр)</th>
-            <th class="px-3 py-2 text-left">Кто это примерно</th></tr>
-      </thead>
-      <tbody class="text-slate-700">
-        <tr class="border-t"><td class="px-3 py-2">99% (топ-1%)</td>     <td class="px-3 py-2 text-right num">+0.28</td><td class="px-3 py-2 text-right num">+0.35</td><td class="px-3 py-2">элита, синхроны высшей лиги</td></tr>
-        <tr class="border-t"><td class="px-3 py-2">95% (топ-5%)</td>     <td class="px-3 py-2 text-right num">−0.01</td><td class="px-3 py-2 text-right num">+0.06</td><td class="px-3 py-2">сильные регулярные команды</td></tr>
-        <tr class="border-t"><td class="px-3 py-2">75%</td>              <td class="px-3 py-2 text-right num">−0.43</td><td class="px-3 py-2 text-right num">−0.37</td><td class="px-3 py-2">крепкий «средний+»</td></tr>
-        <tr class="border-t"><td class="px-3 py-2">50% (медиана)</td>    <td class="px-3 py-2 text-right num">−0.73</td><td class="px-3 py-2 text-right num">−0.67</td><td class="px-3 py-2">типичный регулярный игрок</td></tr>
-        <tr class="border-t"><td class="px-3 py-2">5%</td>               <td class="px-3 py-2 text-right num">−1.42</td><td class="px-3 py-2 text-right num">−1.37</td><td class="px-3 py-2">начинающие, редко берущие</td></tr>
-      </tbody>
-    </table>
-  </div>
-  <p class="text-sm text-slate-600 mt-2">
-    Среднее по всей базе ≈ −0.7, и это <i>не баг шкалы</i>: модель
-    еженедельно центрирует поправки на турнир, поэтому ноль —
-    это «усреднённый турнир»,
-    а не «усреднённый игрок». Топ-1 (Семушин Иван) держится около
-    \( \theta = +1.0 \).
-  </p>
-  <p class="text-sm text-slate-600">
-    Что значат +1 единица θ на практике (пример: один игрок,
-    типовой вопрос с \( b = 1.0 \), \( a = 1.0 \)):
-  </p>
-  <ul class="list-disc pl-6 text-sm text-slate-600">
-    <li>θ = −1.0 → вероятность взять одному ≈ 13 %;</li>
-    <li>θ = &nbsp;0.0 → ≈ 31 %;</li>
-    <li>θ = +1.0 → ≈ 63 %;</li>
-    <li>θ = +1.5 → ≈ 81 %.</li>
-  </ul>
+    {# ===== 2. Formula ===== #}
+    <h2 id="formula" class="text-lg font-medium">2. Формула вероятности взятия (noisy-OR)</h2>
+    <p>
+      Считаем, что каждый игрок «независимо генерирует попытку» с
+      интенсивностью
+      \( \lambda_k = \exp\!\bigl(-(b_i + \delta_t) + a_i \cdot \theta_k\bigr) \),
+      а команда берёт вопрос, если хотя бы одна попытка успешна:
+    </p>
+    <p>
+      \[
+      p_{\text{взять}} \;=\; 1 - \exp\!\left(-\sum_{k \in \text{команда}} \lambda_k\right)
+      \]
+    </p>
+    <p class="text-sm text-slate-600">
+      Под экспонентой — «логарифм трудности» \( -b_i + a_i\theta_k \). Чем
+      больше θ, тем больше шанс взятия; чем больше b — тем меньше. Все три
+      числа живут в одной общей шкале (логарифмическая шкала «сколько бы
+      попыток понадобилось этому игроку на этот вопрос»), поэтому их можно
+      напрямую складывать и сравнивать.
+    </p>
 
-  <h2 class="text-lg font-medium mt-5 mb-2">Сложность вопроса b</h2>
-  <p>
-    b — «логарифмическая трудность» вопроса. Если игрок с θ = 0
-    в одиночку, без турнирных поправок, играет вопрос с
-    дискриминацией \( a = 1 \), то его шанс взятия равен
-    \( 1 - \exp(-\exp(-b)) \). При b = 0 это ровно 63 %, при b = 1 —
-    31 %, при b = 3 — около 5 %.
-  </p>
-  <div class="overflow-x-auto">
-    <table class="w-full text-sm border border-slate-200">
-      <thead class="bg-slate-100 text-slate-600 text-xs">
-        <tr><th class="px-3 py-2 text-left">b</th>
-            <th class="px-3 py-2 text-right">p взять (соло, θ = 0, a = 1)</th>
-            <th class="px-3 py-2 text-left">Тип вопроса</th></tr>
-      </thead>
-      <tbody class="text-slate-700">
-        <tr class="border-t"><td class="px-3 py-2 num">−1</td><td class="px-3 py-2 text-right num">93 %</td><td class="px-3 py-2">«разминочный», берёт почти любой</td></tr>
-        <tr class="border-t"><td class="px-3 py-2 num">&nbsp;0</td><td class="px-3 py-2 text-right num">63 %</td><td class="px-3 py-2">средний, на средней руки игрока</td></tr>
-        <tr class="border-t"><td class="px-3 py-2 num">+1</td><td class="px-3 py-2 text-right num">31 %</td><td class="px-3 py-2">типичный для регулярных синхронов</td></tr>
-        <tr class="border-t"><td class="px-3 py-2 num">+2</td><td class="px-3 py-2 text-right num">13 %</td><td class="px-3 py-2">сложный, ждёт сильную команду</td></tr>
-        <tr class="border-t"><td class="px-3 py-2 num">+3</td><td class="px-3 py-2 text-right num">5 %</td><td class="px-3 py-2">очень сложный, играется единицами</td></tr>
-        <tr class="border-t"><td class="px-3 py-2 num">+5</td><td class="px-3 py-2 text-right num">0.7 %</td><td class="px-3 py-2">почти невозможный соло</td></tr>
-      </tbody>
-    </table>
-  </div>
-  <p class="text-sm text-slate-600 mt-2">
-    Реальное распределение b по 363 784 каноническим вопросам в базе:
-    медиана ≈ +1.15, среднее +1.66, 95-й перцентиль +7.3.
-    Большинство пакетов лежит в коридоре \( b \in [0, 3] \); хвост
-    «непробиваемых» вопросов с \( b > 5 \) обрезан в модели на 10
-    (без обрезания они уходили бы в \( +\infty \) — ноль взятий ровно
-    означает «бесконечно сложно»).
-  </p>
-  <p class="text-sm text-slate-600">
-    Команда из 6 игроков «компенсирует» примерно \( +\ln 6 \approx +1.8 \)
-    единиц b за счёт самой структуры noisy-OR: то, что для одного игрока
-    \( b = 1 \) (31 %), для команды одного и того же уровня
-    превращается в ≈ 89 %. Поэтому нормальные синхроны для команды —
-    это «всё, что не выше b ≈ 4».
-  </p>
+    {# ===== 3. Parameters ===== #}
+    <h2 id="params" class="text-lg font-medium">3. Базовые параметры</h2>
 
-  <h2 class="text-lg font-medium mt-5 mb-2">Дискриминация вопроса a</h2>
-  <p>
-    a — это «крутизна склона» зависимости вероятности взятия от θ.
-    Если a велика, маленькая разница в силе двух команд
-    превращается в большую разницу в проценте взятия — такой
-    вопрос «хорошо разделяет» сильных и слабых. Если a мала —
-    кривая пологая, и его одинаково часто берут все.
-  </p>
-  <p class="text-sm text-slate-600">
-    Пример: сравним игрока с θ = −1 и игрока с θ = +1 на одном и том
-    же вопросе (\( b = 1 \)):
-  </p>
-  <div class="overflow-x-auto">
-    <table class="w-full text-sm border border-slate-200">
-      <thead class="bg-slate-100 text-slate-600 text-xs">
-        <tr><th class="px-3 py-2 text-left">a</th>
-            <th class="px-3 py-2 text-right">p (θ = −1)</th>
-            <th class="px-3 py-2 text-right">p (θ = +1)</th>
-            <th class="px-3 py-2 text-right">отношение</th>
-            <th class="px-3 py-2 text-left">Тип</th></tr>
-      </thead>
-      <tbody class="text-slate-700">
-        <tr class="border-t"><td class="px-3 py-2 num">0.5</td><td class="px-3 py-2 text-right num">20 %</td><td class="px-3 py-2 text-right num">46 %</td><td class="px-3 py-2 text-right num">×2.3</td><td class="px-3 py-2">«лотерея», слабо различает</td></tr>
-        <tr class="border-t"><td class="px-3 py-2 num">1.0</td><td class="px-3 py-2 text-right num">13 %</td><td class="px-3 py-2 text-right num">63 %</td><td class="px-3 py-2 text-right num">×5.0</td><td class="px-3 py-2">средний (≈ медиана базы)</td></tr>
-        <tr class="border-t"><td class="px-3 py-2 num">1.5</td><td class="px-3 py-2 text-right num">8 %</td><td class="px-3 py-2 text-right num">81 %</td><td class="px-3 py-2 text-right num">×10</td><td class="px-3 py-2">«хороший», чётко делит зал</td></tr>
-        <tr class="border-t"><td class="px-3 py-2 num">2.0</td><td class="px-3 py-2 text-right num">5 %</td><td class="px-3 py-2 text-right num">93 %</td><td class="px-3 py-2 text-right num">×19</td><td class="px-3 py-2">«идеальный фильтр сильных»</td></tr>
-      </tbody>
-    </table>
-  </div>
-  <p class="text-sm text-slate-600 mt-2">
-    Реальное распределение a по той же выборке вопросов:
-    медиана ≈ 1.02, среднее 1.10, 95 % лежит в коридоре
-    \( a \in [0.81, 1.60] \). Большинство вопросов «нормальные»;
-    особо высокая a (выше 1.5) — это, как правило, аккуратно
-    скроенные вопросы, где знание матчасти даёт чистое преимущество.
-    Особо низкая (ниже 0.7) — либо слишком очевидные («гадательные»
-    угадайки, которые берут даже слабые), либо вопросы с подвохом,
-    где <i>сильная</i> команда переусложняет себя и проваливается
-    наравне со слабой.
-  </p>
+    <h3 id="theta">3.1 Сила игрока θ</h3>
+    <p>
+      θ — «универсальный скилл» игрока в шкале, общей для всех игроков и
+      всех вопросов. Сдвиг θ на +1 означает, что игрок берёт в
+      \( e \approx 2.7 \) раз больше «вопросов средней дискриминации»
+      в одиночку.
+    </p>
+    <p class="text-sm text-slate-600">Реальное распределение по 49 438 игрокам:</p>
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm border border-slate-200">
+        <thead class="bg-slate-100 text-slate-600 text-xs">
+          <tr><th class="px-3 py-2 text-left">Перцентиль</th>
+              <th class="px-3 py-2 text-right">θ (все)</th>
+              <th class="px-3 py-2 text-right">θ (≥ 30 игр)</th>
+              <th class="px-3 py-2 text-left">Кто это примерно</th></tr>
+        </thead>
+        <tbody class="text-slate-700">
+          <tr class="border-t"><td class="px-3 py-2">99% (топ-1%)</td>     <td class="px-3 py-2 text-right num">+0.28</td><td class="px-3 py-2 text-right num">+0.35</td><td class="px-3 py-2">элита, синхроны высшей лиги</td></tr>
+          <tr class="border-t"><td class="px-3 py-2">95% (топ-5%)</td>     <td class="px-3 py-2 text-right num">−0.01</td><td class="px-3 py-2 text-right num">+0.06</td><td class="px-3 py-2">сильные регулярные команды</td></tr>
+          <tr class="border-t"><td class="px-3 py-2">75%</td>              <td class="px-3 py-2 text-right num">−0.43</td><td class="px-3 py-2 text-right num">−0.37</td><td class="px-3 py-2">крепкий «средний+»</td></tr>
+          <tr class="border-t"><td class="px-3 py-2">50% (медиана)</td>    <td class="px-3 py-2 text-right num">−0.73</td><td class="px-3 py-2 text-right num">−0.67</td><td class="px-3 py-2">типичный регулярный игрок</td></tr>
+          <tr class="border-t"><td class="px-3 py-2">5%</td>               <td class="px-3 py-2 text-right num">−1.42</td><td class="px-3 py-2 text-right num">−1.37</td><td class="px-3 py-2">начинающие, редко берущие</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="text-sm text-slate-600 mt-2">
+      Среднее по базе ≈ −0.7, и это <i>не баг шкалы</i>: модель
+      еженедельно центрирует поправки на турнир и раз в год явно
+      «прибивает» медиану ветеранов к фиксированному значению (см.
+      <a href="#recenter" class="text-indigo-700 hover:underline">раздел 7</a>),
+      так что ноль — это «усреднённый турнир», а не «усреднённый игрок».
+    </p>
+    <p class="text-sm text-slate-600">
+      Что значат +1 единицы θ на практике (один игрок, типовой вопрос
+      \( b = 1.0,\ a = 1.0 \)):
+    </p>
+    <ul class="list-disc pl-6 text-sm text-slate-600">
+      <li>θ = −1.0 → \( p \approx 13\% \);</li>
+      <li>θ = &nbsp;0.0 → \( \approx 31\% \);</li>
+      <li>θ = +1.0 → \( \approx 63\% \);</li>
+      <li>θ = +1.5 → \( \approx 81\% \).</li>
+    </ul>
 
-  <h2 class="text-lg font-medium mt-5 mb-2">Как они складываются</h2>
-  <p>
-    Под экспонентой в формуле взятия стоит выражение
-    \( -b_i + a_i \cdot \theta_k \). Это удобно интерпретировать как
-    «эффективную сложность вопроса для конкретного игрока»:
-  </p>
-  <p>
-    \[
-    z_{ki} \;=\; a_i \!\left(\theta_k - \frac{b_i}{a_i}\right) \;-\; \delta_t
-    \]
-  </p>
-  <p class="text-sm text-slate-600">
-    То есть в первом приближении игрок «справляется» с вопросом, если
-    его сила θ выше «порога» \( b_i / a_i \) (для типичной \( a_i \approx 1 \) —
-    просто \( b_i \)). Скорость, с которой шанс взятия растёт за этим
-    порогом, задаётся самой \( a_i \). Поправка \( \delta_t \) сдвигает
-    весь пакет одного турнира одновременно.
-  </p>
+    <h3 id="difficulty">3.2 Сложность вопроса b</h3>
+    <p>
+      b — «логарифмическая трудность» вопроса. Шанс игрока с θ = 0
+      в одиночку, без турнирных поправок, при \( a = 1 \) равен
+      \( 1 - \exp(-\exp(-b)) \). При b = 0 это 63 %, при b = 1 — 31 %,
+      при b = 3 — около 5 %.
+    </p>
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm border border-slate-200">
+        <thead class="bg-slate-100 text-slate-600 text-xs">
+          <tr><th class="px-3 py-2 text-left">b</th>
+              <th class="px-3 py-2 text-right">p взять (соло, θ = 0, a = 1)</th>
+              <th class="px-3 py-2 text-left">Тип вопроса</th></tr>
+        </thead>
+        <tbody class="text-slate-700">
+          <tr class="border-t"><td class="px-3 py-2 num">−1</td><td class="px-3 py-2 text-right num">93 %</td><td class="px-3 py-2">«разминочный», берёт почти любой</td></tr>
+          <tr class="border-t"><td class="px-3 py-2 num">&nbsp;0</td><td class="px-3 py-2 text-right num">63 %</td><td class="px-3 py-2">средний, на средней руки игрока</td></tr>
+          <tr class="border-t"><td class="px-3 py-2 num">+1</td><td class="px-3 py-2 text-right num">31 %</td><td class="px-3 py-2">типичный для регулярных синхронов</td></tr>
+          <tr class="border-t"><td class="px-3 py-2 num">+2</td><td class="px-3 py-2 text-right num">13 %</td><td class="px-3 py-2">сложный, ждёт сильную команду</td></tr>
+          <tr class="border-t"><td class="px-3 py-2 num">+3</td><td class="px-3 py-2 text-right num">5 %</td><td class="px-3 py-2">очень сложный, играется единицами</td></tr>
+          <tr class="border-t"><td class="px-3 py-2 num">+5</td><td class="px-3 py-2 text-right num">0.7 %</td><td class="px-3 py-2">почти невозможный соло</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="text-sm text-slate-600 mt-2">
+      Реальное распределение b по каноническим вопросам: медиана ≈ +1.15,
+      среднее +1.66, 95-й перцентиль +7.3. Большинство пакетов лежит в
+      коридоре \( b \in [0, 3] \); хвост «непробиваемых» вопросов с
+      \( b > 5 \) обрезан в модели на 10 (без обрезания они уходили бы в
+      \( +\infty \) — ноль взятий означает «бесконечно сложно»).
+    </p>
+    <p class="text-sm text-slate-600">
+      Команда из 6 игроков «компенсирует» примерно \( +\ln 6 \approx +1.8 \)
+      единиц b за счёт самой структуры noisy-OR: то, что для одного игрока
+      \( b = 1 \) (31 %), для команды того же уровня превращается в ≈ 89 %.
+    </p>
 
-  <h2 class="text-lg font-medium mt-5 mb-2">Поправки на турнир и формат</h2>
-  <p>
-    \( \delta_t = \mu_{\text{type}}[t] + \varepsilon_t \) — общий сдвиг
-    сложности на турнир. Систематическая часть \( \mu_{\text{type}} \)
-    учитывает формат (очник / синхрон / асинхрон): после перехода в
-    онлайн вопросы стали в среднем «легче браться» при том же
-    содержании, и эта разница вытаскивается из данных, а не задана
-    вручную. Остаточный \( \varepsilon_t \) — индивидуальная
-    «лёгкость/сложность» именно этого пакета (центрируется внутри
-    типа по неделе, чтобы не дрейфовать с θ).
-  </p>
-  <p class="text-sm text-slate-600">
-    Дополнительно учитываются: \( \delta_{\text{size}} \) — поправка
-    на размер команды (обычно якорится на 6 человек), и
-    \( \delta_{\text{pos}}[q] \) — позиционный эффект внутри тура
-    (последний вопрос пакета в среднем сложнее первого, потому что
-    устают). Все эти поправки автоматически вычитаются из «эффективной
-    силы команды» на странице команды (\(\theta\)-эквивалент тура),
-    чтобы линия не зависела ни от формата, ни от состава.
-  </p>
+    <h3 id="discrimination">3.3 Дискриминация вопроса a</h3>
+    <p>
+      a — «крутизна склона» зависимости вероятности взятия от θ. Если a
+      велика, маленькая разница в силе двух команд превращается в большую
+      разницу в проценте взятия — такой вопрос «хорошо разделяет»
+      сильных и слабых. Если a мала — кривая пологая, и его одинаково
+      часто берут все.
+    </p>
+    <p class="text-sm text-slate-600">
+      Сравним игрока с θ = −1 и θ = +1 на одном вопросе \( b = 1 \):
+    </p>
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm border border-slate-200">
+        <thead class="bg-slate-100 text-slate-600 text-xs">
+          <tr><th class="px-3 py-2 text-left">a</th>
+              <th class="px-3 py-2 text-right">p (θ = −1)</th>
+              <th class="px-3 py-2 text-right">p (θ = +1)</th>
+              <th class="px-3 py-2 text-right">отношение</th>
+              <th class="px-3 py-2 text-left">Тип</th></tr>
+        </thead>
+        <tbody class="text-slate-700">
+          <tr class="border-t"><td class="px-3 py-2 num">0.5</td><td class="px-3 py-2 text-right num">20 %</td><td class="px-3 py-2 text-right num">46 %</td><td class="px-3 py-2 text-right num">×2.3</td><td class="px-3 py-2">«лотерея», слабо различает</td></tr>
+          <tr class="border-t"><td class="px-3 py-2 num">1.0</td><td class="px-3 py-2 text-right num">13 %</td><td class="px-3 py-2 text-right num">63 %</td><td class="px-3 py-2 text-right num">×5.0</td><td class="px-3 py-2">средний (≈ медиана базы)</td></tr>
+          <tr class="border-t"><td class="px-3 py-2 num">1.5</td><td class="px-3 py-2 text-right num">8 %</td><td class="px-3 py-2 text-right num">81 %</td><td class="px-3 py-2 text-right num">×10</td><td class="px-3 py-2">«хороший», чётко делит зал</td></tr>
+          <tr class="border-t"><td class="px-3 py-2 num">2.0</td><td class="px-3 py-2 text-right num">5 %</td><td class="px-3 py-2 text-right num">93 %</td><td class="px-3 py-2 text-right num">×19</td><td class="px-3 py-2">«идеальный фильтр сильных»</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="text-sm text-slate-600 mt-2">
+      Реальное распределение: медиана ≈ 1.02, среднее 1.10, 95 % лежит в
+      коридоре \( a \in [0.81, 1.60] \). Особо высокая a (выше 1.5) — это,
+      как правило, аккуратно скроенные вопросы, где знание матчасти даёт
+      чистое преимущество. Особо низкая (ниже 0.7) — либо угадайки, либо
+      вопросы с подвохом, где сильная команда переусложняет себя.
+    </p>
+    <p class="text-sm text-slate-600">
+      В модели хранится \( \log a_i \) (а не само a) и зажимается в
+      \( [-3, 3] \), чтобы градиентные шаги не уносили параметр в
+      бесконечность для редких вопросов с экстремальным take rate.
+    </p>
 
-  <h2 class="text-lg font-medium mt-5 mb-2">Обучение</h2>
-  <p>
-    Параметры обновляются последовательно, турнир за турниром, по дате старта.
-    Шаг обучения для игрока уменьшается с ростом числа сыгранных игр:
-    \( \eta_k = \eta_0 / \sqrt{c + \text{games}_k} \), где \( c \!=\! 0.25 \).
-    На первом турнире шаг ≈ \( 2 \eta_0 \) — это «бонус новичка»
-    (как высокий K-фактор в шахматном Эло), который даёт быстро найти
-    свой уровень. У ветерана с 100+ играми шаг становится ≈ \( 0.1 \eta_0 \) —
-    рейтинг устойчив к случайным колебаниям.
-  </p>
+    <h3 id="effective">3.4 Как они складываются</h3>
+    <p>
+      Под экспонентой стоит выражение
+      \( -b_i + a_i \cdot \theta_k - \delta_t \). Удобно интерпретировать
+      это как «эффективную сложность вопроса для конкретного игрока»:
+    </p>
+    <p>
+      \[
+      z_{ki} \;=\; a_i \!\left(\theta_k - \frac{b_i}{a_i}\right) \;-\; \delta_t
+      \]
+    </p>
+    <p class="text-sm text-slate-600">
+      В первом приближении игрок «справляется» с вопросом, если его сила
+      θ выше «порога» \( b_i / a_i \) (для типичной \( a_i \approx 1 \) —
+      просто \( b_i \)). Скорость роста шанса взятия за порогом задаётся
+      самой \( a_i \). Поправка \( \delta_t \) сдвигает весь пакет
+      одного турнира одновременно — её слагаемые описаны ниже.
+    </p>
 
-  <h2 class="text-lg font-medium mt-5 mb-2">Холодный старт</h2>
-  <p>
-    Когда игрок появляется в данных впервые, ему присваивается стартовое
-    значение <b>θ = −1.0</b> — это «слабый дебютант» (большинство
-    новичков рейтинговой базы действительно играют ниже среднего;
-    значение подобрано перебором по logloss). Раньше использовалась
-    средняя θ команды-теммейтов, но это создавало положительную
-    обратную связь: слабые новички тянули вниз средние по командам, и
-    следующие новички получали ещё более низкий стартовый рейтинг.
-    Фиксированный приор + бонус новичка улучшают logloss на ~1.3 % и
-    почти полностью убирают многолетний дрейф топ-1000 игроков.
-  </p>
-  <p class="text-sm text-slate-600">
-    Практическое следствие: первые 5–10 турниров рейтинг игрока сильно
-    «прыгает», пока модель находит его реальный уровень. Не пугайтесь
-    больших шагов в самом начале истории.
-  </p>
+    {# ===== 4. Tournament shifts ===== #}
+    <h2 id="tournament" class="text-lg font-medium">4. Поправки на турнир</h2>
+    <p>
+      Полный сдвиг \( \delta_t \) под экспонентой раскладывается на четыре
+      слагаемых, каждое со своей семантикой и собственными параметрами:
+    </p>
+    <p>
+      \[
+      \delta_t \;=\; \mu_{\text{type}}[\,\text{type}_t\,] \;+\; \varepsilon_t \;+\; \delta_{\text{size}}[\,|\text{команда}|\,] \;+\; \delta_{\text{pos}}[\,q \!\!\mod L\,]
+      \]
+    </p>
 
-  <h2 id="inactivity-decay" class="text-lg font-medium mt-5 mb-2">Снижение θ за неактивность</h2>
-  <p>
-    Сама модель не «забывает» рейтинг с календарным временем
-    (любое календарное затухание во время обучения ухудшает logloss
-    и AUC, см. <code>docs/calendar_decay_experiments.md</code>): θ
-    меняется только тогда, когда игрок реально выходит на турнир.
-    Из-за этого в «сыром» рейтинге на верхних местах могут оказаться
-    люди, которые не играют уже несколько лет — их последняя оценка
-    модели остаётся актуальной как «снимок».
-  </p>
-  <p>
-    Чтобы топ отражал текущую силу, на витрине считается
-    <b>θ (текущ.)</b> — сырое θ модели, которое после года перерыва
-    начинает медленно сдвигаться к нулю:
-  </p>
-  <p>
-    \( \theta_{\text{текущ}} \;=\; \min\!\bigl(\theta_{\text{модели}},\; (\theta_{\text{модели}} - \theta_0) \cdot 0.5^{\,(d - g)/H}\bigr) \)
-    при \( d > g \), иначе \( \theta_{\text{текущ}} = \theta_{\text{модели}} \).
-  </p>
-  <p class="text-sm text-slate-600">
-    Здесь \( d \) — дней с последнего турнира, \( g = 365 \) дней (грейс-период),
-    \( H = 1460 \) дней (полураспад ≈ 4 года), \( \theta_0 = 0 \).
-    Внешнее \( \min(\cdot) \) гарантирует, что неактивность <i>никогда</i>
-    не делает игрока сильнее: для игроков ниже центра шкалы (\( \theta < 0 \))
-    формула просто оставляет θ как есть, иначе они «всплывали» бы к нулю и
-    обгоняли активных слабых игроков. Для топов с \( \theta > 0 \)
-    срабатывает само экспоненциальное затухание:
-  </p>
-  <ul class="list-disc pl-6 text-sm text-slate-600">
-    <li>θ = +1.0, 1 год без игр — без изменений;</li>
-    <li>θ = +1.0, 2 года → 0.84;</li>
-    <li>θ = +1.0, 3 года → 0.71;</li>
-    <li>θ = +1.0, 5 лет → 0.50;</li>
-    <li>θ = +1.0, 10 лет → 0.21;</li>
-    <li>θ = −1.0 (любой срок без игр) → −1.00 (clamped).</li>
-  </ul>
-  <p class="text-sm text-slate-600">
-    Сырое θ модели остаётся видимым в карточке игрока, в скобках на
-    топ-странице и используется во всех расчётах ожиданий по
-    историческим турнирам — чтобы не переписывать прошлое задним числом.
-  </p>
+    <h3 id="mu-type">4.1 μ_type — формат турнира</h3>
+    <p>
+      Систематическая поправка по типу: <code>offline</code> (очник,
+      якорь = 0), <code>sync</code> (синхрон), <code>async</code> (асинхрон).
+      После перехода в онлайн вопросы стали в среднем «легче браться» при
+      том же содержании, и эта разница вытаскивается из данных, а не
+      задана вручную. Учится с малым шагом \( \eta_\mu = 0.005 \) и
+      слабым приором к нулю (<code>reg_mu_type = 0.10</code>).
+    </p>
+    <p class="text-sm text-slate-600">
+      Async-формат имеет меньшие веса обновлений по θ и параметрам
+      вопросов (см. <a href="#type-weights" class="text-indigo-700 hover:underline">раздел 5.4</a>),
+      но <i>больший</i> вес обновлений своего собственного μ_async — из
+      него мы и узнаём системную разницу режимов.
+    </p>
 
-  <h2 class="text-lg font-medium mt-5 mb-2">Что показывает «ожидание»</h2>
-  <p>
-    На странице игрока и турнира столбец «Ожидание» — это сумма \( p_{\text{взять}} \)
-    по всем вопросам турнира, посчитанная с помощью текущих оценок \( \theta \) команды
-    и \( (b, a) \) вопросов. Δ — это сколько команда взяла сверх (или ниже)
-    того, что ожидала бы модель.
-  </p>
+    <h3 id="epsilon">4.2 ε_t — индивидуальная сложность пакета</h3>
+    <p>
+      Каждый турнир t имеет свой остаточный сдвиг \( \varepsilon_t \) —
+      «насколько именно этот пакет легче или сложнее среднего по своему
+      типу». Учится с шагом \( \eta_\varepsilon = 0.03 \) и приором
+      \( \mathrm{reg}_\varepsilon = 0.20 \).
+    </p>
+    <p class="text-sm text-slate-600">
+      В конце каждой недели ε_t центрируется внутри типа турнира (среднее
+      \( \varepsilon \) приводится к 0). Это даёт идентифицируемость
+      разложения \( \delta_t = \mu_{\text{type}} + \varepsilon \): без
+      такого якоря модель могла бы переложить всю общую часть из μ в ε
+      или наоборот.
+    </p>
 
-  <h2 class="text-lg font-medium mt-5 mb-2">Качество модели</h2>
-  <p>
-    На прогностическом тесте (последние турниры исключены из обучения):
-  </p>
-  <ul class="list-disc pl-6 text-sm">
-    <li>logloss ≈ <b>0.522</b> — на 24.8 % лучше предсказания «всё с вероятностью 0.5»</li>
-    <li>AUC ≈ <b>0.826</b> — модель уверенно различает «возьмёт / не возьмёт»</li>
-    <li>Brier ≈ <b>0.182</b></li>
-  </ul>
-  <p>
-    Подробности и сравнение с базовыми оракулами — в отчёте
-    <code>scripts/compare_to_baselines.py</code>.
-  </p>
-</article>
+    <h3 id="size">4.3 δ_size — размер команды</h3>
+    <p>
+      Команды разного размера имеют разный шанс взять вопрос даже при
+      одинаковом среднем уровне игроков (это уже частично учитывается в
+      noisy-OR, но эмпирически остаётся систематический остаток). Модель
+      учит вектор \( \delta_{\text{size}}[1\ldots 8] \), якорённый на
+      <code>team_size_anchor = 6</code> (значение в шестом элементе
+      зафиксировано на 0). Размеры выше 8 клиппятся.
+    </p>
+    <p class="text-sm text-slate-600">
+      Шаг обновления маленький (<code>eta_size = 0.005</code>),
+      приор <code>reg_size = 0.10</code>. Для асинхрона веса обновлений
+      урезаны вдвое (<code>w_size_async = 0.5</code>), потому что
+      составы там часто заявлены неточно.
+    </p>
+
+    <h3 id="position">4.4 δ_pos — позиция вопроса в туре</h3>
+    <p>
+      Вопросы внутри одного тура (длина <code>tour_len = 12</code>)
+      берутся не одинаково: в среднем последний вопрос тура чуть сложнее
+      первого, потому что устают, потому что в конце оставляют «ловушки»,
+      и т.&nbsp;п. Модель учит вектор
+      \( \delta_{\text{pos}}[0\ldots 11] \), якорённый на нулевой
+      позиции (\( \delta_{\text{pos}}[0] \equiv 0 \), все остальные
+      \( \delta_{\text{pos}} \) читаются как «сколько лишней сложности
+      по сравнению с первым вопросом»).
+    </p>
+    <p class="text-sm text-slate-600">
+      Для турниров с нестандартной длиной тура (≈30 % базы) сигнал
+      шумнее, но всё ещё информативен в среднем. Параметры аналогично
+      δ_size: <code>eta_pos = 0.005</code>, <code>reg_pos = 0.10</code>,
+      <code>w_pos_async = 0.5</code>.
+    </p>
+    <p class="text-sm text-slate-600">
+      На страницах команды и игрока все эти δ автоматически вычитаются
+      из «эффективной силы команды» (θ-эквивалент тура), чтобы линия не
+      зависела ни от формата, ни от состава.
+    </p>
+
+    {# ===== 5. Training ===== #}
+    <h2 id="training" class="text-lg font-medium">5. Обучение</h2>
+
+    <h3 id="sgd">5.1 Онлайн SGD по дате старта турнира</h3>
+    <p>
+      Турниры обрабатываются строго хронологически по дате старта. Внутри
+      турнира вопросы перемешиваются один раз и обходятся по очереди:
+      каждое наблюдение «(команда, вопрос, взяли/нет)» даёт один
+      градиентный шаг по θ участников команды, по \( (b, \log a) \)
+      вопроса и по слагаемым δ_t. Один проход по данным = одна эпоха;
+      по факту используется одна эпоха (модель «онлайн»).
+    </p>
+
+    <h3 id="expm1">5.2 Численная стабильность через expm1</h3>
+    <p>
+      Прямой шаг считает \( p = 1 - \exp(-S) \) как
+      \( -\mathrm{expm1}(-S) \) — это <i>точная</i> формула для маленьких
+      S, тогда как наивное \( 1 - \exp(-S) \) теряет всю точность при
+      \( S \ll 1 \) из-за катастрофического сокращения. В обратном
+      проходе градиент \( \partial \mathcal{L} / \partial S \) для
+      случая «взяли» использует \( 1 / \mathrm{expm1}(S) \), что
+      численно устойчиво и для очень лёгких, и для очень сложных
+      вопросов.
+    </p>
+    <p class="text-sm text-slate-600">
+      Дополнительно <code>z = -b + a·θ - δ</code> зажимается в
+      \( [-30, 30] \) перед \( \exp \), чтобы единичные выбросы не
+      производили <code>+inf</code>; после клиппинга численного смысла
+      это уже не имеет — вероятность всё равно либо ≈ 1, либо ≈ 0.
+      Внутренний цикл реализован на Numba (JIT) — на типичной выборке в
+      27 млн наблюдений один проход занимает ~4 минуты.
+    </p>
+
+    <h3 id="adaptive-lr">5.3 Адаптивный шаг и бонус новичка</h3>
+    <p>
+      Для каждого игрока шаг обучения уменьшается с ростом числа
+      сыгранных игр:
+    </p>
+    <p>
+      \[
+      \eta_k \;=\; \frac{\eta_0}{\sqrt{c \,+\, \text{games}_k}}, \qquad
+      c = 0.25
+      \]
+    </p>
+    <p class="text-sm text-slate-600">
+      На первом турнире \( \eta_k = \eta_0/\sqrt{0.25} = 2\eta_0 \) —
+      это «бонус новичка», по аналогии с высоким K-фактором в шахматном
+      Эло: модель быстро находит уровень дебютанта. У ветерана со
+      100 играми шаг становится \( \approx 0.1\eta_0 \) — рейтинг
+      устойчив к случайным колебаниям. Параметры вопросов и δ обновляются
+      без адаптивного шага: для них используются глобальные \( \eta_0,
+      \eta_\mu, \eta_\varepsilon, \eta_{\text{size}}, \eta_{\text{pos}} \).
+    </p>
+
+    <h3 id="type-weights">5.4 Веса обновлений по типу турнира</h3>
+    <p>
+      Не все турниры одинаково информативны. Очник (offline) — самый
+      «чистый» источник сигнала, синхрон чуть зашумлён, асинхрон
+      существенно зашумлён (несимультанная игра, более лёгкий доступ к
+      справочной литературе). Модель умножает обновления каждого
+      параметра на свой множитель в зависимости от типа турнира:
+    </p>
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm border border-slate-200">
+        <thead class="bg-slate-100 text-slate-600 text-xs">
+          <tr>
+            <th class="px-3 py-2 text-left">Параметр</th>
+            <th class="px-3 py-2 text-right">offline</th>
+            <th class="px-3 py-2 text-right">sync</th>
+            <th class="px-3 py-2 text-right">async</th>
+          </tr>
+        </thead>
+        <tbody class="text-slate-700">
+          <tr class="border-t"><td class="px-3 py-2">θ игрока</td>            <td class="px-3 py-2 text-right num">1.0</td><td class="px-3 py-2 text-right num">0.7</td><td class="px-3 py-2 text-right num">0.5</td></tr>
+          <tr class="border-t"><td class="px-3 py-2">b вопроса</td>           <td class="px-3 py-2 text-right num">1.0</td><td class="px-3 py-2 text-right num">0.7</td><td class="px-3 py-2 text-right num">0.30</td></tr>
+          <tr class="border-t"><td class="px-3 py-2">log a вопроса</td>       <td class="px-3 py-2 text-right num">1.0</td><td class="px-3 py-2 text-right num">0.7</td><td class="px-3 py-2 text-right num">0.05</td></tr>
+          <tr class="border-t"><td class="px-3 py-2">μ_type (формат)</td>     <td class="px-3 py-2 text-right num">—</td><td class="px-3 py-2 text-right num">1.0</td><td class="px-3 py-2 text-right num">0.15</td></tr>
+          <tr class="border-t"><td class="px-3 py-2">ε_t (пакет)</td>         <td class="px-3 py-2 text-right num">1.0</td><td class="px-3 py-2 text-right num">0.9</td><td class="px-3 py-2 text-right num">0.6</td></tr>
+          <tr class="border-t"><td class="px-3 py-2">δ_size, δ_pos</td>       <td class="px-3 py-2 text-right num">1.0</td><td class="px-3 py-2 text-right num">1.0</td><td class="px-3 py-2 text-right num">0.5</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="text-sm text-slate-600 mt-2">
+      Эти 12 чисел подобраны через сеточный/случайный поиск (см.
+      <a href="#tuning" class="text-indigo-700 hover:underline">раздел 9</a>) —
+      <code>w_async_questions = 0.30</code> и
+      <code>w_async_log_a = 0.05</code> намеренно очень малы, потому что
+      пакеты асинхрона быстро «разъезжаются» по утечкам (часть команд
+      успевает посмотреть ответы), и сильно учить b и a по ним вредно.
+    </p>
+
+    <h3 id="cold-start">5.5 Холодный старт</h3>
+    <p>
+      Когда игрок появляется в данных впервые, ему присваивается стартовое
+      значение <b>θ = −1.0</b> — «слабый дебютант» (большинство новичков
+      в рейтинговой базе действительно играют ниже среднего). Раньше
+      использовалась средняя θ команды-теммейтов, но это создавало
+      положительную обратную связь: слабые новички тянули вниз средние
+      команд, и следующие новички получали ещё более низкий стартовый
+      рейтинг — отсюда многолетний дрейф (см.
+      <a href="#drift" class="text-indigo-700 hover:underline">раздел 7.1</a>).
+    </p>
+    <p class="text-sm text-slate-600">
+      Фиксированный приор + бонус новичка (\( c = 0.25 \) выше) улучшают
+      logloss на ≈ 1.3 % и почти полностью устраняют локальный дрейф.
+      Практическое следствие: первые 5–10 турниров рейтинг игрока
+      сильно «прыгает», пока модель находит его реальный уровень —
+      это нормально.
+    </p>
+
+    {# ===== 6. Regularization ===== #}
+    <h2 id="regularization" class="text-lg font-medium">6. Регуляризация и ограничения</h2>
+
+    <h3 id="priors">6.1 Приоры на параметры (L2-shrinkage)</h3>
+    <p>
+      После каждого градиентного шага параметр умножается на
+      \( \max(0,\ 1 - \eta \cdot \mathrm{reg}) \) — это эквивалентно
+      добавлению гауссова приора с центром в нуле. Применяется только
+      к «массовым» параметрам, где исходный сигнал может быть слабым:
+    </p>
+    <ul class="list-disc pl-6 text-sm text-slate-600">
+      <li><b>μ_type</b>: <code>reg_mu_type = 0.10</code> — без приора
+        очник/синхрон/асинхрон могли бы «уехать» в большие абсолютные
+        значения, компенсируясь общим сдвигом θ.</li>
+      <li><b>ε_t</b>: <code>reg_eps = 0.20</code> — на турнирах с малым
+        числом наблюдений (типа однораундовых тестовых пакетов)
+        ε_t иначе переобучается.</li>
+      <li><b>δ_size, δ_pos</b>: <code>reg_size = reg_pos = 0.10</code>.</li>
+      <li><b>θ, b, log&nbsp;a</b>: <code>reg_theta = reg_b = reg_log_a = 0</code>
+        по умолчанию — для этих параметров сигнала достаточно, и
+        принудительное прижатие к нулю ухудшает качество.</li>
+    </ul>
+
+    <h3 id="anchoring">6.2 Якорение и центрирование</h3>
+    <p>
+      Помимо приоров, у некоторых параметров есть жёсткие
+      <i>идентифицирующие ограничения</i>:
+    </p>
+    <ul class="list-disc pl-6 text-sm text-slate-600">
+      <li>\( \mu_{\text{offline}} \equiv 0 \) — очник зафиксирован как
+        точка отсчёта формата.</li>
+      <li>\( \delta_{\text{size}}[6] \equiv 0 \) — стандартная команда из
+        шести играет «на нулевой поправке».</li>
+      <li>\( \delta_{\text{pos}}[0] \equiv 0 \) — первый вопрос тура
+        читается как нулевая поправка.</li>
+      <li>\( \overline{\varepsilon_t} = 0 \) внутри каждой пары
+        (тип турнира, неделя) — пересчитывается раз в неделю по списку
+        реально отыгранных турниров.</li>
+    </ul>
+    <p class="text-sm text-slate-600">
+      Без таких якорей модель имела бы лишние степени свободы (общий
+      сдвиг между μ и ε, между θ и b, и т.&nbsp;п.) и параметры
+      дрейфовали бы вместо обучения.
+    </p>
+
+    <h3 id="clipping">6.3 Клиппинг параметров</h3>
+    <p>
+      На каждом шаге значения зажимаются в безопасные диапазоны:
+    </p>
+    <ul class="list-disc pl-6 text-sm text-slate-600">
+      <li>\( \theta \in [-10,\ 10] \);</li>
+      <li>\( b \in [-10,\ 10] \), \( \log a \in [-3,\ 3] \) (т.&nbsp;е.
+        \( a \in [0.05,\ 20] \));</li>
+      <li>\( \mu_{\text{type}}, \varepsilon_t \in [-10,\ 10] \);</li>
+      <li>\( z = -b + a\theta - \delta \in [-30,\ 30] \) перед
+        экспонентой.</li>
+    </ul>
+    <p class="text-sm text-slate-600">
+      Эти границы достаточно широкие, чтобы никогда не активироваться на
+      нормальных данных, но защищают от единичных «вырожденных»
+      наблюдений (например, синглтон-вопросов с 0 % взятий) и
+      численных переполнений в Numba-коде.
+    </p>
+
+    {# ===== 7. Re-centering ===== #}
+    <h2 id="recenter" class="text-lg font-medium">7. Якорение шкалы во времени (gauge re-centering)</h2>
+
+    <h3 id="drift">7.1 Проблема дрейфа</h3>
+    <p>
+      Формула noisy-OR <i>gauge-инвариантна</i>: если сдвинуть все θ на
+      \( \Delta \) и одновременно прибавить \( a_i \cdot \Delta \) к каждой
+      \( b_i \), все вероятности останутся в точности теми же.
+      Модель «не знает», где у её шкалы ноль — и без явного якоря этот
+      ноль медленно уплывает.
+    </p>
+    <p>
+      Конкретный механизм: каждый новый игрок входит с фиксированным
+      приором \( \theta = -1.0 \). Если за год в систему пришло 5 тысяч
+      рукиз и каждый чуть-чуть «потянул» средние команд вниз, то на
+      следующий год средняя по командам уже ниже — и так раз за разом.
+      На графике популяции это видно как сдвиг медианы θ всех активных
+      игроков с −0.15 (2017) до −0.66 (2025), при том что относительные
+      расстановки между топами почти не меняются.
+    </p>
+
+    <h3 id="gauge">7.2 Yearly gauge re-centering</h3>
+    <p>
+      Раз в год (период 365 дней) модель пересчитывает медиану θ
+      «активных ветеранов» — игроков с ≥ 200 играми, последний раз
+      выходивших на турнир за последние 365 дней — и применяет
+      gauge-преобразование, чтобы прибить эту медиану к фиксированной
+      цели \( \theta^\* = -0.70 \):
+    </p>
+    <p>
+      \[
+      \Delta \;=\; \theta^\* - \mathrm{median}\bigl(\theta_{\text{active vets}}\bigr),
+      \qquad
+      \theta_k \mathrel{+}= \Delta, \qquad
+      b_i \mathrel{+}= a_i \cdot \Delta
+      \]
+    </p>
+    <p class="text-sm text-slate-600">
+      Все предсказания модели остаются <i>точно</i> теми же — это чисто
+      гейдж-сдвиг. Единственный эффект: абсолютная шкала θ перестаёт
+      уплывать со временем, и значения θ из разных лет напрямую
+      сопоставимы.
+    </p>
+    <p class="text-sm text-slate-600">
+      Цель \( \theta^\* = -0.70 \) была подобрана из тех же
+      backtest-метрик, что и остальные гиперпараметры (см.
+      <a href="#tuning" class="text-indigo-700 hover:underline">раздел 9</a>);
+      она ставит медиану ветеранов в районе типичного активного
+      игрока, что делает топ-таблицу читаемой (топ-1 ≈ +1.0, медиана
+      ветеранов ≈ −0.7).
+    </p>
+
+    <h3 id="retro">7.3 Ретроактивная коррекция истории</h3>
+    <p>
+      Историческое значение θ конкретного игрока хранится в той «годовой
+      шкале», какая была активна в момент турнира. Если просто отрисовать
+      историю как есть, на графике θ возникает «уступ» в дату каждого
+      re-centering события (особенно большой — −0.94 на 2017-09, когда
+      механизм запустился впервые и приходилось одним рывком убирать
+      накопленный за все предыдущие годы дрейф).
+    </p>
+    <p>
+      На уровне сборки витрины каждое историческое значение θ сдвигается
+      на сумму всех <i>последующих</i> Δ — приводится в финальную шкалу,
+      ту же, в которой живут текущие топы и параметры b. Графики
+      становятся гладкими, а «ожидание взятий» для старых турниров
+      становится корректно откалибровано (раньше θ старой шкалы
+      сравнивали с b новой, что давало систематический оффсет).
+    </p>
+
+    {# ===== 8. Cleaning ===== #}
+    <h2 id="cleaning" class="text-lg font-medium">8. Очистка данных</h2>
+    <p>
+      В рейтинговой базе встречаются «сезонные агрегаты» —
+      виртуальные турниры, в которых редактор вручную складывает
+      результаты нескольких отдельных игр сезона (например,
+      «12 граней», «Общий зачёт» городских лиг). У них есть две
+      патологии: (1) \( \texttt{points\_mask} \) часто либо обрезан,
+      либо вообще обозначает агрегатные баллы, а не реальные взятия по
+      вопросам; (2) состав команды один и тот же для десятков
+      «турниров», что многократно учитывает одни и те же наблюдения.
+    </p>
+    <p>
+      Загрузчик <code>data.py</code> отбраковывает такие турниры по
+      двум критериям:
+    </p>
+    <ul class="list-disc pl-6 text-sm text-slate-600">
+      <li><b>Прямой матч</b>: <code>type = 'общий зачёт'</code>.</li>
+      <li><b>Эвристика</b>: тип <code>обычный/очник/offline/асинхрон</code>,
+        ≥ 100 вопросов, и средний score / n_questions &lt; 0.20 (нормальные
+        турниры дают долю взятых ≥ 0.30, аномально низкая доля —
+        признак, что mask хранит не то, что должно).</li>
+    </ul>
+    <p class="text-sm text-slate-600">
+      Без этого фильтра у активных игроков городских лиг наблюдались
+      резкие уступы θ вниз — каждый «общий зачёт» давал серию из
+      нескольких десятков ложных «не взяли», и θ просаживалась за
+      месяц на 0.3–0.5 единиц. Фильтр устраняет эти артефакты, не
+      затрагивая нормальные турниры.
+    </p>
+
+    {# ===== 9. Tuning ===== #}
+    <h2 id="tuning" class="text-lg font-medium">9. Подбор гиперпараметров</h2>
+
+    <h3 id="tuning-what">9.1 Что настраивается</h3>
+    <p>
+      У модели несколько групп гиперпараметров, не выводимых из данных
+      напрямую:
+    </p>
+    <ul class="list-disc pl-6 text-sm text-slate-600">
+      <li><b>Шаги обучения</b>: \( \eta_0,\ \eta_\mu,\ \eta_\varepsilon,
+        \eta_{\text{size}},\ \eta_{\text{pos}} \).</li>
+      <li><b>Множители по типу турнира</b>: 12 чисел из
+        <a href="#type-weights" class="text-indigo-700 hover:underline">таблицы 5.4</a>.</li>
+      <li><b>Регуляризация</b>: <code>reg_mu_type, reg_eps, reg_size, reg_pos</code>.</li>
+      <li><b>Холодный старт и адаптивный шаг</b>:
+        <code>cold_init_theta, games_offset</code>.</li>
+      <li><b>Якорение шкалы</b>: <code>recenter_period_days,
+        recenter_target, recenter_min_games, recenter_active_days</code>.</li>
+      <li><b>Календарное затухание</b>: <code>rho_calendar</code>
+        (по умолчанию 1.0 = выключено, см.
+        <code>docs/calendar_decay_experiments.md</code>).</li>
+    </ul>
+
+    <h3 id="tuning-how">9.2 Как настраивается</h3>
+    <p>
+      Цель оптимизации — backtest-logloss на 20 % хвосте по дате (последние
+      турниры исключены из обучения). Для каждого набора гиперпараметров
+      модель обучается на «голове», предсказывает «хвост», и считаются
+      три метрики: <code>logloss</code> (главная), <code>Brier</code>,
+      <code>AUC</code> (вспомогательные).
+    </p>
+    <p>
+      Используется два режима:
+    </p>
+    <ul class="list-disc pl-6 text-sm text-slate-600">
+      <li><b>Сетка</b> (grid search) — фиксированные точки по 1–2 осям,
+        для интерпретируемых сравнений в духе «10 значений
+        recenter_target ∈ [−1.5, 0]».</li>
+      <li><b>Случайный поиск</b> (random search) — равномерные сэмплы по
+        диапазонам, для более широких пространств. Запускается через
+        <code>python -m rating --tune --tune-trials 24</code>.</li>
+    </ul>
+    <p class="text-sm text-slate-600">
+      Поиск устроен последовательным (а не параллельным), потому что
+      внутренний цикл уже параллелится через Numba — параллельные
+      процессы конкурировали бы за CPU и итог был бы только медленнее.
+    </p>
+
+    <h3 id="tuning-values">9.3 Текущие подобранные значения</h3>
+    <p>
+      Дефолты в коде модели соответствуют последнему свипу (апрель 2026,
+      на «чистой» базе с фильтром сезонных агрегатов и yearly
+      re-centering):
+    </p>
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm border border-slate-200">
+        <thead class="bg-slate-100 text-slate-600 text-xs">
+          <tr>
+            <th class="px-3 py-2 text-left">Параметр</th>
+            <th class="px-3 py-2 text-right">Значение</th>
+            <th class="px-3 py-2 text-left">Что значит</th>
+          </tr>
+        </thead>
+        <tbody class="text-slate-700">
+          <tr class="border-t"><td class="px-3 py-2 num">eta0</td>            <td class="px-3 py-2 text-right num">0.05</td><td class="px-3 py-2">базовый шаг для θ и параметров вопроса</td></tr>
+          <tr class="border-t"><td class="px-3 py-2 num">eta_mu</td>          <td class="px-3 py-2 text-right num">0.005</td><td class="px-3 py-2">шаг для μ_type (медленный — 3 значения, много наблюдений)</td></tr>
+          <tr class="border-t"><td class="px-3 py-2 num">eta_eps</td>         <td class="px-3 py-2 text-right num">0.03</td><td class="px-3 py-2">шаг для ε_t (свой на каждый турнир)</td></tr>
+          <tr class="border-t"><td class="px-3 py-2 num">eta_size, eta_pos</td><td class="px-3 py-2 text-right num">0.005</td><td class="px-3 py-2">шаги для δ_size и δ_pos</td></tr>
+          <tr class="border-t"><td class="px-3 py-2 num">games_offset</td>    <td class="px-3 py-2 text-right num">0.25</td><td class="px-3 py-2">«бонус новичка»: шаг ×2 на первой игре</td></tr>
+          <tr class="border-t"><td class="px-3 py-2 num">cold_init_theta</td> <td class="px-3 py-2 text-right num">−1.0</td><td class="px-3 py-2">стартовая θ для нового игрока</td></tr>
+          <tr class="border-t"><td class="px-3 py-2 num">w_sync</td>          <td class="px-3 py-2 text-right num">0.7</td><td class="px-3 py-2">вес обновления θ для синхрона</td></tr>
+          <tr class="border-t"><td class="px-3 py-2 num">w_online (async)</td><td class="px-3 py-2 text-right num">0.5</td><td class="px-3 py-2">вес обновления θ для асинхрона</td></tr>
+          <tr class="border-t"><td class="px-3 py-2 num">w_online_questions</td><td class="px-3 py-2 text-right num">0.30</td><td class="px-3 py-2">вес обновления b для асинхрона</td></tr>
+          <tr class="border-t"><td class="px-3 py-2 num">w_async_mode</td>    <td class="px-3 py-2 text-right num">0.15</td><td class="px-3 py-2">вес обновления μ_async</td></tr>
+          <tr class="border-t"><td class="px-3 py-2 num">recenter_target</td> <td class="px-3 py-2 text-right num">−0.70</td><td class="px-3 py-2">целевая медиана θ ветеранов</td></tr>
+          <tr class="border-t"><td class="px-3 py-2 num">recenter_period_days</td><td class="px-3 py-2 text-right num">365</td><td class="px-3 py-2">как часто пересчитывать gauge</td></tr>
+          <tr class="border-t"><td class="px-3 py-2 num">recenter_min_games</td><td class="px-3 py-2 text-right num">200</td><td class="px-3 py-2">минимум игр для «ветерана»</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="text-sm text-slate-600 mt-2">
+      Этот свип на чистой базе улучшил backtest относительно
+      «грязных» дефолтов:
+      <code>logloss 0.5365 → 0.5331</code> (−0.0034),
+      <code>AUC 0.8065 → 0.8101</code> (+0.0036). Подробности —
+      в <code>docs/async_mode_experiments.md</code> и
+      <code>results/retune_2026-04*.csv</code>.
+    </p>
+
+    {# ===== 10. Inactivity ===== #}
+    <h2 id="inactivity-decay" class="text-lg font-medium">10. Снижение θ за неактивность (только для дисплея)</h2>
+    <p>
+      Сама модель не «забывает» рейтинг с календарным временем
+      (любое календарное затухание во время обучения ухудшает logloss
+      и AUC, см. <code>docs/calendar_decay_experiments.md</code>): θ
+      меняется только тогда, когда игрок реально выходит на турнир.
+      Из-за этого в «сыром» рейтинге на верхних местах могут оказаться
+      люди, которые не играют уже несколько лет — их последняя оценка
+      модели остаётся актуальной как «снимок».
+    </p>
+    <p>
+      Чтобы топ отражал текущую силу, на витрине считается
+      <b>θ (текущ.)</b> — сырое θ модели, которое после года перерыва
+      начинает медленно сдвигаться к нулю:
+    </p>
+    <p>
+      \( \theta_{\text{текущ}} \;=\; \min\!\bigl(\theta_{\text{модели}},\; (\theta_{\text{модели}} - \theta_0) \cdot 0.5^{\,(d - g)/H}\bigr) \)
+      при \( d > g \), иначе \( \theta_{\text{текущ}} = \theta_{\text{модели}} \).
+    </p>
+    <p class="text-sm text-slate-600">
+      Здесь \( d \) — дней с последнего турнира, \( g = 365 \) дней
+      (грейс-период), \( H = 1460 \) дней (полураспад ≈ 4 года),
+      \( \theta_0 = 0 \). Внешнее \( \min(\cdot) \) гарантирует, что
+      неактивность <i>никогда</i> не делает игрока сильнее: для
+      \( \theta < 0 \) формула просто оставляет θ как есть, иначе
+      они «всплывали» бы к нулю и обгоняли активных слабых игроков.
+      Для топов с \( \theta > 0 \) срабатывает экспоненциальное затухание:
+    </p>
+    <ul class="list-disc pl-6 text-sm text-slate-600">
+      <li>θ = +1.0, 1 год без игр — без изменений;</li>
+      <li>θ = +1.0, 2 года → 0.84;</li>
+      <li>θ = +1.0, 3 года → 0.71;</li>
+      <li>θ = +1.0, 5 лет → 0.50;</li>
+      <li>θ = +1.0, 10 лет → 0.21;</li>
+      <li>θ = −1.0 (любой срок без игр) → −1.00 (clamped).</li>
+    </ul>
+    <p class="text-sm text-slate-600">
+      Сырое θ модели остаётся видимым в карточке игрока, в скобках на
+      топ-странице и используется во всех расчётах ожиданий по
+      историческим турнирам — чтобы не переписывать прошлое задним числом.
+    </p>
+
+    {# ===== 11. Expectation ===== #}
+    <h2 id="expectation" class="text-lg font-medium">11. Что показывает «ожидание»</h2>
+    <p>
+      На странице игрока и турнира столбец «Ожидание» — это сумма
+      \( p_{\text{взять}} \) по всем вопросам турнира, посчитанная с
+      помощью θ команды на момент турнира и финальных оценок \( (b, a) \)
+      вопросов. Δ — это сколько команда взяла сверх (или ниже) того,
+      что ожидала бы модель.
+    </p>
+    <p class="text-sm text-slate-600">
+      Поскольку историческое θ предварительно сдвинуто в финальную
+      шкалу (см. <a href="#retro" class="text-indigo-700 hover:underline">7.3</a>),
+      ожидания для старых турниров корректно откалиброваны. Без этой
+      коррекции у турниров до 2017-09 ожидания были систематически
+      завышены ≈ на 1 единицу gauge-сдвига на каждое полученное «лямбда».
+    </p>
+
+    {# ===== 12. Quality ===== #}
+    <h2 id="quality" class="text-lg font-medium">12. Качество модели</h2>
+    <p>
+      На прогностическом тесте (последние 20 % турниров по дате
+      исключены из обучения):
+    </p>
+    <ul class="list-disc pl-6 text-sm">
+      <li><b>logloss ≈ 0.533</b> — сравнимый baseline «всё с
+        вероятностью 0.5» даёт 0.693, эмпирический «средний по типу
+        турнира» даёт ~0.57.</li>
+      <li><b>AUC ≈ 0.810</b> — модель уверенно различает «возьмёт / не
+        возьмёт» на уровне отдельной пары (вопрос, команда).</li>
+      <li><b>Brier ≈ 0.179</b>.</li>
+    </ul>
+    <p class="text-sm text-slate-600">
+      Подробности и сравнение с базовыми оракулами — в отчёте
+      <code>scripts/compare_to_baselines.py</code>; текущая история
+      экспериментов — в каталоге <code>docs/</code>.
+    </p>
+  </article>
+</div>
+
+<script>
+// Highlight the active TOC entry as the user scrolls.
+(function() {
+  const links = document.querySelectorAll('.toc-link');
+  if (!links.length) return;
+  const byHash = new Map();
+  links.forEach(a => byHash.set(a.getAttribute('href'), a));
+  const headings = Array.from(byHash.keys())
+    .map(h => document.getElementById(h.slice(1)))
+    .filter(Boolean);
+  const obs = new IntersectionObserver(entries => {
+    entries.forEach(e => {
+      const a = byHash.get('#' + e.target.id);
+      if (!a) return;
+      if (e.isIntersecting) {
+        links.forEach(l => l.classList.remove('is-active'));
+        a.classList.add('is-active');
+      }
+    });
+  }, { rootMargin: '-20% 0px -70% 0px', threshold: 0 });
+  headings.forEach(h => obs.observe(h));
+})();
+</script>
 {% endblock %}
