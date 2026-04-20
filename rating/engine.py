@@ -207,6 +207,12 @@ class SequentialResult:
     team_size_anchor: int = 6
     delta_pos: Optional[np.ndarray] = None  # learned position-in-tour effect
     pos_anchor: int = 6
+    # Yearly gauge re-centering events: list of (ord_day, median_before,
+    # delta_applied, n_active_veterans).  Used by build_db.py to retroactively
+    # bring all historical θ rows into a single (final) gauge so the displayed
+    # player-history graph does not show a one-time "shr" cliff at the date of
+    # the first re-center event.
+    recenter_events: Optional[list[tuple[int, float, float, int]]] = None
 
 
 # ======================================================================
@@ -771,4 +777,5 @@ def run_sequential(
         team_size_anchor=team_size_anchor,
         delta_pos=delta_pos if cfg.use_pos_effect else None,
         pos_anchor=pos_anchor,
+        recenter_events=list(recenter_log) if recenter_log else None,
     )

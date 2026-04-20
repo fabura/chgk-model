@@ -33,6 +33,10 @@ class RatingResults:
     # Position-in-tour effect, indexed by (q_in_tournament % len(delta_pos)).
     delta_pos: Optional[np.ndarray] = None
     pos_anchor: Optional[int] = None
+    # Yearly gauge re-centering events (ord_day, delta_applied).  Used to
+    # retroactively shift historical θ rows into a single (final) gauge.
+    recenter_ord: Optional[np.ndarray] = None
+    recenter_delta: Optional[np.ndarray] = None
 
     def theta_for_player(self, player_id: int) -> float:
         """Get θ for player_id (or nan if not found)."""
@@ -72,4 +76,6 @@ def load_results_npz(path: str | Path) -> RatingResults:
         team_size_anchor=_scalar("team_size_anchor"),
         delta_pos=_get("delta_pos"),
         pos_anchor=_scalar("pos_anchor"),
+        recenter_ord=_get("recenter_ord"),
+        recenter_delta=_get("recenter_delta"),
     )

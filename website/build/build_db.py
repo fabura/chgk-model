@@ -735,7 +735,15 @@ CREATE TABLE player_games (
 CREATE TABLE player_history (
     player_id INTEGER,
     tournament_id INTEGER,    -- DB tournament_id (from rating engine history)
-    theta DOUBLE
+    theta DOUBLE,             -- θ shifted into the FINAL gauge (post all
+                              -- yearly re-centerings) so the displayed
+                              -- history graph is continuous and matches
+                              -- the current top-players gauge.
+    rank_global INTEGER,      -- player's rank among "active" players
+                              -- (last_active within 365 days) AT this
+                              -- tournament, computed using corrected θ.
+    n_active INTEGER          -- number of active players at this point
+                              -- in time (denominator for rank_global).
 );
 
 CREATE INDEX idx_player_games_player ON player_games(player_id);
@@ -744,6 +752,160 @@ CREATE INDEX idx_team_games_tournament ON team_games(tournament_id);
 CREATE INDEX idx_question_aliases_tid ON question_aliases(tournament_id);
 CREATE INDEX idx_player_history_player ON player_history(player_id);
 """
+
+
+def _apply_recenter_correction(
+    history_tid: np.ndarray,
+    history_theta: np.ndarray,
+    tid_to_ord: dict[int, int],
+    recenter_ord: Optional[np.ndarray],
+    recenter_delta: Optional[np.ndarray],
+) -> np.ndarray:
+    """Shift each historical θ row into the FINAL post-all-recenterings gauge.
+
+    The rating engine periodically applies a gauge transform
+    (``θ ↑ Δ``, ``b ↑ a·Δ``) to keep the median of active veterans at a
+    fixed target.  Predictions are exactly invariant, but raw history
+    rows recorded *before* a re-centering event are stored in the gauge
+    that was active at that moment, while the final ``b`` we ship to the
+    website is in the post-all-recenterings gauge.  This mismatch causes:
+
+    * a visible cliff on the per-player θ chart at each event (≈ −0.94
+      on 2017-09 in the current model, the rest are < 0.03);
+    * mis-calibrated ``expected_takes`` for old tournaments (since
+      ``expected = noisy_or(θ_old_gauge, b_new_gauge)``).
+
+    We fix both by adding the cumulative shift of all *subsequent* events
+    to each row's θ.  After the fix, every history row is in the same
+    gauge as the final ``b`` and the per-player chart is continuous.
+    """
+    if (
+        recenter_ord is None
+        or recenter_delta is None
+        or len(recenter_ord) == 0
+    ):
+        return history_theta.astype(np.float64, copy=False)
+
+    order = np.argsort(np.asarray(recenter_ord))
+    rc_ord = np.asarray(recenter_ord)[order].astype(np.int64)
+    rc_delta = np.asarray(recenter_delta)[order].astype(np.float64)
+    cum_after = np.concatenate([
+        np.cumsum(rc_delta[::-1])[::-1],
+        np.zeros(1, dtype=np.float64),
+    ])
+    h_ord = np.fromiter(
+        (tid_to_ord.get(int(t), 10**9) for t in history_tid.tolist()),
+        dtype=np.int64,
+        count=len(history_tid),
+    )
+    idx = np.searchsorted(rc_ord, h_ord, side="right")
+    shift = cum_after[idx]
+    return history_theta.astype(np.float64) + shift
+
+
+def _compute_rank_history(
+    history_pid: np.ndarray,
+    history_tid: np.ndarray,
+    history_theta: np.ndarray,
+    tid_to_ord: dict[int, int],
+    *,
+    active_window_days: int = 365,
+) -> tuple[np.ndarray, np.ndarray]:
+    """For each (player, tournament) row compute the player's global rank.
+
+    Walks history chronologically.  After applying every update from a
+    given tournament, snapshots ``(latest_theta, last_active_ord)`` per
+    player and ranks each player who appeared in this tournament against
+    all *active* players (last seen within ``active_window_days``).
+
+    Returns two int32 arrays aligned with the input arrays:
+    ``(rank_per_row, n_active_per_row)``.  Rank is 1-based.  Ties
+    broken arbitrarily (by ``count_higher + 1``, so ties share the
+    higher rank).
+    """
+    n = len(history_pid)
+    if n == 0:
+        return (
+            np.zeros(0, dtype=np.int32),
+            np.zeros(0, dtype=np.int32),
+        )
+
+    pid_arr = history_pid.astype(np.int64)
+    tid_arr = history_tid.astype(np.int64)
+    th_arr = history_theta.astype(np.float64)
+    ord_arr = np.fromiter(
+        (tid_to_ord.get(int(t), -1) for t in tid_arr.tolist()),
+        dtype=np.int64,
+        count=n,
+    )
+
+    valid = ord_arr >= 0
+    if not valid.all():
+        # Drop rows for which we have no date (shouldn't happen in practice).
+        pass
+
+    # Sort by (ord, tid, pid) so we can group by tournament chronologically.
+    order = np.lexsort((pid_arr, tid_arr, ord_arr))
+    pid_s = pid_arr[order]
+    tid_s = tid_arr[order]
+    th_s = th_arr[order]
+    ord_s = ord_arr[order]
+
+    # Map player_id → dense index for O(1) per-player state arrays.
+    unique_pid = np.unique(pid_s[ord_s >= 0])
+    pid_to_idx = {int(p): i for i, p in enumerate(unique_pid.tolist())}
+    n_players = len(unique_pid)
+
+    latest_theta = np.full(n_players, np.nan, dtype=np.float64)
+    last_active = np.full(n_players, np.iinfo(np.int64).min, dtype=np.int64)
+
+    rank_s = np.zeros(n, dtype=np.int32)
+    nact_s = np.zeros(n, dtype=np.int32)
+
+    # Group rows by (ord, tid) — chronological tournament chunks.
+    # Use np.searchsorted-like grouping with a manual scan (fast in NumPy).
+    boundaries = np.concatenate([
+        [0],
+        np.where(
+            (tid_s[1:] != tid_s[:-1]) | (ord_s[1:] != ord_s[:-1])
+        )[0] + 1,
+        [n],
+    ])
+
+    for i in range(len(boundaries) - 1):
+        start = int(boundaries[i])
+        end = int(boundaries[i + 1])
+        cur_ord = int(ord_s[start])
+        if cur_ord < 0:
+            continue
+
+        # Apply this tournament's updates first.
+        for k in range(start, end):
+            p_idx = pid_to_idx[int(pid_s[k])]
+            latest_theta[p_idx] = th_s[k]
+            last_active[p_idx] = cur_ord
+
+        # Snapshot of currently-active players (last seen within window).
+        cutoff = cur_ord - active_window_days
+        active = (last_active >= cutoff) & ~np.isnan(latest_theta)
+        active_thetas = latest_theta[active]
+        n_active = int(active.sum())
+
+        # Sort once for binary-search ranks.
+        sorted_thetas = np.sort(active_thetas)  # ascending
+
+        for k in range(start, end):
+            th = th_s[k]
+            higher = n_active - int(
+                np.searchsorted(sorted_thetas, th, side="right")
+            )
+            rank_s[k] = higher + 1
+            nact_s[k] = n_active
+
+    # Restore original row order.
+    inv = np.empty(n, dtype=np.int64)
+    inv[order] = np.arange(n)
+    return rank_s[inv], nact_s[inv]
 
 
 def write_duckdb(
@@ -766,6 +928,37 @@ def write_duckdb(
     _log(f"Writing DuckDB to {out_path}…")
     con = duckdb.connect(str(out_path))
     con.execute(DDL)
+
+    # ---- gauge-correct historical θ in place ---------------------------
+    # Bring every history row into the same gauge as the final ``b`` so
+    # the per-player θ chart is continuous and ``expected_takes`` for old
+    # tournaments stays calibrated.  Mutating ``res.history_theta`` here
+    # propagates automatically to every downstream consumer (theta-before
+    # map, ``player_games.theta_after``, ``player_history.theta``).
+    gdo_local = maps.game_date_ordinal
+    tid_to_ord_local: dict[int, int] = {
+        int(tid): int(gdo_local[i])
+        for i, tid in enumerate(maps.idx_to_game_id)
+        if i < len(gdo_local) and int(gdo_local[i]) >= 0
+    }
+    if res.history_theta is not None and len(res.history_theta) > 0:
+        n_events = (
+            0 if res.recenter_ord is None else len(res.recenter_ord)
+        )
+        if n_events > 0:
+            corrected = _apply_recenter_correction(
+                res.history_game_id,
+                res.history_theta,
+                tid_to_ord_local,
+                res.recenter_ord,
+                res.recenter_delta,
+            )
+            shift_max = float(np.max(np.abs(corrected - res.history_theta)))
+            res.history_theta = corrected.astype(np.float32)
+            _log(
+                f"Applied recenter correction to {len(corrected):,} history "
+                f"rows (max |Δ|={shift_max:.3f}, {n_events} events)."
+            )
 
     # ---- per-canonical aggregation (n_obs, n_taken) ----
     canonical_q_idx = (
@@ -1228,14 +1421,27 @@ def write_duckdb(
     # `tournaments` work without going through the chronological `game_idx`.
     _log("Inserting player_history…")
     if res.history_player_id is not None and len(res.history_player_id) > 0:
+        _log("  computing per-(player, tournament) global rank snapshots…")
+        rank_arr, nact_arr = _compute_rank_history(
+            res.history_player_id,
+            res.history_game_id,
+            res.history_theta,
+            tid_to_ord_local,
+        )
+        _log(
+            f"  rank computed for {len(rank_arr):,} rows "
+            f"(max n_active={int(nact_arr.max()) if len(nact_arr) else 0:,})"
+        )
         _bulk_insert(
             con,
             "player_history",
-            ["player_id", "tournament_id", "theta"],
+            ["player_id", "tournament_id", "theta", "rank_global", "n_active"],
             {
                 "player_id": pa.array(res.history_player_id.astype(np.int32)),
                 "tournament_id": pa.array(res.history_game_id.astype(np.int32)),
                 "theta": pa.array(res.history_theta.astype(np.float64)),
+                "rank_global": pa.array(rank_arr.astype(np.int32)),
+                "n_active": pa.array(nact_arr.astype(np.int32)),
             },
         )
 

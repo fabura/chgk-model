@@ -97,8 +97,18 @@ fi
 
 # ---- 3. build & ship image ----------------------------------------------
 log "Building image ${IMAGE_NAME}:${IMAGE_TAG} (linux/amd64)…"
+# --pull=false: don't refresh the base-image manifest from Docker Hub on
+# every build.  When Docker Hub is rate-limited or slow this otherwise
+# stalls the build for 15+ min on "load metadata for python:3.12-slim".
+# Pass DEPLOY_PULL=1 if you actually want to refresh the base image.
+DEPLOY_PULL="${DEPLOY_PULL:-0}"
+PULL_FLAG="--pull=false"
+if [[ "${DEPLOY_PULL}" == "1" ]]; then
+  PULL_FLAG="--pull=true"
+fi
 docker buildx build \
   --platform linux/amd64 \
+  ${PULL_FLAG} \
   -t "${IMAGE_NAME}:${IMAGE_TAG}" \
   -f "${REPO_ROOT}/website/Dockerfile" \
   --load \

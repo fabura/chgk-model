@@ -532,6 +532,11 @@ def _export_results_npz(path: str, result, maps) -> None:
         kw["history_game_id"] = np.array([x[1] for x in h], dtype=np.int64)
         kw["history_theta"] = np.array([x[2] for x in h], dtype=np.float32)
 
+    rc_events = getattr(result, "recenter_events", None)
+    if rc_events:
+        kw["recenter_ord"] = np.array([e[0] for e in rc_events], dtype=np.int64)
+        kw["recenter_delta"] = np.array([e[2] for e in rc_events], dtype=np.float32)
+
     np.savez_compressed(path, **kw)
     print(f"Results saved to {path}")
 

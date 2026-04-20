@@ -44,7 +44,7 @@
 
 <section class="bg-white border border-slate-200 rounded shadow-sm mb-6">
   <h2 class="px-4 py-2 text-sm font-medium text-slate-600 border-b border-slate-100">θ во времени</h2>
-  <div id="theta-chart" style="height: 360px;"></div>
+  <div id="theta-chart" style="height: 320px;"></div>
   {% if player.games is not none and player.games < 15 %}
   <p class="px-4 py-2 text-xs text-amber-700 bg-amber-50 border-t border-amber-200">
     У игрока пока {{ player.games }} {{ 'игра' if player.games == 1 else ('игры' if player.games < 5 else 'игр') }} —
@@ -52,6 +52,14 @@
     Стабилизация наступает примерно после 10–15 игр.
   </p>
   {% endif %}
+</section>
+
+<section class="bg-white border border-slate-200 rounded shadow-sm mb-6">
+  <div class="flex items-baseline justify-between px-4 py-2 border-b border-slate-100">
+    <h2 class="text-sm font-medium text-slate-600">Место в общем рейтинге во времени</h2>
+    <span class="text-xs text-slate-500">среди активных игроков (играл в последние 365 дней)</span>
+  </div>
+  <div id="rank-chart" style="height: 320px;"></div>
 </section>
 
 {% if yearly %}
@@ -185,9 +193,9 @@
 (function() {
   const data = {{ history_json|safe }};
   if (!data.length) return;
-  const x = data.map(d => d.date);
-  const y = data.map(d => d.theta);
-  const text = data.map(d => d.title || "");
+  const x      = data.map(d => d.date);
+  const y      = data.map(d => d.theta);
+  const text   = data.map(d => d.title || "");
   Plotly.newPlot('theta-chart', [{
     x: x, y: y, text: text, type: 'scatter', mode: 'lines+markers',
     line: { color: '#4f46e5', width: 1.5 },
@@ -199,6 +207,32 @@
     yaxis: { title: 'θ', gridcolor: '#f1f5f9' },
     plot_bgcolor: 'white',
   }, { displayModeBar: false, responsive: true });
+
+  const rankData = data.filter(d => d.rank && d.rank > 0);
+  if (rankData.length) {
+    const rx     = rankData.map(d => d.date);
+    const ry     = rankData.map(d => d.rank);
+    const rtext  = rankData.map(d => d.title || "");
+    const rNact  = rankData.map(d => d.n_active || 0);
+    Plotly.newPlot('rank-chart', [{
+      x: rx, y: ry, text: rtext, customdata: rNact,
+      type: 'scatter', mode: 'lines+markers',
+      line: { color: '#0d9488', width: 1.5 },
+      marker: { size: 4, color: '#0d9488' },
+      hovertemplate:
+        '%{x}<br><b>%{text}</b><br>' +
+        'место: <b>#%{y}</b> из %{customdata}<extra></extra>',
+    }], {
+      margin: { l: 60, r: 20, t: 10, b: 40 },
+      xaxis: { type: 'date', gridcolor: '#f1f5f9' },
+      yaxis: {
+        title: 'место в общем рейтинге',
+        gridcolor: '#f1f5f9',
+        autorange: 'reversed',  // 1 at top, larger numbers at bottom
+      },
+      plot_bgcolor: 'white',
+    }, { displayModeBar: false, responsive: true });
+  }
 })();
 </script>
 {% endblock %}

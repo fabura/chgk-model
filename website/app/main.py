@@ -360,11 +360,14 @@ def player_profile(
             "pct_top": None,
         }
 
-    # Theta history (date, theta) — joined directly on tournament_id.
+    # Theta + rank history (date, theta, rank_global, n_active) — joined
+    # directly on tournament_id.
     history = db.query(
         """
         SELECT
             ph.theta,
+            ph.rank_global,
+            ph.n_active,
             t.tournament_id,
             t.title,
             t.start_date
@@ -488,6 +491,8 @@ def player_profile(
                     {
                         "date": (r["start_date"].isoformat() if r["start_date"] else None),
                         "theta": r["theta"],
+                        "rank": r["rank_global"],
+                        "n_active": r["n_active"],
                         "tournament_id": r["tournament_id"],
                         "title": r["title"],
                     }
