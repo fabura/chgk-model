@@ -451,13 +451,22 @@ def load_from_db(
       * "both": tournaments present in both true_dls and ndcg.
     - min_games: players with fewer games (total in DB) are treated as inactive and removed
       from rosters; teams are dropped only if roster becomes empty. Default 10.
-    - exclude_seasonal_aggregates: drop "season-total" tournaments where the rating DB
-      stores the cumulative season as multiple snapshots, but `points_mask` reflects
-      only one segment of it.  Caught either by title (`Общий зачёт`) or by the
-      heuristic `type IN (offline,async) AND questions_count >= 100 AND avg(score)
-      / questions_count < 0.30`.  These would otherwise feed the model a
-      catastrophic "team got 19 / 360" signal that drags θ down for everyone in
-      the rosters by ~0.3–0.4 in a single day.  Default True.
+    - exclude_seasonal_aggregates: drop aggregate "summary" tournaments that
+      duplicate question-level signal already present in their constituent
+      events.  Caught by:
+        * native rating-DB ``type='общий зачёт'`` (~125 since 2015) — season
+          aggregates whose ``points_mask`` is a snapshot of the cumulative
+          score and would feed the model a catastrophic
+          "team got 19 / 360" signal,
+        * title containing ``Общий зачёт`` / ``Официальный зачёт`` — same
+          concept under ``type='Обычный'`` (e.g. ЧМ-2017 "Официальный
+          зачёт", qc=120), where the aggregate's ``points_mask`` is the
+          concatenation of stage masks and would cause every Stage answer
+          to be scored twice for qualifying teams,
+        * heuristic ``type IN (offline,async) AND questions_count >= 100
+          AND avg(score)/questions_count < 0.20`` — picks up city/student
+          leagues whose ``points_mask`` is broken or truncated.
+      Default True.
     - Results: only rows where points_mask IS NOT NULL; teams/tournaments
       without question-level data never contribute samples.
     - Maps: tournament_id -> game, (tournament_id, question_index) -> global question index.
@@ -579,30 +588,46 @@ def load_from_db(
         # for everyone in the rosters in a single day.
         # Catch them by:
         #   - native rating-DB type "общий зачёт"  (101 tournaments since 2015),
+        #   - title containing "общий зачёт" / "официальный зачёт" — same
+        #     concept but a handful of tournaments (e.g. ЧМ-2017's
+        #     "Официальный зачёт" pack, qc=120) are filed under
+        #     type='Обычный'.  Without this catch the model double-counts
+        #     every Stage answer for qualifying teams (each question is
+        #     played once in a Stage tournament and a second time in the
+        #     "Официальный зачёт" pack of the same date),
         #   - or non-sync games with >=100 questions and avg(score)/n_q < 0.20
         #     — picks up city/student leagues whose `points_mask` is broken or
         #     truncated to a single round (avg score=0, ratio=0).
         candidate_ids = [int(r[0]) for r in rows if r[0] is not None]
         cur.execute(
             """
-            SELECT t.id, COALESCE(LOWER(t.type), ''),
+            SELECT t.id, COALESCE(t.title, ''), COALESCE(LOWER(t.type), ''),
                    COALESCE(t.questions_count, 0),
                    AVG(LENGTH(REPLACE(r.points_mask, '0', '')))::double precision AS avg_score
             FROM public.tournaments t
             JOIN public.tournament_results r ON r.tournament_id = t.id
             WHERE t.id = ANY(%s) AND r.points_mask IS NOT NULL
-            GROUP BY t.id, t.type, t.questions_count
+            GROUP BY t.id, t.title, t.type, t.questions_count
             """,
             (candidate_ids,),
         )
         flagged: set[int] = set()
         flagged_by_type = 0
+        flagged_by_title = 0
         flagged_by_ratio = 0
-        for tid, type_str, n_q, avg_sc in cur.fetchall():
+        for tid, title, type_str, n_q, avg_sc in cur.fetchall():
             ts = (type_str or "").strip()
             if ts == "общий зачёт" or ts == "общий зачет":
                 flagged.add(int(tid))
                 flagged_by_type += 1
+                continue
+            tl = (title or "").lower()
+            if (
+                "общий зачёт" in tl or "общий зачет" in tl
+                or "официальный зачёт" in tl or "официальный зачет" in tl
+            ):
+                flagged.add(int(tid))
+                flagged_by_title += 1
                 continue
             if n_q < 100 or avg_sc is None or n_q <= 0:
                 continue
@@ -624,6 +649,7 @@ def load_from_db(
             print(
                 f"Excluded {n_before - len(rows)} season-aggregate tournaments "
                 f"({flagged_by_type} by type='общий зачёт', "
+                f"{flagged_by_title} by title 'общий/официальный зачёт', "
                 f"{flagged_by_ratio} by low-ratio heuristic)."
             )
     if max_tournaments and len(rows) > max_tournaments:
