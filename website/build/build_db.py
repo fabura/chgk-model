@@ -739,11 +739,19 @@ CREATE TABLE player_history (
                               -- yearly re-centerings) so the displayed
                               -- history graph is continuous and matches
                               -- the current top-players gauge.
-    rank_global INTEGER,      -- player's rank among "active" players
-                              -- (last_active within 365 days) AT this
-                              -- tournament, computed using corrected θ.
-    n_active INTEGER          -- number of active players at this point
-                              -- in time (denominator for rank_global).
+    rank_global INTEGER,      -- player's rank among QUALIFIED players
+                              -- as of end-of-day on this tournament's date.
+                              -- Qualified = last_active within 365 days
+                              -- AND played ≥ 30 cumulative tournaments.
+                              -- The ≥30 floor matches the player-profile
+                              -- "# rank" badge default and strips the
+                              -- cold-start rookie wave (e.g. 250-debut
+                              -- school sync no longer sinks established
+                              -- players' rank for one chart point).
+                              -- 0 means the player itself is below the
+                              -- threshold on this row (chart skips it).
+    n_active INTEGER          -- size of the qualified pool on this date
+                              -- (denominator for rank_global).
 );
 
 CREATE INDEX idx_player_games_player ON player_games(player_id);
@@ -810,13 +818,37 @@ def _compute_rank_history(
     tid_to_ord: dict[int, int],
     *,
     active_window_days: int = 365,
+    min_games_active: int = 30,
 ) -> tuple[np.ndarray, np.ndarray]:
     """For each (player, tournament) row compute the player's global rank.
 
-    Walks history chronologically.  After applying every update from a
-    given tournament, snapshots ``(latest_theta, last_active_ord)`` per
-    player and ranks each player who appeared in this tournament against
-    all *active* players (last seen within ``active_window_days``).
+    Walks history chronologically by **day**: after applying every update
+    from every tournament that took place on a given calendar date,
+    snapshots ``(latest_theta, last_active_ord, games_count)`` per player
+    once and ranks each row using the player's end-of-day θ against the
+    *qualified* pool — players that (a) were seen within
+    ``active_window_days`` and (b) have played at least
+    ``min_games_active`` tournaments cumulatively as of that day.
+
+    Day-level grouping (rather than per-tournament) avoids a snapshot
+    artefact: when several tournaments share a date, the per-tournament
+    version processed them in ``tournament_id`` order, so a row written
+    early in the day did not see debutants from a large school sync that
+    sat at the end of the same date.  Those debutants then materialised
+    into the active pool by the next snapshot, producing a phantom
+    rank drop on the player's *next* tournament.
+
+    The ``min_games_active`` threshold matches the default used by the
+    player-profile ``# rank`` badge (``min_games=30``) so the chart and
+    the badge are computed against the same population.  It also strips
+    out the cold-start "rookie" wave: a single-game player with the
+    "rookie boost" (η₁ = 2η₀) often lands at θ ≈ 0 after one strong
+    pack, which without this filter would distort everyone else's rank
+    on the day of e.g. a 250-debut school sync.
+
+    Rows for players that have not yet reached ``min_games_active`` get
+    ``rank = 0`` (filtered out by the frontend chart); ``n_active`` is
+    still populated so the page can show the qualified-pool size.
 
     Returns two int32 arrays aligned with the input arrays:
     ``(rank_per_row, n_active_per_row)``.  Rank is 1-based.  Ties
@@ -858,17 +890,16 @@ def _compute_rank_history(
 
     latest_theta = np.full(n_players, np.nan, dtype=np.float64)
     last_active = np.full(n_players, np.iinfo(np.int64).min, dtype=np.int64)
+    games_count = np.zeros(n_players, dtype=np.int32)
 
     rank_s = np.zeros(n, dtype=np.int32)
     nact_s = np.zeros(n, dtype=np.int32)
 
-    # Group rows by (ord, tid) — chronological tournament chunks.
-    # Use np.searchsorted-like grouping with a manual scan (fast in NumPy).
+    # Group rows by ord — chronological day chunks.  All tournaments on
+    # the same date share an end-of-day snapshot; see docstring for why.
     boundaries = np.concatenate([
         [0],
-        np.where(
-            (tid_s[1:] != tid_s[:-1]) | (ord_s[1:] != ord_s[:-1])
-        )[0] + 1,
+        np.where(ord_s[1:] != ord_s[:-1])[0] + 1,
         [n],
     ])
 
@@ -879,15 +910,24 @@ def _compute_rank_history(
         if cur_ord < 0:
             continue
 
-        # Apply this tournament's updates first.
+        # Apply every update from every tournament on this date first.
+        # If a player has multiple rows on the same day, the last one in
+        # ``(tid, pid)`` order wins; ranks below use that end-of-day θ
+        # for the player so all of their same-date rows share a rank.
         for k in range(start, end):
             p_idx = pid_to_idx[int(pid_s[k])]
             latest_theta[p_idx] = th_s[k]
             last_active[p_idx] = cur_ord
+            games_count[p_idx] += 1
 
-        # Snapshot of currently-active players (last seen within window).
+        # Snapshot of qualified players: recently active AND past the
+        # rookie threshold.  See docstring for why the threshold matters.
         cutoff = cur_ord - active_window_days
-        active = (last_active >= cutoff) & ~np.isnan(latest_theta)
+        active = (
+            (last_active >= cutoff)
+            & (games_count >= min_games_active)
+            & ~np.isnan(latest_theta)
+        )
         active_thetas = latest_theta[active]
         n_active = int(active.sum())
 
@@ -895,12 +935,17 @@ def _compute_rank_history(
         sorted_thetas = np.sort(active_thetas)  # ascending
 
         for k in range(start, end):
-            th = th_s[k]
+            p_idx = pid_to_idx[int(pid_s[k])]
+            nact_s[k] = n_active
+            if games_count[p_idx] < min_games_active:
+                # Player not yet qualified — leave rank=0 so the frontend
+                # chart skips this point.
+                continue
+            th = latest_theta[p_idx]
             higher = n_active - int(
                 np.searchsorted(sorted_thetas, th, side="right")
             )
             rank_s[k] = higher + 1
-            nact_s[k] = n_active
 
     # Restore original row order.
     inv = np.empty(n, dtype=np.int64)
