@@ -130,6 +130,38 @@ class Config:
     w_size_sync: float = 1.0
     w_size_async: float = 0.5
 
+    # Solo-mode update weights.  When ``use_solo_channel=True``,
+    # samples with ``team_size == 1`` are routed through a separate
+    # "solo" channel regardless of the tournament's nominal type
+    # (offline/sync/async).  This isolates the population of online
+    # solo quizzes (M-Лига, "Гостиный двор", etc.) whose take-rate
+    # distribution is sharply different from 5–6-player team play and
+    # would otherwise inflate strong soloists' θ via the noisy-OR
+    # identifiability shortcut.
+    #
+    # Default ``use_solo_channel=False`` reproduces the legacy
+    # behaviour exactly (solo samples use their tournament-type
+    # weights).  Flip to True together with the ``w_solo*`` knobs
+    # below to opt in.
+    #
+    # Recommended starting weights (when opted in):
+    #   - ``w_solo`` ≪ ``w_offline`` so a single solo result tugs θ
+    #     much less than a team result;
+    #   - ``w_solo_questions`` / ``w_solo_log_a`` = 0 so the narrow,
+    #     self-selected population of soloists does not bias question
+    #     difficulty / discrimination estimates;
+    #   - ``w_size_solo`` = 1 so ``delta_size[1]`` is still learned
+    #     (otherwise it stays at 0 and breaks the noisy-OR forward
+    #     pass for solo predictions);
+    #   - ``w_pos_solo`` = 0 (positional structure on solo packs is
+    #     atypical — most are 36-question online quizzes).
+    use_solo_channel: bool = False
+    w_solo: float = 0.1
+    w_solo_questions: float = 0.0
+    w_solo_log_a: float = 0.0
+    w_size_solo: float = 1.0
+    w_pos_solo: float = 0.0
+
     # Position-in-tour effect.  Adds a small per-position shift on
     # question difficulty:
     #     δ += delta_pos[(question_index_within_tournament) % tour_len]
@@ -248,6 +280,23 @@ def _type_update_weights(
         cfg.w_offline,
         cfg.w_size_offline,
         cfg.w_pos_offline,
+    )
+
+
+def _solo_update_weights(
+    cfg: Config,
+) -> tuple[float, float, float, float, float]:
+    """Return per-parameter update weights for solo (team_size==1) samples.
+
+    Solo samples are routed through their own channel regardless of
+    the tournament's nominal type — see ``Config.w_solo``.
+    """
+    return (
+        cfg.w_solo,
+        cfg.w_solo_questions,
+        cfg.w_solo_log_a,
+        cfg.w_size_solo,
+        cfg.w_pos_solo,
     )
 
 
@@ -525,12 +574,25 @@ def run_sequential(
                 pred_g_list.append(g)
 
         # 5. Sequential updates (Numba-accelerated batch) ----------------
+        # When ``use_solo_channel`` is enabled, samples with
+        # team_size==1 get a separate update pass with their own
+        # (theta_w, b_w, log_a_w, size_w, pos_w) weights.  Otherwise
+        # everything flows through the legacy single-batch path.
         by_q: dict[int, list[int]] = defaultdict(list)
         for i in obs_indices:
             by_q[int(q_idx[i])].append(i)
-        obs_order = []
-        for qi_raw in sorted(by_q):
-            obs_order.extend(by_q[qi_raw])
+        obs_order_team: list[int] = []
+        obs_order_solo: list[int] = []
+        if cfg.use_solo_channel:
+            for qi_raw in sorted(by_q):
+                for i in by_q[qi_raw]:
+                    if int(team_sizes[i]) == 1:
+                        obs_order_solo.append(i)
+                    else:
+                        obs_order_team.append(i)
+        else:
+            for qi_raw in sorted(by_q):
+                obs_order_team.extend(by_q[qi_raw])
         tourn_players: set[int] = set()
         for i in obs_indices:
             s, e = int(offsets[i]), int(offsets[i + 1])
@@ -556,40 +618,79 @@ def run_sequential(
                 )
                 players.last_seen_ordinal[pids_arr] = current_ord
 
-        obs_arr = np.array(obs_order, dtype=np.int64)
-        total_loglik += process_batch_nb(
-            obs_arr,
-            offsets,
-            player_flat,
-            q_idx,
-            taken,
-            cq,
-            q_pos_in_tour,
-            players.theta,
-            questions.b,
-            questions.log_a,
-            delta_size,
-            delta_pos,
-            players.games,
-            cfg.eta0,
-            theta_w,
-            b_w,
-            log_a_w,
-            size_w if cfg.use_team_size_effect else 0.0,
-            pos_w if cfg.use_pos_effect else 0.0,
-            eta_size_eff,
-            eta_pos_eff,
-            cfg.reg_size,
-            cfg.reg_pos,
-            team_size_anchor,
-            pos_anchor,
-            cfg.reg_theta,
-            cfg.reg_b,
-            cfg.reg_log_a,
-            20.0,
-            cfg.games_offset,
-        )
-        total_obs_count += len(obs_order)
+        if obs_order_team:
+            obs_arr = np.array(obs_order_team, dtype=np.int64)
+            total_loglik += process_batch_nb(
+                obs_arr,
+                offsets,
+                player_flat,
+                q_idx,
+                taken,
+                cq,
+                q_pos_in_tour,
+                players.theta,
+                questions.b,
+                questions.log_a,
+                delta_size,
+                delta_pos,
+                players.games,
+                cfg.eta0,
+                theta_w,
+                b_w,
+                log_a_w,
+                size_w if cfg.use_team_size_effect else 0.0,
+                pos_w if cfg.use_pos_effect else 0.0,
+                eta_size_eff,
+                eta_pos_eff,
+                cfg.reg_size,
+                cfg.reg_pos,
+                team_size_anchor,
+                pos_anchor,
+                cfg.reg_theta,
+                cfg.reg_b,
+                cfg.reg_log_a,
+                20.0,
+                cfg.games_offset,
+            )
+            total_obs_count += len(obs_order_team)
+        if obs_order_solo:
+            solo_theta_w, solo_b_w, solo_log_a_w, solo_size_w, solo_pos_w = (
+                _solo_update_weights(cfg)
+            )
+            obs_arr_solo = np.array(obs_order_solo, dtype=np.int64)
+            total_loglik += process_batch_nb(
+                obs_arr_solo,
+                offsets,
+                player_flat,
+                q_idx,
+                taken,
+                cq,
+                q_pos_in_tour,
+                players.theta,
+                questions.b,
+                questions.log_a,
+                delta_size,
+                delta_pos,
+                players.games,
+                cfg.eta0,
+                solo_theta_w,
+                solo_b_w,
+                solo_log_a_w,
+                solo_size_w if cfg.use_team_size_effect else 0.0,
+                solo_pos_w if cfg.use_pos_effect else 0.0,
+                eta_size_eff,
+                eta_pos_eff,
+                cfg.reg_size,
+                cfg.reg_pos,
+                team_size_anchor,
+                pos_anchor,
+                cfg.reg_theta,
+                cfg.reg_b,
+                cfg.reg_log_a,
+                20.0,
+                cfg.games_offset,
+            )
+            total_obs_count += len(obs_order_solo)
 
         np.clip(players.theta, -10.0, 10.0, out=players.theta)
 
