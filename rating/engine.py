@@ -139,24 +139,29 @@ class Config:
     # would otherwise inflate strong soloists' θ via the noisy-OR
     # identifiability shortcut.
     #
-    # Default ``use_solo_channel=False`` reproduces the legacy
-    # behaviour exactly (solo samples use their tournament-type
-    # weights).  Flip to True together with the ``w_solo*`` knobs
-    # below to opt in.
+    # Defaults below were picked from a 5-cell sweep on the 20 % time-
+    # split hold-out (``scripts/exp_solo_channel.py``,
+    # ``results/exp_solo_channel.log``):
     #
-    # Recommended starting weights (when opted in):
-    #   - ``w_solo`` ≪ ``w_offline`` so a single solo result tugs θ
-    #     much less than a team result;
-    #   - ``w_solo_questions`` / ``w_solo_log_a`` = 0 so the narrow,
-    #     self-selected population of soloists does not bias question
-    #     difficulty / discrimination estimates;
-    #   - ``w_size_solo`` = 1 so ``delta_size[1]`` is still learned
-    #     (otherwise it stays at 0 and breaks the noisy-OR forward
-    #     pass for solo predictions);
-    #   - ``w_pos_solo`` = 0 (positional structure on solo packs is
-    #     atypical — most are 36-question online quizzes).
-    use_solo_channel: bool = False
-    w_solo: float = 0.1
+    #   config              logloss     AUC   ll_off  ll_syn  ll_asy
+    #   baseline (legacy)    0.5276  0.8151   0.5102  0.5226  0.5450
+    #   solo w=0.0           0.5272  0.8156   0.5088  0.5221  0.5452
+    #   solo w=0.1           0.5270  0.8158   0.5087  0.5220  0.5446
+    #   solo w=0.3           0.5268  0.8159   0.5088  0.5220  0.5442  ← chosen
+    #   solo w=0.5           0.5268  0.8160   0.5089  0.5220  0.5440
+    #
+    # ``w_solo=0.3`` is the lowest-logloss point that still meaningfully
+    # corrects the soloist artefact (Belov θ +0.58 → +0.34, rank 3 → 8;
+    # at w=0.5 the channel is too weak, Belov bounces back to rank 3).
+    # ``w_solo_questions`` / ``w_solo_log_a`` stay at 0 so the narrow,
+    # self-selected population of soloists does not bias question
+    # difficulty / discrimination estimates; ``w_size_solo`` = 1 so
+    # ``delta_size[1]`` keeps being learned (otherwise it stays at 0
+    # and breaks the noisy-OR forward pass for solo predictions);
+    # ``w_pos_solo`` = 0 (positional structure on solo packs is atypical
+    # — most are 36-question online quizzes).
+    use_solo_channel: bool = True
+    w_solo: float = 0.3
     w_solo_questions: float = 0.0
     w_solo_log_a: float = 0.0
     w_size_solo: float = 1.0

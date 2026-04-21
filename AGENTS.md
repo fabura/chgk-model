@@ -45,6 +45,12 @@ Sequential model: computes player strength changes week by week, tournament by t
     anchor at 6) — see `docs/team_size_experiments.md`
   - learned per-position-in-tour effect (`use_pos_effect=True`,
     anchor at 0, `tour_len=12`) — see `docs/position_in_tour_experiments.md`
+  - separate solo update channel (`use_solo_channel=True`,
+    `w_solo=0.3`) — observations with `team_size==1` are routed
+    through their own gradient pass with a much smaller θ-update
+    weight, so prolific soloists in online quizzes (M-Лига etc.)
+    don't get artefactually inflated θ via the noisy-OR
+    identifiability shortcut. See `docs/solo_channel_experiments.md`.
   - fixed cold-start prior (`cold_init_theta=-1.0`,
     `cold_init_use_team_mean=False`) plus chess-Elo "rookie boost"
     (`games_offset=0.25`, so first-game η = 2·η0) — breaks the
@@ -62,9 +68,10 @@ Sequential model: computes player strength changes week by week, tournament by t
   `w_offline`, `w_sync`, `eta_size`, `eta_pos`, `eta_teammate`,
   `reg_size`, `reg_pos`, `reg_theta`, `reg_b`, `reg_log_a`,
   `team_size_max`, `team_size_anchor`, `w_size_offline/sync/async`,
-  `tour_len`, `pos_anchor`, `recenter_period_days`, `recenter_target`,
-  `recenter_min_games`, `recenter_active_days`. Full list in `Config`
-  (`rating/engine.py`).
+  `tour_len`, `pos_anchor`, `use_solo_channel`, `w_solo`,
+  `w_solo_questions`, `w_solo_log_a`, `w_size_solo`, `w_pos_solo`,
+  `recenter_period_days`, `recenter_target`, `recenter_min_games`,
+  `recenter_active_days`. Full list in `Config` (`rating/engine.py`).
 - **Drift fix (yearly gauge re-centering)**: every
   `recenter_period_days` (365 by default) the median θ of "active
   veterans" (`games >= recenter_min_games=200`, seen within

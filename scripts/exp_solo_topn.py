@@ -102,8 +102,8 @@ def main(cache_path: str = "data.npz") -> int:
     print(f"  done in {base['secs']:.1f}s", flush=True)
 
     print()
-    print("Training new defaults (use_solo_channel=True, w_solo=0.1)...", flush=True)
-    new = _train(arrays, maps, use_solo=True, w_solo=0.1)
+    print("Training new defaults (use_solo_channel=True, w_solo=0.3)...", flush=True)
+    new = _train(arrays, maps, use_solo=True, w_solo=0.3)
     print(f"  done in {new['secs']:.1f}s", flush=True)
 
     seen = base["seen"] & new["seen"]
