@@ -15,10 +15,8 @@ from binary team answers (taken / not taken) and team rosters. Data comes from t
 Core formula (noisy-OR):
 `z_k = -(b_i + δ) + a_i * θ_k` → `λ_k = exp(z_k)` → `S = Σ_k λ_k` → `p_take = 1 - exp(-S)`
 
-`δ = μ_type[type_t] + ε_t + δ_size[clip(team_size, 1, K)] + δ_pos[q_index_in_tournament % tour_len]` where:
+`δ = δ_size[clip(team_size, 1, K)] + δ_pos[q_index_in_tournament % tour_len]` where:
 
-- `μ_type` = systematic mode effect (`offline`, `sync`, `async`)
-- `ε_t` = residual tournament offset
 - `δ_size` = per-team-size shift (anchored at 6 = 0; corrects noisy-OR's
   naive composition of player contributions; see
   `docs/team_size_experiments.md`)
@@ -27,7 +25,11 @@ Core formula (noisy-OR):
   hardest, end-tour slight rebound" pattern; see
   `docs/position_in_tour_experiments.md`)
 
-Residual offsets are centered within type each week.
+The per-mode (`μ_type`) and per-tournament (`ε_t`) offsets were removed
+in 2026-04 after an ablation showed those 8 746 parameters were
+net-negative for backtest quality (logloss −0.0043, AUC +0.0044 when
+removed). Mode differences are now captured only via the per-mode
+update weights (`w_online`, `w_sync`, …) in `rating.engine`.
 
 ## Sequential online rating (`rating/`)
 
@@ -57,12 +59,12 @@ Sequential model: computes player strength changes week by week, tournament by t
 - **Hyperparameters**: `eta0`, `rho`, `rho_calendar`, `decay_period_days`,
   `cold_init_theta`, `cold_init_use_team_mean`, `cold_init_factor`,
   `games_offset`, `w_online`, `w_online_questions`, `w_online_log_a`,
-  `w_async_mode`, `w_async_residual`, `eta_mu`, `eta_eps`, `eta_size`,
-  `eta_pos`, `reg_mu_type`, `reg_eps`, `reg_size`, `reg_pos`, `reg_theta`,
-  `reg_b`, `reg_log_a`, `team_size_max`, `team_size_anchor`,
-  `w_size_offline/sync/async`, `tour_len`, `pos_anchor`,
-  `recenter_period_days`, `recenter_target`, `recenter_min_games`,
-  `recenter_active_days`. Full list in `Config` (`rating/engine.py`).
+  `w_offline`, `w_sync`, `eta_size`, `eta_pos`, `eta_teammate`,
+  `reg_size`, `reg_pos`, `reg_theta`, `reg_b`, `reg_log_a`,
+  `team_size_max`, `team_size_anchor`, `w_size_offline/sync/async`,
+  `tour_len`, `pos_anchor`, `recenter_period_days`, `recenter_target`,
+  `recenter_min_games`, `recenter_active_days`. Full list in `Config`
+  (`rating/engine.py`).
 - **Drift fix (yearly gauge re-centering)**: every
   `recenter_period_days` (365 by default) the median θ of "active
   veterans" (`games >= recenter_min_games=200`, seen within
@@ -83,14 +85,16 @@ Sequential model: computes player strength changes week by week, tournament by t
   needed re-tuning. A focused sweep (`/tmp/chgk_retune*.py`,
   `results/retune_2026-04*.csv`, 38 trials) on the 20 % time-split
   hold-out picked **`eta0=0.05`** (was 0.10), **`w_sync=0.7`** (was
-  0.9), **`w_async_mode=0.15`** (was 0.3) and
-  **`w_online_questions=0.30`** (was 0.45) as the new `Config`
-  defaults. Backtest improvement on the cleaned cache:
-  `logloss 0.5365 → 0.5331` (−0.0034), `Brier 0.1799 → 0.1786`,
-  `AUC 0.8065 → 0.8101`. The four axes proved largely additive
-  (per-axis gains stack 1:1 in the combo). Other axes
-  (`w_online`, `w_async_residual`, `eta_eps`) were flat within ±0.0001
-  and were left at their previous defaults.
+  0.9) and **`w_online_questions=0.30`** (was 0.45) as the then-current
+  `Config` defaults.
+- **2026-04 lean refactor**: a follow-up ablation removed the per-mode
+  shift `μ_type` and per-tournament residual `ε_t` (8 746 params,
+  net-negative for backtest), added a small teammate-θ shrinkage
+  (`eta_teammate=0.005`) to soften the noisy-OR identifiability
+  problem on stable rosters, and re-tuned `eta0` (`0.05 → 0.07`) for
+  the leaner model. Cumulative gain on the 20 % hold-out:
+  `logloss 0.5365 → 0.5309` (−0.0056), `AUC 0.8065 → 0.8115` (+0.0050).
+  The full sweep tables live in `/tmp/exp_*.py`.
 - **Paired tournaments**: Uses `canonical_q_idx` — sync+async pairs share question params (b, a)
 - **Tournament ordering**: By `start_datetime` (date of start, not end)
 
@@ -100,7 +104,7 @@ Sequential model: computes player strength changes week by week, tournament by t
 | `rating/players.py` | `PlayerState` — θ, adaptive η = η0/√(games_offset + games); fixed-prior or team-mean cold-start |
 | `rating/questions.py` | `QuestionState` — b, log_a, init from take rate |
 | `rating/decay.py` | θ ← ρ·θ between tournaments (or per-week calendar decay) |
-| `rating/tournaments.py` | `TournamentState` — `μ_type + ε_t`, weekly within-type centering, type prior |
+| `rating/tournaments.py` | Tournament-type encoding helpers (`TYPE_OFFLINE/SYNC/ASYNC`, `game_type_to_idx`); the per-mode/per-tournament shift was removed in 2026-04 |
 | `rating/engine.py` (`delta_size`) | per-team-size shift, anchored at 6, learned online |
 | `rating/engine.py` (`delta_pos`) | per-position-in-tour shift (length `tour_len`, anchored at 0), learned online |
 | `rating/engine.py` | `Config` + `run_sequential()` — chronological online SGD |
@@ -130,7 +134,7 @@ Read-only FastAPI + Jinja2 frontend over a baked DuckDB (~390 MB):
 
 | Path | Role |
 |------|------|
-| `website/build/build_db.py` | Joins `data.npz`, `results/seq.npz` and the questions sqlite into `website/data/chgk.duckdb`; precomputes per-team expected takes from pre-tournament θ snapshots, a `theta_display` (inactivity-shrunk θ) column, and a `team_theta_implied` per (team, tournament) — the per-player θ that a hypothetical team of identical players of the team's actual size would need to take exactly the observed score on that pack (strips out δ_t/δ_size/δ_pos; same scale as player θ; powers the team-page chart) |
+| `website/build/build_db.py` | Joins `data.npz`, `results/seq.npz` and the questions sqlite into `website/data/chgk.duckdb`; precomputes per-team expected takes from pre-tournament θ snapshots, a `theta_display` (inactivity-shrunk θ) column, and a `team_theta_implied` per (team, tournament) — the per-player θ that a hypothetical team of identical players of the team's actual size would need to take exactly the observed score on that pack (strips out δ_size/δ_pos; same scale as player θ; powers the team-page chart) |
 | `website/app/main.py` | Routes: `/`, `/teams`, `/tournaments`, `/player/{id}`, `/team/{id}`, `/tournament/{id}`, `/search`, `/methodology`, `/admin/reload-db` (guarded by `X-Admin-Token`) |
 | `website/app/db.py` | Single read-only DuckDB connection, re-opened on hot reload |
 | `website/app/templates/` | `top_players.html` (sorts by `theta_display`, shows raw θ in a sub-column), `tournaments_list.html` (paginated, type filter), `teams_list.html` (paginated, ranks active teams by mean `theta_display` of their top-≤6 most-frequent players in a configurable window; filter by `min_base` excludes lone-wolf teams), `player.html` (cold-start warning for <15-game rookies; inactivity warning when `theta_display` ≠ `theta`), `team.html` (expandable per-tournament rosters; trend chart uses `team_theta_implied` instead of raw take counts), `tournament.html` (expected-vs-actual takes), `methodology.html` (cold-start + inactivity-decay sections), `search.html`, `base.html`, `_macros.html` (shared paginator) |
@@ -230,7 +234,9 @@ End-to-end takes ~20 min on macOS (most of it is the train pass).
 
 - **Change sequential hyperparams** → `Config` in `rating/engine.py`
 - **Tune hyperparams** → `python -m rating --mode cached --cache_file data.npz --tune` (grid search) or `--tune --tune-trials 24` (random search)
-- **Disable tournament offsets** → `--no-tournament-delta` or `Config(use_tournament_delta=False)`
+- **Per-mode and per-tournament offsets** → removed in 2026-04; only
+  `δ_size` and `δ_pos` remain (use `--no-use-team-size-effect` /
+  `--no-use-pos-effect` to disable individually)
 - **Add DB filter** → `load_from_db()` in `data.py`
 - **Export sequential results** → `--results_npz` (compact) or `--players_out`, `--questions_out`, `--history_out` (CSV)
 - **Refresh production data** → `./scripts/refresh_data.sh` (see above)

@@ -169,7 +169,7 @@ def tournaments_list(
     rows = db.query(
         f"""
         SELECT tournament_id, title, type, start_date,
-               n_questions, n_teams, delta_t
+               n_questions, n_teams
         FROM tournaments
         {where}
         ORDER BY start_date DESC NULLS LAST, tournament_id DESC

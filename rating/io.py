@@ -23,10 +23,6 @@ class RatingResults:
     history_player_id: Optional[np.ndarray] = None
     history_game_id: Optional[np.ndarray] = None
     history_theta: Optional[np.ndarray] = None
-    # Tournament-level effects: δ_t = μ_type[type_t] + ε_t.
-    mu_type: Optional[np.ndarray] = None      # shape (3,) for offline/sync/async
-    eps: Optional[np.ndarray] = None          # shape (num_games,)
-    game_type_idx: Optional[np.ndarray] = None  # shape (num_games,) int8 with 0/1/2
     # Team-size effect, indexed by team size; zeroed at anchor.
     delta_size: Optional[np.ndarray] = None
     team_size_anchor: Optional[int] = None
@@ -69,9 +65,6 @@ def load_results_npz(path: str | Path) -> RatingResults:
         history_player_id=_get("history_player_id"),
         history_game_id=_get("history_game_id"),
         history_theta=_get("history_theta"),
-        mu_type=_get("mu_type"),
-        eps=_get("eps"),
-        game_type_idx=_get("game_type_idx"),
         delta_size=_get("delta_size"),
         team_size_anchor=_scalar("team_size_anchor"),
         delta_pos=_get("delta_pos"),

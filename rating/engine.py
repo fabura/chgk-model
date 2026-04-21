@@ -18,7 +18,6 @@ from rating.decay import apply_calendar_decay, apply_decay
 from rating.model import forward, process_batch_nb
 from rating.players import PlayerState
 from rating.questions import QuestionState
-from rating.tournaments import TournamentState, TYPE_ASYNC, TYPE_OFFLINE, TYPE_SYNC, game_type_to_idx
 
 
 # ======================================================================
@@ -30,19 +29,20 @@ class Config:
     """Tunable hyperparameters for the sequential rating loop.
 
     `w_online` retains its original meaning: async tournaments should
-    affect player ratings less than offline events. Question updates and
-    tournament mode effects have their own weights because async results
-    are useful for learning the easier mode, but less reliable as direct
-    evidence of player strength and question discrimination.
+    affect player ratings less than offline events. Question updates
+    have their own weights because async results are still useful for
+    learning question difficulty/discrimination, just noisier.
     """
 
-    # Re-tuned 2026-04 on the cleaned cache (seasonal-aggregate filter +
-    # yearly gauge re-centering target=-0.70).  Previous defaults were
-    # tuned on the noisier dataset and were 2× too aggressive on eta0.
-    # See ``results/retune_2026-04_p2.csv``: the 4-axis combo below
-    # cuts backtest logloss from 0.5365 → 0.5331 (-0.0034) and lifts
-    # AUC from 0.8065 → 0.8101 (+0.0036) on the 20% hold-out.
-    eta0: float = 0.05
+    # 2026-04 lean defaults.  In April 2026 we removed the per-mode
+    # offset μ_type and the per-tournament residual ε_t (8 746 params)
+    # after an ablation showed they were net-negative for backtest
+    # quality, then added a small teammate-θ shrinkage and re-tuned
+    # eta0 for the leaner model.  Cumulative gain over the previous
+    # defaults on the 20 % hold-out: logloss 0.5365 → 0.5309
+    # (-0.0056), AUC 0.8065 → 0.8115 (+0.0050).  See `/tmp/exp_*` and
+    # the cleanup commit message for the full sweep table.
+    eta0: float = 0.07
     rho: float = 0.9995
     w_online: float = 0.5
 
@@ -50,15 +50,6 @@ class Config:
     w_sync: float = 0.7
     w_online_questions: float = 0.30
     w_online_log_a: float = 0.05
-    w_sync_mode: float = 1.0
-    w_async_mode: float = 0.15
-    w_sync_residual: float = 0.9
-    w_async_residual: float = 0.6
-
-    eta_mu: float = 0.005
-    eta_eps: float = 0.03
-    reg_mu_type: float = 0.10
-    reg_eps: float = 0.20
 
     # L2-style shrinkage on player/question parameters.  Default 0.0 keeps
     # the previous behaviour exactly; positive values pull toward zero
@@ -123,14 +114,13 @@ class Config:
     games_offset: float = 0.25
 
     # Team-size effect.  Adds a global, per-team-size shift to the
-    # tournament difficulty:
-    #     δ = mu_type[type] + eps[t] + delta_size[clip(team_size, 1, K)]
+    # question difficulty:
+    #     δ = delta_size[clip(team_size, 1, K)]
     # Anchored at ``team_size_anchor`` (delta_size at that index is
-    # forced to zero so the parameter is identifiable against the
-    # weekly-centered ε_t).  ``team_size_max`` clips uncommon roster
-    # sizes (default 8 covers ~98% of the data; sizes 9+ are rare and
-    # often roster errors).  ``w_size`` allows shutting the effect off
-    # for async tournaments where rosters are noisier.
+    # forced to zero for identifiability).  ``team_size_max`` clips
+    # uncommon roster sizes (default 8 covers ~98% of the data; sizes
+    # 9+ are rare and often roster errors).  ``w_size`` allows shutting
+    # the effect off for async tournaments where rosters are noisier.
     use_team_size_effect: bool = True
     team_size_max: int = 8
     team_size_anchor: int = 6
@@ -141,7 +131,7 @@ class Config:
     w_size_async: float = 0.5
 
     # Position-in-tour effect.  Adds a small per-position shift on
-    # tournament difficulty:
+    # question difficulty:
     #     δ += delta_pos[(question_index_within_tournament) % tour_len]
     # Anchored at ``pos_anchor`` (mid-tour).  Default ``tour_len=12``
     # matches the standard ChGK tour length; tournaments with non-12
@@ -159,8 +149,19 @@ class Config:
     w_pos_sync: float = 1.0
     w_pos_async: float = 0.5
 
-    use_tournament_delta: bool = True
-    use_delta_type_prior: bool = False
+    # Per-tournament teammate shrinkage.  After each gradient step,
+    # pull every roster member's θ toward the per-team mean of θ on
+    # this tournament:
+    #     θ_k -= eta_teammate * (θ_k - mean_team(θ))
+    # Motivation: noisy-OR on team-level data has an identifiability
+    # problem for stable rosters — a small early θ-gap between
+    # long-term teammates is otherwise locked in for life because the
+    # credit attribution is proportional to current λ_k.  This
+    # shrinkage adds a soft pull that lets joint games slowly close
+    # such artificial intra-team gaps while preserving real differences
+    # (which are independently supported by solo games).  0.005 was
+    # picked from a sweep (logloss −0.0014, AUC +0.0011 over 0.0).
+    eta_teammate: float = 0.005
 
     # Periodic gauge re-centering to neutralise the multi-year θ drift.
     #
@@ -202,7 +203,6 @@ class SequentialResult:
     predictions: Optional[dict] = None
     history: Optional[list] = None
     canonical_q_map: Optional[np.ndarray] = None
-    tournaments: Optional[TournamentState] = None
     delta_size: Optional[np.ndarray] = None  # learned team-size effect (index = team_size)
     team_size_anchor: int = 6
     delta_pos: Optional[np.ndarray] = None  # learned position-in-tour effect
@@ -221,18 +221,16 @@ class SequentialResult:
 
 def _type_update_weights(
     game_type: str, cfg: Config
-) -> tuple[float, float, float, float, float, float, float]:
+) -> tuple[float, float, float, float, float]:
     """Return per-parameter update weights for a tournament type.
 
-    Returns ``(theta_w, b_w, log_a_w, mu_w, eps_w, size_w, pos_w)``.
+    Returns ``(theta_w, b_w, log_a_w, size_w, pos_w)``.
     """
     if "async" in game_type:
         return (
             cfg.w_online,
             cfg.w_online_questions,
             cfg.w_online_log_a,
-            cfg.w_async_mode,
-            cfg.w_async_residual,
             cfg.w_size_async,
             cfg.w_pos_async,
         )
@@ -241,16 +239,12 @@ def _type_update_weights(
             cfg.w_sync,
             cfg.w_sync,
             cfg.w_sync,
-            cfg.w_sync_mode,
-            cfg.w_sync_residual,
             cfg.w_size_sync,
             cfg.w_pos_sync,
         )
     return (
         cfg.w_offline,
         cfg.w_offline,
-        cfg.w_offline,
-        0.0,
         cfg.w_offline,
         cfg.w_size_offline,
         cfg.w_pos_offline,
@@ -365,22 +359,8 @@ def run_sequential(
     game_order = sorted(obs_by_game, key=_sort_key)
 
     # --- state ---
-    num_games = len(game_types) if game_types else (max(game_order) + 1 if game_order else 0)
-    if cfg.use_tournament_delta:
-        tournaments = TournamentState(
-            num_games,
-            game_type=game_types,
-            use_type_prior=cfg.use_delta_type_prior,
-        )
-    else:
-        tournaments = None
-
     players = PlayerState(num_players)
     questions = QuestionState(num_q_params)
-
-    # Track games per week for centering δ
-    last_week: int | None = None
-    games_this_week: list[int] = []
 
     # Track epoch boundary for periodic gauge re-centering (drift fix).
     last_recenter_epoch: int | None = None
@@ -390,8 +370,6 @@ def run_sequential(
 
     total_loglik = 0.0
     total_obs_count = 0
-    zero_mu_type = np.zeros(3, dtype=np.float64)
-    zero_eps = np.zeros(max(num_games, 1), dtype=np.float64)
 
     # Team-size effect: vector of length team_size_max + 1 (index 0 unused),
     # initialised to zero so the model starts identical to the previous one.
@@ -446,20 +424,7 @@ def run_sequential(
     for g in game_iter:
         obs_indices = obs_by_game[g]
         gt = game_types[g] if g < len(game_types) else "offline"
-        theta_w, b_w, log_a_w, mu_w, eps_w, size_w, pos_w = _type_update_weights(gt, cfg)
-        gt_idx = game_type_to_idx(gt)
-
-        # 0. Week boundary: center tournament residuals ------------------
-        if tournaments is not None:
-            current_week = (
-                int(gdo[g]) // 7
-                if gdo is not None and g < len(gdo) and int(gdo[g]) >= 0
-                else g
-            )
-            if last_week is not None and current_week != last_week and games_this_week:
-                tournaments.center(games_this_week)
-                games_this_week = []
-            last_week = current_week
+        theta_w, b_w, log_a_w, size_w, pos_w = _type_update_weights(gt, cfg)
 
         # 0b. Year/epoch boundary: gauge re-center to keep median θ of
         #     active veterans pinned to cfg.recenter_target.  Strictly a
@@ -534,7 +499,6 @@ def run_sequential(
 
         # 4. Record predictions BEFORE updating --------------------------
         if collect_predictions:
-            delta_g_base = tournaments.total_delta(g) if tournaments is not None else 0.0
             for i in obs_indices:
                 qi = _cqi(int(q_idx[i]))
                 s, e = int(offsets[i]), int(offsets[i + 1])
@@ -550,7 +514,7 @@ def run_sequential(
                 else:
                     ts_idx = ts_raw
                 pos_idx_pred = int(q_pos_in_tour[int(q_idx[i])])
-                delta_g = delta_g_base
+                delta_g = 0.0
                 if cfg.use_team_size_effect and ts_idx != team_size_anchor:
                     delta_g += float(delta_size[ts_idx])
                 if cfg.use_pos_effect and pos_idx_pred != pos_anchor:
@@ -592,8 +556,6 @@ def run_sequential(
                 )
                 players.last_seen_ordinal[pids_arr] = current_ord
 
-        mu_type_arr = tournaments.mu_type if tournaments is not None else zero_mu_type
-        eps_arr = tournaments.eps if tournaments is not None else zero_eps
         obs_arr = np.array(obs_order, dtype=np.int64)
         total_loglik += process_batch_nb(
             obs_arr,
@@ -606,27 +568,17 @@ def run_sequential(
             players.theta,
             questions.b,
             questions.log_a,
-            mu_type_arr,
-            eps_arr,
             delta_size,
             delta_pos,
             players.games,
-            g,
-            gt_idx,
             cfg.eta0,
             theta_w,
             b_w,
             log_a_w,
-            mu_w if tournaments is not None else 0.0,
-            eps_w if tournaments is not None else 0.0,
             size_w if cfg.use_team_size_effect else 0.0,
             pos_w if cfg.use_pos_effect else 0.0,
-            cfg.eta_mu if tournaments is not None else 0.0,
-            cfg.eta_eps if tournaments is not None else 0.0,
             eta_size_eff,
             eta_pos_eff,
-            cfg.reg_mu_type if tournaments is not None else 0.0,
-            cfg.reg_eps if tournaments is not None else 0.0,
             cfg.reg_size,
             cfg.reg_pos,
             team_size_anchor,
@@ -641,8 +593,23 @@ def run_sequential(
 
         np.clip(players.theta, -10.0, 10.0, out=players.theta)
 
-        if tournaments is not None:
-            games_this_week.append(g)
+        # 5b. Teammate θ-shrinkage (experimental, see Config docstring).
+        # One pull per (team, tournament): collect distinct rosters from
+        # observations and shrink each roster's θ toward its mean.
+        if cfg.eta_teammate > 0.0:
+            seen_rosters: set[tuple[int, ...]] = set()
+            for i in obs_indices:
+                s, e = int(offsets[i]), int(offsets[i + 1])
+                if e - s < 2:
+                    continue
+                roster = tuple(sorted(int(p) for p in player_flat[s:e]))
+                if roster in seen_rosters:
+                    continue
+                seen_rosters.add(roster)
+                idx = np.fromiter(roster, dtype=np.int64, count=len(roster))
+                th = players.theta[idx]
+                mean_th = float(th.mean())
+                players.theta[idx] = th - cfg.eta_teammate * (th - mean_th)
 
         # 6. Increment game counters -------------------------------------
         for pidx in tourn_players:
@@ -662,10 +629,6 @@ def run_sequential(
                     else pidx
                 )
                 history.append((pid, gid, float(players.theta[pidx])))
-
-    # Center tournament residuals one last time (final week)
-    if tournaments is not None and games_this_week:
-        tournaments.center(games_this_week)
 
     # === Assemble predictions ==========================================
     predictions = None
@@ -691,13 +654,6 @@ def run_sequential(
             f"{total_obs_count} observations{pair_msg}"
         )
         print(f"Average log-likelihood: {avg:.4f}  (logloss: {-avg:.4f})")
-        if tournaments is not None:
-            print(
-                "Mode offsets:"
-                f" offline={tournaments.mu_type[TYPE_OFFLINE]:+.4f}"
-                f" sync={tournaments.mu_type[TYPE_SYNC]:+.4f}"
-                f" async={tournaments.mu_type[TYPE_ASYNC]:+.4f}"
-            )
         if cfg.use_team_size_effect:
             parts = []
             for n in range(1, team_size_max + 1):
@@ -772,7 +728,6 @@ def run_sequential(
         predictions=predictions,
         history=history,
         canonical_q_map=cq if num_q_params < num_questions else None,
-        tournaments=tournaments,
         delta_size=delta_size if cfg.use_team_size_effect else None,
         team_size_anchor=team_size_anchor,
         delta_pos=delta_pos if cfg.use_pos_effect else None,

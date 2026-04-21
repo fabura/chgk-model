@@ -35,12 +35,10 @@
           </ol>
         </li>
         <li>
-          <a class="toc-link hover:text-indigo-700" href="#tournament">4. Поправки на турнир</a>
+          <a class="toc-link hover:text-indigo-700" href="#tournament">4. Поправки на условия игры</a>
           <ol class="pl-4 space-y-1 mt-1 text-slate-500">
-            <li><a class="toc-link hover:text-indigo-700" href="#mu-type">4.1 μ_type — формат</a></li>
-            <li><a class="toc-link hover:text-indigo-700" href="#epsilon">4.2 ε_t — пакет</a></li>
-            <li><a class="toc-link hover:text-indigo-700" href="#size">4.3 δ_size — размер команды</a></li>
-            <li><a class="toc-link hover:text-indigo-700" href="#position">4.4 δ_pos — позиция в туре</a></li>
+            <li><a class="toc-link hover:text-indigo-700" href="#size">4.1 δ_size — размер команды</a></li>
+            <li><a class="toc-link hover:text-indigo-700" href="#position">4.2 δ_pos — позиция в туре</a></li>
           </ol>
         </li>
         <li>
@@ -58,7 +56,8 @@
           <ol class="pl-4 space-y-1 mt-1 text-slate-500">
             <li><a class="toc-link hover:text-indigo-700" href="#priors">6.1 Приоры на параметры</a></li>
             <li><a class="toc-link hover:text-indigo-700" href="#anchoring">6.2 Якорение и центрирование</a></li>
-            <li><a class="toc-link hover:text-indigo-700" href="#clipping">6.3 Клиппинг</a></li>
+            <li><a class="toc-link hover:text-indigo-700" href="#teammate">6.3 Стяжка теммейтов</a></li>
+            <li><a class="toc-link hover:text-indigo-700" href="#clipping">6.4 Клиппинг</a></li>
           </ol>
         </li>
         <li>
@@ -114,7 +113,7 @@
     <p>
       Считаем, что каждый игрок «независимо генерирует попытку» с
       интенсивностью
-      \( \lambda_k = \exp\!\bigl(-(b_i + \delta_t) + a_i \cdot \theta_k\bigr) \),
+      \( \lambda_k = \exp\!\bigl(-(b_i + \delta) + a_i \cdot \theta_k\bigr) \),
       а команда берёт вопрос, если хотя бы одна попытка успешна:
     </p>
     <p>
@@ -159,11 +158,11 @@
       </table>
     </div>
     <p class="text-sm text-slate-600 mt-2">
-      Среднее по базе ≈ −0.7, и это <i>не баг шкалы</i>: модель
-      еженедельно центрирует поправки на турнир и раз в год явно
-      «прибивает» медиану ветеранов к фиксированному значению (см.
-      <a href="#recenter" class="text-indigo-700 hover:underline">раздел 7</a>),
-      так что ноль — это «усреднённый турнир», а не «усреднённый игрок».
+      Среднее по базе ≈ −0.7, и это <i>не баг шкалы</i>: модель раз в
+      год явно «прибивает» медиану ветеранов к фиксированному значению
+      (см. <a href="#recenter" class="text-indigo-700 hover:underline">раздел 7</a>),
+      так что ноль — это «средний ветеран сильно ниже типичного игрока
+      базы», а не «усреднённый игрок».
     </p>
     <p class="text-sm text-slate-600">
       Что значат +1 единицы θ на практике (один игрок, типовой вопрос
@@ -257,66 +256,45 @@
     <h3 id="effective">3.4 Как они складываются</h3>
     <p>
       Под экспонентой стоит выражение
-      \( -b_i + a_i \cdot \theta_k - \delta_t \). Удобно интерпретировать
+      \( -b_i + a_i \cdot \theta_k - \delta \). Удобно интерпретировать
       это как «эффективную сложность вопроса для конкретного игрока»:
     </p>
     <p>
       \[
-      z_{ki} \;=\; a_i \!\left(\theta_k - \frac{b_i}{a_i}\right) \;-\; \delta_t
+      z_{ki} \;=\; a_i \!\left(\theta_k - \frac{b_i}{a_i}\right) \;-\; \delta
       \]
     </p>
     <p class="text-sm text-slate-600">
       В первом приближении игрок «справляется» с вопросом, если его сила
       θ выше «порога» \( b_i / a_i \) (для типичной \( a_i \approx 1 \) —
       просто \( b_i \)). Скорость роста шанса взятия за порогом задаётся
-      самой \( a_i \). Поправка \( \delta_t \) сдвигает весь пакет
-      одного турнира одновременно — её слагаемые описаны ниже.
+      самой \( a_i \). Поправка \( \delta \) — сумма двух небольших
+      поправок на условия конкретного наблюдения (размер команды и
+      позиция вопроса в туре), описанных ниже.
     </p>
 
-    {# ===== 4. Tournament shifts ===== #}
-    <h2 id="tournament" class="text-lg font-medium">4. Поправки на турнир</h2>
+    {# ===== 4. Auxiliary shifts ===== #}
+    <h2 id="tournament" class="text-lg font-medium">4. Поправки на условия игры</h2>
     <p>
-      Полный сдвиг \( \delta_t \) под экспонентой раскладывается на четыре
-      слагаемых, каждое со своей семантикой и собственными параметрами:
+      Сдвиг \( \delta \) под экспонентой состоит из двух слагаемых:
     </p>
     <p>
       \[
-      \delta_t \;=\; \mu_{\text{type}}[\,\text{type}_t\,] \;+\; \varepsilon_t \;+\; \delta_{\text{size}}[\,|\text{команда}|\,] \;+\; \delta_{\text{pos}}[\,q \!\!\mod L\,]
+      \delta \;=\; \delta_{\text{size}}[\,|\text{команда}|\,] \;+\; \delta_{\text{pos}}[\,q \!\!\mod L\,]
       \]
     </p>
-
-    <h3 id="mu-type">4.1 μ_type — формат турнира</h3>
-    <p>
-      Систематическая поправка по типу: <code>offline</code> (очник,
-      якорь = 0), <code>sync</code> (синхрон), <code>async</code> (асинхрон).
-      После перехода в онлайн вопросы стали в среднем «легче браться» при
-      том же содержании, и эта разница вытаскивается из данных, а не
-      задана вручную. Учится с малым шагом \( \eta_\mu = 0.005 \) и
-      слабым приором к нулю (<code>reg_mu_type = 0.10</code>).
-    </p>
     <p class="text-sm text-slate-600">
-      Async-формат имеет меньшие веса обновлений по θ и параметрам
-      вопросов (см. <a href="#type-weights" class="text-indigo-700 hover:underline">раздел 5.4</a>),
-      но <i>больший</i> вес обновлений своего собственного μ_async — из
-      него мы и узнаём системную разницу режимов.
+      Раньше сюда входили ещё два per-турнирных слагаемых
+      (\( \mu_{\text{type}} + \varepsilon_t \) — общий сдвиг по формату
+      и индивидуальная «лёгкость пакета»). В апреле 2026 они были
+      убраны: ablation-эксперимент показал, что эти 8&nbsp;746 параметров
+      на тестовой выборке делают модель чуть <i>хуже</i> (logloss
+      −0.0043, AUC +0.0044 после удаления). Систематическую разницу
+      форматов модель теперь усваивает только через разные веса
+      обновлений (см. <a href="#type-weights" class="text-indigo-700 hover:underline">раздел 5.4</a>).
     </p>
 
-    <h3 id="epsilon">4.2 ε_t — индивидуальная сложность пакета</h3>
-    <p>
-      Каждый турнир t имеет свой остаточный сдвиг \( \varepsilon_t \) —
-      «насколько именно этот пакет легче или сложнее среднего по своему
-      типу». Учится с шагом \( \eta_\varepsilon = 0.03 \) и приором
-      \( \mathrm{reg}_\varepsilon = 0.20 \).
-    </p>
-    <p class="text-sm text-slate-600">
-      В конце каждой недели ε_t центрируется внутри типа турнира (среднее
-      \( \varepsilon \) приводится к 0). Это даёт идентифицируемость
-      разложения \( \delta_t = \mu_{\text{type}} + \varepsilon \): без
-      такого якоря модель могла бы переложить всю общую часть из μ в ε
-      или наоборот.
-    </p>
-
-    <h3 id="size">4.3 δ_size — размер команды</h3>
+    <h3 id="size">4.1 δ_size — размер команды</h3>
     <p>
       Команды разного размера имеют разный шанс взять вопрос даже при
       одинаковом среднем уровне игроков (это уже частично учитывается в
@@ -332,7 +310,7 @@
       составы там часто заявлены неточно.
     </p>
 
-    <h3 id="position">4.4 δ_pos — позиция вопроса в туре</h3>
+    <h3 id="position">4.2 δ_pos — позиция вопроса в туре</h3>
     <p>
       Вопросы внутри одного тура (длина <code>tour_len = 12</code>)
       берутся не одинаково: в среднем последний вопрос тура чуть сложнее
@@ -364,7 +342,7 @@
       турнира вопросы перемешиваются один раз и обходятся по очереди:
       каждое наблюдение «(команда, вопрос, взяли/нет)» даёт один
       градиентный шаг по θ участников команды, по \( (b, \log a) \)
-      вопроса и по слагаемым δ_t. Один проход по данным = одна эпоха;
+      вопроса и по слагаемым δ. Один проход по данным = одна эпоха;
       по факту используется одна эпоха (модель «онлайн»).
     </p>
 
@@ -406,7 +384,7 @@
       100 играми шаг становится \( \approx 0.1\eta_0 \) — рейтинг
       устойчив к случайным колебаниям. Параметры вопросов и δ обновляются
       без адаптивного шага: для них используются глобальные \( \eta_0,
-      \eta_\mu, \eta_\varepsilon, \eta_{\text{size}}, \eta_{\text{pos}} \).
+      \eta_{\text{size}}, \eta_{\text{pos}} \).
     </p>
 
     <h3 id="type-weights">5.4 Веса обновлений по типу турнира</h3>
@@ -431,8 +409,6 @@
           <tr class="border-t"><td class="px-3 py-2">θ игрока</td>            <td class="px-3 py-2 text-right num">1.0</td><td class="px-3 py-2 text-right num">0.7</td><td class="px-3 py-2 text-right num">0.5</td></tr>
           <tr class="border-t"><td class="px-3 py-2">b вопроса</td>           <td class="px-3 py-2 text-right num">1.0</td><td class="px-3 py-2 text-right num">0.7</td><td class="px-3 py-2 text-right num">0.30</td></tr>
           <tr class="border-t"><td class="px-3 py-2">log a вопроса</td>       <td class="px-3 py-2 text-right num">1.0</td><td class="px-3 py-2 text-right num">0.7</td><td class="px-3 py-2 text-right num">0.05</td></tr>
-          <tr class="border-t"><td class="px-3 py-2">μ_type (формат)</td>     <td class="px-3 py-2 text-right num">—</td><td class="px-3 py-2 text-right num">1.0</td><td class="px-3 py-2 text-right num">0.15</td></tr>
-          <tr class="border-t"><td class="px-3 py-2">ε_t (пакет)</td>         <td class="px-3 py-2 text-right num">1.0</td><td class="px-3 py-2 text-right num">0.9</td><td class="px-3 py-2 text-right num">0.6</td></tr>
           <tr class="border-t"><td class="px-3 py-2">δ_size, δ_pos</td>       <td class="px-3 py-2 text-right num">1.0</td><td class="px-3 py-2 text-right num">1.0</td><td class="px-3 py-2 text-right num">0.5</td></tr>
         </tbody>
       </table>
@@ -440,10 +416,17 @@
     <p class="text-sm text-slate-600 mt-2">
       Эти 12 чисел подобраны через сеточный/случайный поиск (см.
       <a href="#tuning" class="text-indigo-700 hover:underline">раздел 9</a>) —
-      <code>w_async_questions = 0.30</code> и
-      <code>w_async_log_a = 0.05</code> намеренно очень малы, потому что
-      пакеты асинхрона быстро «разъезжаются» по утечкам (часть команд
-      успевает посмотреть ответы), и сильно учить b и a по ним вредно.
+      <code>w_online_questions = 0.30</code> и
+      <code>w_online_log_a = 0.05</code> (веса для асинхрона) намеренно
+      очень малы, потому что пакеты асинхрона быстро «разъезжаются» по
+      утечкам (часть команд успевает посмотреть ответы), и сильно
+      учить b и a по ним вредно.
+    </p>
+    <p class="text-sm text-slate-600">
+      После удаления параметров \( \mu_{\text{type}} \) и \( \varepsilon_t \)
+      (апрель 2026) единственный канал, через который модель видит
+      «формат», — именно эти веса; сама же поправка δ под экспонентой
+      больше не зависит ни от типа турнира, ни от его id.
     </p>
 
     <h3 id="cold-start">5.5 Холодный старт</h3>
@@ -476,12 +459,6 @@
       к «массовым» параметрам, где исходный сигнал может быть слабым:
     </p>
     <ul class="list-disc pl-6 text-sm text-slate-600">
-      <li><b>μ_type</b>: <code>reg_mu_type = 0.10</code> — без приора
-        очник/синхрон/асинхрон могли бы «уехать» в большие абсолютные
-        значения, компенсируясь общим сдвигом θ.</li>
-      <li><b>ε_t</b>: <code>reg_eps = 0.20</code> — на турнирах с малым
-        числом наблюдений (типа однораундовых тестовых пакетов)
-        ε_t иначе переобучается.</li>
       <li><b>δ_size, δ_pos</b>: <code>reg_size = reg_pos = 0.10</code>.</li>
       <li><b>θ, b, log&nbsp;a</b>: <code>reg_theta = reg_b = reg_log_a = 0</code>
         по умолчанию — для этих параметров сигнала достаточно, и
@@ -494,23 +471,51 @@
       <i>идентифицирующие ограничения</i>:
     </p>
     <ul class="list-disc pl-6 text-sm text-slate-600">
-      <li>\( \mu_{\text{offline}} \equiv 0 \) — очник зафиксирован как
-        точка отсчёта формата.</li>
       <li>\( \delta_{\text{size}}[6] \equiv 0 \) — стандартная команда из
         шести играет «на нулевой поправке».</li>
       <li>\( \delta_{\text{pos}}[0] \equiv 0 \) — первый вопрос тура
         читается как нулевая поправка.</li>
-      <li>\( \overline{\varepsilon_t} = 0 \) внутри каждой пары
-        (тип турнира, неделя) — пересчитывается раз в неделю по списку
-        реально отыгранных турниров.</li>
     </ul>
     <p class="text-sm text-slate-600">
       Без таких якорей модель имела бы лишние степени свободы (общий
-      сдвиг между μ и ε, между θ и b, и т.&nbsp;п.) и параметры
-      дрейфовали бы вместо обучения.
+      сдвиг между δ_size и θ, между δ_pos и b, и т.&nbsp;п.) и
+      параметры дрейфовали бы вместо обучения.
     </p>
 
-    <h3 id="clipping">6.3 Клиппинг параметров</h3>
+    <h3 id="teammate">6.3 Стяжка теммейтов (teammate shrinkage)</h3>
+    <p>
+      У noisy-OR на командных данных есть фундаментальная проблема
+      идентифицируемости: если два игрока всегда играют вместе и
+      берут вопросы примерно одинаково, модель не может разделить
+      их вклад — небольшая случайная разница в θ, образовавшаяся в
+      первых играх, остаётся «зашитой» в команде навсегда (потому
+      что распределение «кредита» за взятие пропорционально
+      \( \lambda_k = \exp(a\theta_k - b - \delta) \), а не реальному
+      участию). Особенно ярко это проявляется у супер-стабильных
+      составов вроде Юли Архангельской и Коли Крапиля.
+    </p>
+    <p>
+      Чтобы такие искусственные щели медленно закрывались, после
+      каждого турнира модель применяет L2-стяжку каждого ростера к
+      собственному среднему:
+    </p>
+    <p>
+      \[
+      \theta_k \;\mathrel{-}=\; \eta_{\text{teammate}} \cdot
+      \bigl(\theta_k - \overline{\theta}_{\text{команда}}\bigr),
+      \qquad \eta_{\text{teammate}} = 0.005
+      \]
+    </p>
+    <p class="text-sm text-slate-600">
+      Эта поправка крошечная (0.5 % от разницы за один турнир), но за
+      сотни совместных игр успевает заметно сгладить «случайную»
+      компоненту разницы. Реальные различия не размываются, потому
+      что они дополнительно поддерживаются сольными играми каждого
+      игрока, где этой стяжки нет. Backtest-выигрыш на чистой базе
+      (логлосс −0.0014, AUC +0.0011 по сравнению с 0).
+    </p>
+
+    <h3 id="clipping">6.4 Клиппинг параметров</h3>
     <p>
       На каждом шаге значения зажимаются в безопасные диапазоны:
     </p>
@@ -518,7 +523,6 @@
       <li>\( \theta \in [-10,\ 10] \);</li>
       <li>\( b \in [-10,\ 10] \), \( \log a \in [-3,\ 3] \) (т.&nbsp;е.
         \( a \in [0.05,\ 20] \));</li>
-      <li>\( \mu_{\text{type}}, \varepsilon_t \in [-10,\ 10] \);</li>
       <li>\( z = -b + a\theta - \delta \in [-30,\ 30] \) перед
         экспонентой.</li>
     </ul>
@@ -639,11 +643,11 @@
       напрямую:
     </p>
     <ul class="list-disc pl-6 text-sm text-slate-600">
-      <li><b>Шаги обучения</b>: \( \eta_0,\ \eta_\mu,\ \eta_\varepsilon,
-        \eta_{\text{size}},\ \eta_{\text{pos}} \).</li>
-      <li><b>Множители по типу турнира</b>: 12 чисел из
+      <li><b>Шаги обучения</b>: \( \eta_0,\ \eta_{\text{size}},\
+        \eta_{\text{pos}},\ \eta_{\text{teammate}} \).</li>
+      <li><b>Множители по типу турнира</b>: 9 чисел из
         <a href="#type-weights" class="text-indigo-700 hover:underline">таблицы 5.4</a>.</li>
-      <li><b>Регуляризация</b>: <code>reg_mu_type, reg_eps, reg_size, reg_pos</code>.</li>
+      <li><b>Регуляризация</b>: <code>reg_size, reg_pos</code>.</li>
       <li><b>Холодный старт и адаптивный шаг</b>:
         <code>cold_init_theta, games_offset</code>.</li>
       <li><b>Якорение шкалы</b>: <code>recenter_period_days,
@@ -694,16 +698,14 @@
           </tr>
         </thead>
         <tbody class="text-slate-700">
-          <tr class="border-t"><td class="px-3 py-2 num">eta0</td>            <td class="px-3 py-2 text-right num">0.05</td><td class="px-3 py-2">базовый шаг для θ и параметров вопроса</td></tr>
-          <tr class="border-t"><td class="px-3 py-2 num">eta_mu</td>          <td class="px-3 py-2 text-right num">0.005</td><td class="px-3 py-2">шаг для μ_type (медленный — 3 значения, много наблюдений)</td></tr>
-          <tr class="border-t"><td class="px-3 py-2 num">eta_eps</td>         <td class="px-3 py-2 text-right num">0.03</td><td class="px-3 py-2">шаг для ε_t (свой на каждый турнир)</td></tr>
+          <tr class="border-t"><td class="px-3 py-2 num">eta0</td>            <td class="px-3 py-2 text-right num">0.07</td><td class="px-3 py-2">базовый шаг для θ и параметров вопроса</td></tr>
           <tr class="border-t"><td class="px-3 py-2 num">eta_size, eta_pos</td><td class="px-3 py-2 text-right num">0.005</td><td class="px-3 py-2">шаги для δ_size и δ_pos</td></tr>
+          <tr class="border-t"><td class="px-3 py-2 num">eta_teammate</td>    <td class="px-3 py-2 text-right num">0.005</td><td class="px-3 py-2">L2-стяжка θ к среднему по команде (борьба с identifiability)</td></tr>
           <tr class="border-t"><td class="px-3 py-2 num">games_offset</td>    <td class="px-3 py-2 text-right num">0.25</td><td class="px-3 py-2">«бонус новичка»: шаг ×2 на первой игре</td></tr>
           <tr class="border-t"><td class="px-3 py-2 num">cold_init_theta</td> <td class="px-3 py-2 text-right num">−1.0</td><td class="px-3 py-2">стартовая θ для нового игрока</td></tr>
           <tr class="border-t"><td class="px-3 py-2 num">w_sync</td>          <td class="px-3 py-2 text-right num">0.7</td><td class="px-3 py-2">вес обновления θ для синхрона</td></tr>
           <tr class="border-t"><td class="px-3 py-2 num">w_online (async)</td><td class="px-3 py-2 text-right num">0.5</td><td class="px-3 py-2">вес обновления θ для асинхрона</td></tr>
           <tr class="border-t"><td class="px-3 py-2 num">w_online_questions</td><td class="px-3 py-2 text-right num">0.30</td><td class="px-3 py-2">вес обновления b для асинхрона</td></tr>
-          <tr class="border-t"><td class="px-3 py-2 num">w_async_mode</td>    <td class="px-3 py-2 text-right num">0.15</td><td class="px-3 py-2">вес обновления μ_async</td></tr>
           <tr class="border-t"><td class="px-3 py-2 num">recenter_target</td> <td class="px-3 py-2 text-right num">−0.70</td><td class="px-3 py-2">целевая медиана θ ветеранов</td></tr>
           <tr class="border-t"><td class="px-3 py-2 num">recenter_period_days</td><td class="px-3 py-2 text-right num">365</td><td class="px-3 py-2">как часто пересчитывать gauge</td></tr>
           <tr class="border-t"><td class="px-3 py-2 num">recenter_min_games</td><td class="px-3 py-2 text-right num">200</td><td class="px-3 py-2">минимум игр для «ветерана»</td></tr>
@@ -711,10 +713,13 @@
       </table>
     </div>
     <p class="text-sm text-slate-600 mt-2">
-      Этот свип на чистой базе улучшил backtest относительно
-      «грязных» дефолтов:
-      <code>logloss 0.5365 → 0.5331</code> (−0.0034),
-      <code>AUC 0.8065 → 0.8101</code> (+0.0036). Подробности —
+      Кумулятивный выигрыш относительно «грязных» дефолтов начала
+      2026 года, после серии чисток (фильтр сезонных агрегатов,
+      yearly re-centering, удаление per-турнирных сдвигов
+      \( \mu_{\text{type}} + \varepsilon_t \), стяжка теммейтов и
+      финальный re-tune \( \eta_0 \)):
+      <code>logloss 0.5365 → 0.5302</code> (−0.0063),
+      <code>AUC 0.8065 → 0.8139</code> (+0.0074). Подробности —
       в <code>docs/async_mode_experiments.md</code> и
       <code>results/retune_2026-04*.csv</code>.
     </p>
@@ -786,13 +791,21 @@
       исключены из обучения):
     </p>
     <ul class="list-disc pl-6 text-sm">
-      <li><b>logloss ≈ 0.533</b> — сравнимый baseline «всё с
+      <li><b>logloss ≈ 0.530</b> — сравнимый baseline «всё с
         вероятностью 0.5» даёт 0.693, эмпирический «средний по типу
         турнира» даёт ~0.57.</li>
-      <li><b>AUC ≈ 0.810</b> — модель уверенно различает «возьмёт / не
+      <li><b>AUC ≈ 0.814</b> — модель уверенно различает «возьмёт / не
         возьмёт» на уровне отдельной пары (вопрос, команда).</li>
-      <li><b>Brier ≈ 0.179</b>.</li>
+      <li><b>Brier ≈ 0.177</b>.</li>
     </ul>
+    <p class="text-sm text-slate-600">
+      По форматам:
+      <code>offline 0.513 / 0.842</code>,
+      <code>sync 0.525 / 0.820</code>,
+      <code>async 0.548 / 0.797</code>
+      (logloss / AUC). Async всё ещё заметно сложнее предсказывать —
+      ровно поэтому веса обновлений по нему урезаны.
+    </p>
     <p class="text-sm text-slate-600">
       Подробности и сравнение с базовыми оракулами — в отчёте
       <code>scripts/compare_to_baselines.py</code>; текущая история

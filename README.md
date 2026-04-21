@@ -4,10 +4,12 @@ Sequential online rating: estimates **player strength** θ_k, **question difficu
 
 Current default handling of tournament modes:
 
-- tournament shift is decomposed as `delta_t = mu_type[type_t] + eps_t`
+- per-mode (`mu_type`) and per-tournament (`eps_t`) shifts were removed
+  in 2026-04 — see `AGENTS.md` and the comment in `rating/tournaments.py`
 - `offline` is the baseline mode
 - `async` updates are intentionally weaker for players, question
-  difficulty, and especially question discrimination
+  difficulty, and especially question discrimination (per-mode update
+  weights `w_online` / `w_sync` / `w_offline` in `rating.engine`)
 - tuned defaults currently use the `t6` configuration from
   `docs/async_mode_experiments.md`
 

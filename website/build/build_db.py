@@ -489,7 +489,7 @@ def _solve_implied_theta(
 
         S_pred(θ) = Σ_q [1 − exp(−n · exp(a_q · θ − b_eff[q]))]
 
-    ``b_eff`` already bakes in δ_t, δ_size (for the actual team size) and
+    ``b_eff`` already bakes in δ_size (for the actual team size) and
     δ_pos − δ_pos[anchor].  S_pred is monotone increasing in θ, so a
     plain bisection converges quickly.  Returns ``lo`` / ``hi`` if the
     score is outside the achievable range (e.g. impossible perfect /
@@ -526,9 +526,6 @@ def compute_expected_takes(
     player_theta_final: dict[int, float],
     *,
     tid_to_game_idx: dict[int, int],
-    mu_type: np.ndarray,           # shape (3,)
-    eps: np.ndarray,               # shape (num_games,)
-    game_type_idx: np.ndarray,     # shape (num_games,)
     delta_size: Optional[np.ndarray],
     team_size_anchor: Optional[int],
     delta_pos: Optional[np.ndarray],
@@ -539,12 +536,13 @@ def compute_expected_takes(
     """
     For each (tournament, team) compute the model's expected number of takes:
 
-        z_kq  = −(b_q + δ_t + δ_size + δ_pos[q]) + a_q · θ_k(at_t)
+        z_kq  = −(b_q + δ_size + δ_pos[q]) + a_q · θ_k(at_t)
         λ_kq  = exp(z_kq)
         p_q   = 1 − exp(− Σ_{k∈team} λ_kq)
         E[T]  = Σ_q p_q
 
-    where δ_t = μ_type[type_t] + ε_t.  No empirical calibration.
+    No per-tournament shift (the model no longer has μ_type or ε_t —
+    see the 2026-04 cleanup).
 
     If ``theta_before`` is provided, θ for each player is taken from the
     rating *as it was before the tournament* (eliminating the time-bias
@@ -553,18 +551,14 @@ def compute_expected_takes(
     If ``score_by_team`` is provided, also computes ``theta_implied`` per
     (tid, team_id): the per-player θ that a team of identical players
     of the team's actual size would need to match the observed take
-    count exactly (after stripping out δ_t, δ_size, δ_pos).  This is the
-    "effective team strength" shown on the team page chart — directly
-    comparable to per-player θ values elsewhere on the site.
+    count exactly (after stripping out δ_size and δ_pos).
 
     Returns:
       expected:        dict (tid, team_id) -> expected_takes (float)
-      delta_t_by_tid:  dict tid -> δ_t (float)  (NaN if game idx unknown)
       theta_implied:   dict (tid, team_id) -> θ_team (float)  (empty if
                        ``score_by_team`` is None)
     """
     expected: dict[tuple[int, int], float] = {}
-    delta_t_by_tid: dict[int, float] = {}
     theta_implied: dict[tuple[int, int], float] = {}
 
     has_size = delta_size is not None and team_size_anchor is not None
@@ -580,15 +574,7 @@ def compute_expected_takes(
         a_arr = np.array([a for _, _, a, _ in qs], dtype=np.float64)
         qi_arr = np.array([qi for qi, _, _, _ in qs], dtype=np.int64)
 
-        # δ_t for this tournament (μ_type + ε_t).
         g = tid_to_game_idx.get(tid)
-        if g is None:
-            delta_t = 0.0
-            delta_t_by_tid[tid] = float("nan")
-        else:
-            type_idx = int(game_type_idx[g]) if g < len(game_type_idx) else 0
-            delta_t = float(mu_type[type_idx]) + float(eps[g])
-            delta_t_by_tid[tid] = delta_t
 
         # δ_pos[q] − δ_pos[anchor]; broadcast across teams.
         if has_pos:
@@ -622,7 +608,7 @@ def compute_expected_takes(
                 size_shift = 0.0
 
             # Effective per-question difficulty for this team.
-            b_eff = b_arr + delta_t + size_shift + pos_shift  # (Q,)
+            b_eff = b_arr + size_shift + pos_shift  # (Q,)
             z = -b_eff[None, :] + np.outer(thetas, a_arr)     # (n, Q)
             lam = np.exp(z)
             S = lam.sum(axis=0)
@@ -636,7 +622,7 @@ def compute_expected_takes(
                         a_arr, b_eff, n, float(score)
                     )
 
-    return expected, delta_t_by_tid, theta_implied
+    return expected, theta_implied
 
 
 # ---------------------------------------------------------------------------
@@ -673,8 +659,7 @@ CREATE TABLE tournaments (
     n_questions INTEGER,
     n_teams INTEGER,
     pack_id INTEGER,
-    pack_title TEXT,
-    delta_t DOUBLE              -- model's per-tournament shift δ_t = μ_type[type] + ε_t
+    pack_title TEXT
 );
 
 CREATE INDEX idx_tournaments_game_idx ON tournaments(game_idx);
@@ -1112,7 +1097,6 @@ def write_duckdb(
         "n_teams": [],
         "pack_id": [],
         "pack_title": [],
-        "delta_t": [],
     }
     for g_idx, tid in enumerate(maps.idx_to_game_id):
         tid = int(tid)
@@ -1128,8 +1112,6 @@ def write_duckdb(
         cols["n_teams"].append(int(tid_to_n_teams.get(tid, 0)))
         cols["pack_id"].append(pack.get("pack_id"))
         cols["pack_title"].append(pack.get("pack_title"))
-        # delta_t is filled later (after compute_expected_takes via UPDATE).
-        cols["delta_t"].append(None)
     _bulk_insert(
         con,
         "tournaments",
@@ -1145,7 +1127,6 @@ def write_duckdb(
             "n_teams": pa.array(cols["n_teams"], type=pa.int32()),
             "pack_id": pa.array(cols["pack_id"], type=pa.int32()),
             "pack_title": pa.array(cols["pack_title"], type=pa.string()),
-            "delta_t": pa.array(cols["delta_t"], type=pa.float64()),
         },
     )
 
@@ -1274,25 +1255,6 @@ def write_duckdb(
         int(tid): i for i, tid in enumerate(maps.idx_to_game_id)
     }
 
-    # Tournament-level effects from the model.  If the npz was produced
-    # by an older training run that did not export them, fall back to 0.
-    num_games_total = len(maps.idx_to_game_id)
-    mu_type = res.mu_type if res.mu_type is not None else np.zeros(3, dtype=np.float32)
-    eps = (
-        res.eps if res.eps is not None
-        else np.zeros(num_games_total, dtype=np.float32)
-    )
-    gtype_arr = getattr(maps, "game_type", None)
-    if res.game_type_idx is not None:
-        game_type_idx = res.game_type_idx
-    elif gtype_arr is not None:
-        from rating.tournaments import game_type_to_idx
-        game_type_idx = np.array(
-            [game_type_to_idx(str(t)) for t in gtype_arr], dtype=np.int8
-        )
-    else:
-        game_type_idx = np.zeros(num_games_total, dtype=np.int8)
-
     # Build (player, tournament) → θ_before map so expected takes use θ AS IT
     # WAS at the start of each tournament (eliminates time-bias from final θ).
     _log("  building θ-before-tournament map from history…")
@@ -1312,14 +1274,11 @@ def write_duckdb(
                 1 for c in mask if c == "1"
             )
 
-    expected, delta_t_by_tid, theta_implied = compute_expected_takes(
+    expected, theta_implied = compute_expected_takes(
         rosters_by_tid,
         questions_by_tid,
         pid_to_theta,
         tid_to_game_idx=tid_to_game_idx,
-        mu_type=mu_type,
-        eps=eps,
-        game_type_idx=game_type_idx,
         delta_size=res.delta_size,
         team_size_anchor=res.team_size_anchor,
         delta_pos=res.delta_pos,
@@ -1329,31 +1288,8 @@ def write_duckdb(
     )
     _log(
         f"  computed expected_takes for {len(expected):,} teams "
-        f"(implied θ for {len(theta_implied):,}); "
-        f"δ_t (μ_type+ε_t) ranges "
-        f"[{np.nanmin(list(delta_t_by_tid.values())):+.2f}, "
-        f"{np.nanmax(list(delta_t_by_tid.values())):+.2f}]"
+        f"(implied θ for {len(theta_implied):,})"
     )
-
-    # Backfill δ_t (the model's own tournament shift) into tournaments.
-    delta_tids: list[int] = []
-    delta_vals: list[float] = []
-    for tid, d in delta_t_by_tid.items():
-        if d == d:  # not NaN
-            delta_tids.append(int(tid))
-            delta_vals.append(float(d))
-    if delta_tids:
-        delta_tbl = pa.table(
-            {
-                "tournament_id": pa.array(delta_tids, type=pa.int32()),
-                "delta_t": pa.array(delta_vals, type=pa.float64()),
-            }
-        )
-        con.register("_delta_tbl", delta_tbl)
-        con.execute(
-            "UPDATE tournaments SET delta_t = (SELECT delta_t FROM _delta_tbl d WHERE d.tournament_id = tournaments.tournament_id)"
-        )
-        con.unregister("_delta_tbl")
 
     # Insert team_games + collect player_games
     _log("Inserting team_games…")

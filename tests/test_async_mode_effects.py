@@ -4,27 +4,6 @@ import numpy as np
 
 from data import IndexMaps
 from rating.engine import Config, run_sequential
-from rating.tournaments import TYPE_ASYNC, TYPE_OFFLINE, TYPE_SYNC, TournamentState
-
-
-class TournamentStateTests(unittest.TestCase):
-    def test_total_delta_and_center_by_type(self) -> None:
-        tournaments = TournamentState(
-            num_games=5,
-            game_type=["offline", "sync", "sync", "async", "async"],
-        )
-        tournaments.mu_type[TYPE_SYNC] = -0.2
-        tournaments.mu_type[TYPE_ASYNC] = -0.5
-        tournaments.eps[:] = np.array([0.4, 0.1, 0.5, -0.3, 0.7], dtype=np.float64)
-
-        self.assertAlmostEqual(tournaments.total_delta(1), -0.1)
-        self.assertAlmostEqual(tournaments.total_delta(3), -0.8)
-
-        tournaments.center([0, 1, 2, 3, 4])
-
-        self.assertAlmostEqual(float(tournaments.eps[0]), 0.0, places=10)
-        self.assertAlmostEqual(float(np.mean(tournaments.eps[[1, 2]])), 0.0, places=10)
-        self.assertAlmostEqual(float(np.mean(tournaments.eps[[3, 4]])), 0.0, places=10)
 
 
 class AsyncUpdateTests(unittest.TestCase):
@@ -51,21 +30,21 @@ class AsyncUpdateTests(unittest.TestCase):
             w_online=0.25,
             w_online_questions=1.0,
             w_online_log_a=1.0,
-            eta_mu=0.1,
-            eta_eps=0.1,
-            reg_mu_type=0.0,
-            reg_eps=0.0,
-            use_tournament_delta=True,
+            eta_teammate=0.0,
         )
         return run_sequential(arrays, maps, cfg, verbose=False)
 
     def test_async_player_updates_are_smaller_than_offline(self) -> None:
+        # The per-mode update weights (w_online / w_sync / w_offline)
+        # still scale θ updates differently per format, so an async
+        # take should move θ less than an offline take.
         offline = self._run_single_game("offline")
         async_result = self._run_single_game("async")
 
-        self.assertGreater(float(offline.players.theta[0]), float(async_result.players.theta[0]))
-        self.assertAlmostEqual(float(offline.tournaments.mu_type[TYPE_OFFLINE]), 0.0, places=10)
-        self.assertLess(float(async_result.tournaments.mu_type[TYPE_ASYNC]), 0.0)
+        self.assertGreater(
+            float(offline.players.theta[0]),
+            float(async_result.players.theta[0]),
+        )
 
 
 class TeamSizeEffectTests(unittest.TestCase):
@@ -73,10 +52,9 @@ class TeamSizeEffectTests(unittest.TestCase):
 
     def _run_with_size(self, team_size: int, *, use_size_effect: bool, eta_size: float = 0.5):
         # Single tournament, single question, team of given size, all
-        # players new (θ=0).  With use_size_effect=True and a single
-        # tournament we expect the question-level gradient to be split
-        # between b, ε_t and δ_size; with use_size_effect=False, only b
-        # and ε_t move.
+        # players new (θ=0).  With use_size_effect=True the question-
+        # level gradient is split between b and δ_size; with
+        # use_size_effect=False only b moves.
         team = np.arange(team_size, dtype=np.int32)
         arrays = {
             "q_idx": np.array([0], dtype=np.int32),
@@ -96,11 +74,7 @@ class TeamSizeEffectTests(unittest.TestCase):
         )
         cfg = Config(
             eta0=0.1,
-            eta_mu=0.0,
-            eta_eps=0.1,
-            reg_mu_type=0.0,
-            reg_eps=0.0,
-            use_tournament_delta=True,
+            eta_teammate=0.0,
             use_team_size_effect=use_size_effect,
             eta_size=eta_size,
             reg_size=0.0,
@@ -169,11 +143,7 @@ class PositionEffectTests(unittest.TestCase):
         )
         cfg = Config(
             eta0=0.1,
-            eta_mu=0.0,
-            eta_eps=0.1,
-            reg_mu_type=0.0,
-            reg_eps=0.0,
-            use_tournament_delta=True,
+            eta_teammate=0.0,
             use_team_size_effect=False,
             use_pos_effect=use_pos_effect,
             eta_pos=eta_pos,

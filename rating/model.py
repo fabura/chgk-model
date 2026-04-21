@@ -1,12 +1,13 @@
 """
-Noisy-OR probability model with tournament difficulty offsets.
+Noisy-OR probability model.
 
-    z_k = -(b_i + δ_t) + a_i · θ_k
+    z_k = -(b_i + δ) + a_i · θ_k
     λ_k = exp(z_k)
     S   = Σ_k λ_k
     p   = 1 − exp(−S)   computed as  −expm1(−S)
 
-δ_t is the tournament difficulty offset (positive = harder).
+δ collects the auxiliary shifts (per-team-size + per-position-in-tour;
+positive = harder) — see ``rating.engine``.
 
 Numba JIT versions (forward_nb, gradients_nb, process_batch_nb) for speed.
 """
@@ -160,27 +161,17 @@ def process_batch_nb(
     theta: np.ndarray,
     b: np.ndarray,
     log_a: np.ndarray,
-    mu_type: np.ndarray,
-    eps: np.ndarray,
     delta_size: np.ndarray,
     delta_pos: np.ndarray,
     games: np.ndarray,
-    game_idx: int,
-    game_type_idx: int,
     eta0: float,
     theta_w: float,
     b_w: float,
     log_a_w: float,
-    mu_w: float,
-    eps_w: float,
     size_w: float,
     pos_w: float,
-    eta_mu: float,
-    eta_eps: float,
     eta_size: float,
     eta_pos: float,
-    reg_mu: float,
-    reg_eps: float,
     reg_size: float,
     reg_pos: float,
     size_anchor: int,
@@ -194,23 +185,16 @@ def process_batch_nb(
     """
     Process a batch of observations.
 
-    Updates ``theta``, ``b``, ``log_a``, ``mu_type``, ``eps`` and
-    ``delta_size`` in-place.
+    Updates ``theta``, ``b``, ``log_a``, ``delta_size`` and
+    ``delta_pos`` in-place.
 
-    The effective tournament shift is decomposed as
+    The effective tournament shift is
 
-        δ = mu_type[type] + eps[game] + delta_size[team_size]
-            + delta_pos[q_pos_in_tour[qi_raw]]
+        δ = delta_size[team_size] + delta_pos[q_pos_in_tour[qi_raw]]
 
-    where ``delta_size`` is anchored at ``size_anchor`` (typical team
-    size, e.g. 6) and ``delta_pos`` is anchored at ``pos_anchor``
-    (typical mid-tour position, e.g. 6 in a 12-question tour): updates
-    are skipped at the anchor index, and the anchor entry is treated
-    as structurally zero.  ``delta_size`` is stored as a 1-D array
-    indexed by ``team_size`` (sizes outside ``[1, len(delta_size) - 1]``
-    are clipped by the caller).  ``delta_pos`` is indexed by the raw
-    question index modulo the tour length (passed in as
-    ``q_pos_in_tour``).
+    where ``delta_size`` is anchored at ``size_anchor`` and
+    ``delta_pos`` at ``pos_anchor``: updates are skipped at the anchor
+    index, and the anchor entry is treated as structurally zero.
 
     L2-style shrinkage is applied as a multiplicative pull toward zero
     after each gradient step (``param *= max(0, 1 - lr * reg)``).  For
@@ -240,9 +224,7 @@ def process_batch_nb(
             pos_idx = 0
         elif pos_idx >= n_pos:
             pos_idx = n_pos - 1
-        delta_g = eps[game_idx]
-        if game_type_idx != 0:
-            delta_g += mu_type[game_type_idx]
+        delta_g = 0.0
         if ts_idx != size_anchor:
             delta_g += delta_size[ts_idx]
         if pos_idx != pos_anchor:
@@ -298,23 +280,6 @@ def process_batch_nb(
             log_a[qi] = 3.0
         elif log_a[qi] < -3.0:
             log_a[qi] = -3.0
-        if game_type_idx != 0:
-            mu_val = mu_type[game_type_idx] + mu_w * eta_mu * dL_ddelta
-            if reg_mu > 0.0:
-                mu_val *= max(0.0, 1.0 - eta_mu * reg_mu)
-            if mu_val > 10.0:
-                mu_val = 10.0
-            elif mu_val < -10.0:
-                mu_val = -10.0
-            mu_type[game_type_idx] = mu_val
-        eps_val = eps[game_idx] + eps_w * eta_eps * dL_ddelta
-        if reg_eps > 0.0:
-            eps_val *= max(0.0, 1.0 - eta_eps * reg_eps)
-        if eps_val > 10.0:
-            eps_val = 10.0
-        elif eps_val < -10.0:
-            eps_val = -10.0
-        eps[game_idx] = eps_val
         if ts_idx != size_anchor and size_w > 0.0 and eta_size > 0.0:
             ds_val = delta_size[ts_idx] + size_w * eta_size * dL_ddelta
             if reg_size > 0.0:

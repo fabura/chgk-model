@@ -21,14 +21,6 @@
   {% if editors %}
   <div class="text-sm text-slate-600 mt-1">Редакторы пака: {{ editors|join(", ") }}</div>
   {% endif %}
-  {% if tournament.delta_t is not none %}
-  <div class="text-sm text-slate-600 mt-1">
-    Сдвиг турнира δ<sub>t</sub> = μ<sub>type</sub> + ε<sub>t</sub> = <span class="font-medium num">{{ "%+.2f"|format(tournament.delta_t) }}</span>
-    <span class="text-slate-400">
-      (положительный — труднее, чем «средний» в его типе)
-    </span>
-  </div>
-  {% endif %}
 </div>
 
 <section class="bg-white border border-slate-200 rounded shadow-sm mb-6">

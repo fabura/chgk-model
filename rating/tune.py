@@ -29,7 +29,7 @@ class TuneResult:
 
 def _default_grid() -> list[dict[str, Any]]:
     """Default grid: eta0 × rho × w_online (~36 trials)."""
-    eta0_vals = [0.02, 0.05, 0.07, 0.1]
+    eta0_vals = [0.04, 0.07, 0.10]
     rho_vals = [0.997, 0.999, 0.9995]
     w_online_vals = [0.5, 0.7, 0.8]
     configs = []
@@ -40,15 +40,13 @@ def _default_grid() -> list[dict[str, Any]]:
                     "eta0": eta0,
                     "rho": rho,
                     "w_online": w,
-                    "use_tournament_delta": True,
-                    "use_delta_type_prior": False,
                 })
     return configs
 
 
 def random_search(
     n_trials: int = 24,
-    eta0_range: tuple[float, float] = (0.02, 0.12),
+    eta0_range: tuple[float, float] = (0.03, 0.12),
     rho_range: tuple[float, float] = (0.996, 0.9998),
     w_online_range: tuple[float, float] = (0.5, 0.9),
 ) -> list[dict[str, Any]]:
@@ -62,8 +60,6 @@ def random_search(
             "eta0": round(eta0, 4),
             "rho": round(rho, 4),
             "w_online": round(w, 2),
-            "use_tournament_delta": True,
-            "use_delta_type_prior": False,
         })
     return configs
 
@@ -121,8 +117,7 @@ def tune(
     for i, kw in enumerate(configs):
         # Build Config from defaults, then override with whatever the
         # trial supplied.  Any field of ``Config`` may be tuned this way
-        # (eta0, rho, w_online, w_sync, w_async_mode, w_async_residual,
-        # eta_mu, eta_eps, recenter_target, …).
+        # (eta0, rho, w_online, w_sync, eta_teammate, recenter_target, …).
         try:
             cfg = Config(**kw)
         except TypeError as e:

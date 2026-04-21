@@ -31,8 +31,6 @@
 
 <p class="text-xs text-slate-500 mb-3">
   Список всех турниров, отсортированный по дате старта (сначала самые свежие).
-  δ — поправка модели на турнир: положительное значение означает, что пакет
-  оказался <em>сложнее</em> ожидаемого, отрицательное — наоборот.
   {% if total %}
   · всего {{ total }} турниров{% if type %} формата «{{ type|type_label }}»{% endif %};
     страница {{ page }} из {{ total_pages }}.
@@ -48,7 +46,6 @@
         <th class="px-3 py-2 text-left">Турнир</th>
         <th class="px-3 py-2 text-right">Вопр.</th>
         <th class="px-3 py-2 text-right">Команд</th>
-        <th class="px-3 py-2 text-right">δ</th>
       </tr>
     </thead>
     <tbody>
@@ -76,13 +73,10 @@
         </td>
         <td class="px-3 py-2 text-right num text-slate-700">{{ t.n_questions or "—" }}</td>
         <td class="px-3 py-2 text-right num text-slate-700">{{ t.n_teams or "—" }}</td>
-        <td class="px-3 py-2 text-right num text-slate-500">
-          {% if t.delta_t is not none %}{{ t.delta_t|signed(2) }}{% else %}—{% endif %}
-        </td>
       </tr>
       {% endfor %}
       {% if not tournaments %}
-      <tr><td colspan="6" class="px-3 py-6 text-center text-slate-400">Ничего не найдено.</td></tr>
+      <tr><td colspan="5" class="px-3 py-6 text-center text-slate-400">Ничего не найдено.</td></tr>
       {% endif %}
     </tbody>
   </table>

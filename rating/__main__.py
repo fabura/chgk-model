@@ -37,7 +37,7 @@ def main() -> int:
 
     hp = parser.add_argument_group("hyperparameters")
     hp.add_argument(
-        "--eta0", type=float, default=0.05, help="Base learning rate"
+        "--eta0", type=float, default=0.07, help="Base learning rate"
     )
     hp.add_argument(
         "--rho", type=float, default=0.9995, help="Rating decay"
@@ -59,42 +59,6 @@ def main() -> int:
         type=float,
         default=0.05,
         help="Async/online weight for question discrimination updates",
-    )
-    hp.add_argument(
-        "--w_async_mode",
-        type=float,
-        default=0.15,
-        help="Async/online weight for global mode-offset updates",
-    )
-    hp.add_argument(
-        "--w_async_residual",
-        type=float,
-        default=0.6,
-        help="Async/online weight for tournament residual-offset updates",
-    )
-    hp.add_argument(
-        "--eta_mu",
-        type=float,
-        default=0.005,
-        help="Learning rate for tournament mode offsets",
-    )
-    hp.add_argument(
-        "--eta_eps",
-        type=float,
-        default=0.03,
-        help="Learning rate for per-tournament residual offsets",
-    )
-    hp.add_argument(
-        "--reg_mu_type",
-        type=float,
-        default=0.10,
-        help="L2-style shrinkage for sync/async mode offsets",
-    )
-    hp.add_argument(
-        "--reg_eps",
-        type=float,
-        default=0.20,
-        help="L2-style shrinkage for per-tournament residual offsets",
     )
     hp.add_argument(
         "--reg_theta",
@@ -249,14 +213,10 @@ def main() -> int:
         help="Days since last game to count a veteran as 'active'.",
     )
     hp.add_argument(
-        "--no-tournament-delta",
-        action="store_true",
-        help="Disable tournament difficulty offsets",
-    )
-    hp.add_argument(
-        "--delta-type-prior",
-        action="store_true",
-        help="Initialize δ from type (offline=0, sync=-0.1, online=-0.2)",
+        "--eta_teammate",
+        type=float,
+        default=0.005,
+        help="Per-tournament L2 pull of teammate θ toward team mean",
     )
 
     ev = parser.add_argument_group("evaluation")
@@ -314,12 +274,6 @@ def main() -> int:
         w_online=args.w_online,
         w_online_questions=args.w_online_questions,
         w_online_log_a=args.w_online_log_a,
-        w_async_mode=args.w_async_mode,
-        w_async_residual=args.w_async_residual,
-        eta_mu=args.eta_mu,
-        eta_eps=args.eta_eps,
-        reg_mu_type=args.reg_mu_type,
-        reg_eps=args.reg_eps,
         reg_theta=args.reg_theta,
         reg_b=args.reg_b,
         reg_log_a=args.reg_log_a,
@@ -340,8 +294,7 @@ def main() -> int:
         pos_anchor=args.pos_anchor,
         eta_pos=args.eta_pos,
         reg_pos=args.reg_pos,
-        use_tournament_delta=not args.no_tournament_delta,
-        use_delta_type_prior=args.delta_type_prior,
+        eta_teammate=args.eta_teammate,
         recenter_period_days=args.recenter_period_days,
         recenter_target=args.recenter_target,
         recenter_min_games=args.recenter_min_games,
@@ -507,14 +460,6 @@ def _export_results_npz(path: str, result, maps) -> None:
     }
     if cq is not None:
         kw["canonical_q_idx"] = cq.astype(np.int32)
-
-    # Tournament-level effects (μ_type, ε_t) and per-tournament metadata
-    # required to evaluate the model's expected take rate outside training.
-    tournaments = getattr(result, "tournaments", None)
-    if tournaments is not None:
-        kw["mu_type"] = tournaments.mu_type.astype(np.float32)
-        kw["eps"] = tournaments.eps.astype(np.float32)
-        kw["game_type_idx"] = tournaments.game_type_idx.astype(np.int8)
 
     # Team-size effect: indexed 0..team_size_max, anchored at team_size_anchor.
     if result.delta_size is not None:

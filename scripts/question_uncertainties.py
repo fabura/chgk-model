@@ -53,7 +53,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from data import load_cached
 from rating.engine import Config, run_sequential
-from rating.tournaments import game_type_to_idx
 
 try:
     from numba import njit
@@ -150,8 +149,6 @@ def main(
     a = np.exp(log_a)
     n_canonical = b.shape[0]
 
-    mu_type = result.tournaments.mu_type
-    eps = result.tournaments.eps
     delta_size = (
         result.delta_size
         if result.delta_size is not None
@@ -168,7 +165,6 @@ def main(
     q_idx = arrays["q_idx"].astype(np.int64)
     taken = arrays["taken"].astype(np.float64)
     team_sizes = arrays["team_sizes"].astype(np.int64)
-    game_idx_arr = arrays["game_idx"].astype(np.int64)
     pflat = arrays["player_indices_flat"].astype(np.int64)
     offsets = np.cumsum(np.concatenate([[0], team_sizes])).astype(np.int64)
     cq = (
@@ -181,18 +177,10 @@ def main(
     print(f"  {n_obs:,} obs over {n_canonical:,} canonical questions")
 
     # ---- per-obs δ_obs (vectorised) -------------------------------------
+    # δ now only collects δ_size + δ_pos (μ_type and ε_t were removed in
+    # 2026-04 — see rating/tournaments.py).
     print("Computing per-observation δ_obs ...")
-    gt_arr = maps.game_type
-    gt_idx_per_game = np.fromiter(
-        (game_type_to_idx(str(gt_arr[g])) for g in range(len(gt_arr))),
-        dtype=np.int64,
-        count=len(gt_arr),
-    )
-    gt_idx_per_obs = gt_idx_per_game[game_idx_arr]
-    mu_per_obs = mu_type[gt_idx_per_obs]
-    mu_per_obs[gt_idx_per_obs == 0] = 0.0
-    eps_per_obs = eps[game_idx_arr]
-    delta_obs = mu_per_obs + eps_per_obs
+    delta_obs = np.zeros(n_obs, dtype=np.float64)
 
     if delta_size is not None and len(delta_size) > 1:
         max_size_idx = len(delta_size) - 1
