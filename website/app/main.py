@@ -596,17 +596,28 @@ def tournament_page(request: Request, tournament_id: int):
         [tournament_id],
     )
 
-    # Scatter data: b vs a, sized by take_rate
-    scatter = [
-        {
-            "b": q["b"],
-            "a": q["a"],
-            "take_rate": q["take_rate"],
-            "q": q["q_in_tournament"] + 1,
-            "has_text": bool(q["text"]),
-        }
-        for q in questions
-    ]
+    # Scatter data: b vs a, sized by take_rate.  Questions where
+    # nobody took it ("гробы", take_rate == 0) are pulled out — they
+    # all sit on the right edge with b clipped to 10 and visually
+    # squash every other question to the left half of the plot.
+    # We list their numbers separately under the chart instead.
+    scatter: list[dict] = []
+    dead_q_numbers: list[int] = []
+    for q in questions:
+        rate = q["take_rate"]
+        qnum = q["q_in_tournament"] + 1
+        if rate is not None and rate <= 0.0:
+            dead_q_numbers.append(qnum)
+            continue
+        scatter.append(
+            {
+                "b": q["b"],
+                "a": q["a"],
+                "take_rate": rate,
+                "q": qnum,
+                "has_text": bool(q["text"]),
+            }
+        )
 
     return templates.TemplateResponse(
         request,
@@ -617,6 +628,7 @@ def tournament_page(request: Request, tournament_id: int):
             "teams": teams,
             "questions": questions,
             "scatter_json": json.dumps(scatter, ensure_ascii=False),
+            "dead_q_numbers": dead_q_numbers,
         },
     )
 

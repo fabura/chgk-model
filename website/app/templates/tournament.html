@@ -26,12 +26,22 @@
 <section class="bg-white border border-slate-200 rounded shadow-sm mb-6">
   <h2 class="px-4 py-2 text-sm font-medium text-slate-600 border-b border-slate-100">Вопросы — карта (b: сложность, a: дискриминация)</h2>
   <div id="bq-chart" style="height: 400px;"></div>
-  <p class="px-4 pb-3 text-xs text-slate-500">
+  <p class="px-4 pb-1 text-xs text-slate-500">
     Каждая точка — вопрос; размер пропорционален эмпирической доле взятых,
     цвет — есть ли текст (синий = есть, серый = нет).
     Чем правее (больше b), тем сложнее. Чем выше (больше a), тем сильнее
     отделяет сильных от слабых.
   </p>
+  {% if dead_q_numbers %}
+  <p class="px-4 pb-3 text-xs text-slate-500">
+    <span class="inline-block px-1.5 py-0.5 rounded bg-rose-50 text-rose-700 border border-rose-200 mr-1">
+      гробы: {{ dead_q_numbers|length }}
+    </span>
+    вопросов с 0 % взятий не показаны (b уехал бы в правый край и
+    сжал бы остальной диапазон):
+    №&nbsp;{{ dead_q_numbers|join(", ") }}.
+  </p>
+  {% endif %}
 </section>
 
 <section class="bg-white border border-slate-200 rounded shadow-sm mb-6">
