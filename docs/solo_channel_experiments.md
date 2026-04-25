@@ -16,11 +16,10 @@ top of the distribution because the gradient is computed exactly the
 same way as a team result, and there is no other player to share
 credit with.
 
-The triggering case was player **Андрей Белов (id=2954)**: 531 games,
-of which ~12 % solo, but those solo wins drove his θ to **+0.58
-(rank 3 / 49 433)** — well above multi-decade team veterans like Иван
-Семушин who routinely beat him in the same tournaments when actually
-on the same roster.
+The triggering case was a player with ~530 team games and ~12 % solo
+entries: solo wins drove θ to **+0.58 (rank 3 / 49 433)** — well above
+multi-decade team veterans who routinely scored better against him when
+actually on the same roster.
 
 The fix could in principle be either of:
 
@@ -75,12 +74,12 @@ CLI: not exposed yet; flip in code via `Config(use_solo_channel=...)`.
 DB. Log: `results/exp_solo_channel.log`.
 
 ```
-config              logloss     AUC   ll_off  ll_syn  ll_asy   Belov θ   rank
-baseline (legacy)    0.5276  0.8151   0.5102  0.5226  0.5450    +0.58      3
-solo w=0.0           0.5272  0.8156   0.5088  0.5221  0.5452    -0.13    182
-solo w=0.1           0.5270  0.8158   0.5087  0.5220  0.5446    +0.07     31
-solo w=0.3           0.5268  0.8159   0.5088  0.5220  0.5442    +0.34      8   ← chosen
-solo w=0.5           0.5268  0.8160   0.5089  0.5220  0.5440    +0.48      3
+config              logloss     AUC   ll_off  ll_syn  ll_asy  ex. θ  rank
+baseline (legacy)    0.5276  0.8151   0.5102  0.5226  0.5450  +0.58     3
+solo w=0.0           0.5272  0.8156   0.5088  0.5221  0.5452  -0.13   182
+solo w=0.1           0.5270  0.8158   0.5087  0.5220  0.5446  +0.07    31
+solo w=0.3           0.5268  0.8159   0.5088  0.5220  0.5442  +0.34     8   ← chosen
+solo w=0.5           0.5268  0.8160   0.5089  0.5220  0.5440  +0.48     3
 ```
 
 Every solo-channel variant beats the legacy baseline on both metrics.
@@ -88,11 +87,11 @@ Improvement plateaus at `w=0.3 / w=0.5`:
 
 * `w=0.3` and `w=0.5` are tied on logloss (0.5268, −0.0008 vs baseline);
   AUC differs by 0.0001 in favour of `w=0.5`.
-* But at `w=0.5` the channel becomes too weak: Belov bounces back to
-  rank 3 and his solo wins almost recover their full pull. The
+* But at `w=0.5` the channel becomes too weak: the motivating case bounces
+  back to rank 3 and solo wins almost recover their full pull. The
   artefact the channel was introduced to fix is barely corrected.
 * `w=0.3` is the *lowest-logloss point that still meaningfully
-  deflates soloists* (Belov rank 3 → 8, θ +0.58 → +0.34) and was
+  deflates soloists* (rank 3 → 8, θ +0.58 → +0.34 in that case) and was
   picked as the default.
 
 Per-type breakdown shows the gain is concentrated in async (the
@@ -104,12 +103,14 @@ on offline / sync.
 `scripts/exp_solo_topn.py data.npz` — full-history training with the
 same defaults, no backtest. Log: `results/exp_solo_topn.log`.
 
-* **Pure team players** (Семушин 30 % solo, Хайбуллин/Шешуков/
-  Коробейников/Брутер 0 % solo): |Δθ| ≤ 0.075 — almost no movement.
-* **Mixed players** (Белов 11 % solo): Δθ −0.244, rank 3 → 8.
+* **Pure team players** (≈0 % solo, or low solo % with long team history):
+  |Δθ| ≤ 0.075 — almost no movement.
+* **Mixed players** (~11 % solo in the motivating case): Δθ −0.244,
+  rank 3 → 8.
 * **100 %-solo entries in baseline top-30**: drop hard.
-  Examples: Имя 248699 (20 g) +0.52 → +0.35, Комаров Фёдор (12 g)
-  +0.48 → +0.20, Витюгов Евгений (1 g) +0.27 → −0.30.
+  Examples: low-game-count soloists in the top-30 saw θ and rank fall
+  sharply (e.g. +0.52 → +0.35 at 20 games; +0.48 → +0.20 at 12 games;
+  +0.27 → −0.30 at 1 game).
 * **Top-20 by solo % within baseline top-1000**: every 1-game phantom
   gets pushed past rank 1000; multi-game soloists drop ~150–500 ranks
   proportional to solo %.
@@ -120,10 +121,10 @@ rather than a mix of veterans and online-quiz outliers.
 ### Counterfactual: dropping solo samples entirely
 
 `scripts/exp_no_solo.py` — for context. Globally filters every
-`team_size==1` sample (~4 % of the corpus) and retrains. Belov's θ
-falls to **−0.12 (rank 187)** — too aggressive; the down-weighted
-channel at `w_solo=0.3` lands at +0.34 / rank 8, which is much closer
-to where his actual team performance places him.
+`team_size==1` sample (~4 % of the corpus) and retrains. In the same
+motivating case θ falls to **−0.12 (rank 187)** — too aggressive; the
+down-weighted channel at `w_solo=0.3` lands at +0.34 / rank 8, which is
+much closer to team-only performance.
 
 ## What this does NOT change
 
