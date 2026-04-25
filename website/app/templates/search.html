@@ -13,7 +13,7 @@
     <ul class="bg-white border border-slate-200 rounded shadow-sm divide-y divide-slate-100">
       {% for p in players %}
       <li class="px-3 py-2 flex justify-between text-sm">
-        <a href="/player/{{ p.player_id }}" class="text-indigo-700 hover:underline">{{ p|fullname }}</a><span class="text-slate-500"> ({{ p.player_id }})</span>
+        <a href="/player/{{ p.player_id }}" class="text-indigo-700 hover:underline">{{ p|fullname }}<span class="text-slate-600 font-normal"> (id {{ p.player_id }})</span></a>
         <span class="text-slate-500 num">θ {{ "%.3f"|format(p.theta) }} · {{ p.games }} игр</span>
       </li>
       {% endfor %}
@@ -29,7 +29,7 @@
     <ul class="bg-white border border-slate-200 rounded shadow-sm divide-y divide-slate-100">
       {% for t in tournaments %}
       <li class="px-3 py-2 text-sm">
-        <a href="/tournament/{{ t.tournament_id }}" class="text-indigo-700 hover:underline">{{ t.title }}</a><span class="text-slate-500"> ({{ t.tournament_id }})</span>
+        <a href="/tournament/{{ t.tournament_id }}" class="text-indigo-700 hover:underline">{{ t.title }}<span class="text-slate-600 font-normal"> (id {{ t.tournament_id }})</span></a>
         <span class="text-slate-500 ml-2">{{ t.type }} · {{ t.start_date.isoformat() if t.start_date else "" }} · {{ t.n_questions }} вопр., {{ t.n_teams }} команд</span>
       </li>
       {% endfor %}
