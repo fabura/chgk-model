@@ -784,16 +784,29 @@ def search(request: Request, q: str = Query("", min_length=0, max_length=100)):
             )
             if tid_hit:
                 return RedirectResponse(url=f"/tournament/{pid}", status_code=303)
-        players = db.query(
-            """
-            SELECT player_id, last_name, first_name, theta, games
-            FROM players
-            WHERE last_name ILIKE '%' || ? || '%' OR first_name ILIKE '%' || ? || '%'
-            ORDER BY theta DESC
-            LIMIT 25
-            """,
-            [q, q],
-        )
+        # Each whitespace-separated token must match first_name or last_name
+        # (so e.g. «Дима Попов» finds rows with both substrings, in any order).
+        tokens = [t for t in q.split() if t]
+        if tokens:
+            token_cond = (
+                "(last_name ILIKE '%' || ? || '%' OR first_name ILIKE '%' || ? || '%')"
+            )
+            where_players = " AND ".join(token_cond for _ in tokens)
+            player_params: list[str] = []
+            for t in tokens:
+                player_params.extend([t, t])
+            players = db.query(
+                f"""
+                SELECT player_id, last_name, first_name, theta, games
+                FROM players
+                WHERE {where_players}
+                ORDER BY theta DESC
+                LIMIT 25
+                """,
+                player_params,
+            )
+        else:
+            players = []
         tournaments = db.query(
             """
             SELECT tournament_id, title, type, start_date, n_questions, n_teams
