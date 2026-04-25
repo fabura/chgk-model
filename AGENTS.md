@@ -58,20 +58,22 @@ Sequential model: computes player strength changes week by week, tournament by t
     population θ drift; rationale and the 12-cell sweep that picked
     these defaults are in `scripts/exp_cold_start_grid.py` (and the
     extra boundary sweep in `..._extra.py`).
-  - Backtest logloss on the full DB: **0.522** (was 0.602 with the
-    old per-tournament decay; 0.532 before adding team-size; 0.527
-    before the position effect; ~1.3 % further improvement from the
-    fixed cold-start prior).
+ - Backtest logloss on the full DB: **0.488** (was 0.602 with the
+ old per-tournament decay; 0.532 before adding team-size; 0.527
+ before the position effect; ~1.3 % further improvement from the
+ fixed cold-start prior; ~1.7 % more from the 2026-04 noisy-OR
+ init + retune; ~5.9 % more from the θ̄-aware init + retune below).
 - **Hyperparameters**: `eta0`, `rho`, `rho_calendar`, `decay_period_days`,
-  `cold_init_theta`, `cold_init_use_team_mean`, `cold_init_factor`,
-  `games_offset`, `w_online`, `w_online_questions`, `w_online_log_a`,
-  `w_offline`, `w_sync`, `eta_size`, `eta_pos`, `eta_teammate`,
-  `reg_size`, `reg_pos`, `reg_theta`, `reg_b`, `reg_log_a`,
-  `team_size_max`, `team_size_anchor`, `w_size_offline/sync/async`,
-  `tour_len`, `pos_anchor`, `use_solo_channel`, `w_solo`,
-  `w_solo_questions`, `w_solo_log_a`, `w_size_solo`, `w_pos_solo`,
-  `recenter_period_days`, `recenter_target`, `recenter_min_games`,
-  `recenter_active_days`. Full list in `Config` (`rating/engine.py`).
+ `cold_init_theta`, `cold_init_use_team_mean`, `cold_init_factor`,
+ `games_offset`, `w_online`, `w_online_questions`, `w_online_log_a`,
+ `w_offline`, `w_sync`, `eta_size`, `eta_pos`, `eta_teammate`,
+ `reg_size`, `reg_pos`, `reg_theta`, `reg_b`, `reg_log_a`,
+ `team_size_max`, `team_size_anchor`, `w_size_offline/sync/async`,
+ `tour_len`, `pos_anchor`, `use_solo_channel`, `w_solo`,
+ `w_solo_questions`, `w_solo_log_a`, `w_size_solo`, `w_pos_solo`,
+ `recenter_period_days`, `recenter_target`, `recenter_min_games`,
+ `recenter_active_days`, `noisy_or_init`, `theta_bar_init`,
+ `theta_bar_min_games`. Full list in `Config` (`rating/engine.py`).
 - **Drift fix (yearly gauge re-centering)**: every
   `recenter_period_days` (365 by default) the median θ of "active
   veterans" (`games >= recenter_min_games=200`, seen within
@@ -95,13 +97,58 @@ Sequential model: computes player strength changes week by week, tournament by t
   0.9) and **`w_online_questions=0.30`** (was 0.45) as the then-current
   `Config` defaults.
 - **2026-04 lean refactor**: a follow-up ablation removed the per-mode
-  shift `μ_type` and per-tournament residual `ε_t` (8 746 params,
-  net-negative for backtest), added a small teammate-θ shrinkage
-  (`eta_teammate=0.005`) to soften the noisy-OR identifiability
-  problem on stable rosters, and re-tuned `eta0` (`0.05 → 0.07`) for
-  the leaner model. Cumulative gain on the 20 % hold-out:
-  `logloss 0.5365 → 0.5309` (−0.0056), `AUC 0.8065 → 0.8115` (+0.0050).
-  The full sweep tables live in `/tmp/exp_*.py`.
+ shift `μ_type` and per-tournament residual `ε_t` (8 746 params,
+ net-negative for backtest), added a small teammate-θ shrinkage
+ (`eta_teammate=0.005`) to soften the noisy-OR identifiability
+ problem on stable rosters, and re-tuned `eta0` (`0.05 → 0.07`) for
+ the leaner model. Cumulative gain on the 20 % hold-out:
+ `logloss 0.5365 → 0.5309` (−0.0056), `AUC 0.8065 → 0.8115` (+0.0050).
+ The full sweep tables live in `/tmp/exp_*.py`.
+- **2026-04 noisy-OR init + retune (Round 1)**: a follow-up
+ investigation (chat thread on Vyshka Moscow over-prediction)
+ showed the legacy question initialisation `b_init = -log(p_take)`
+ implicitly assumed a 1-player team at θ=0, under-estimating b
+ by `log(team_size)` for the typical 6-player teams. On hard packs
+ SGD inside one tournament can't fully close that gap, and the
+ residual leaks into θ via the noisy-OR gauge ambiguity,
+ systematically depressing the θ of top players who play many
+ strong-field events. Fix: noisy-OR-aware init
+ `b_init = log(n_avg) - log(-log(1-p))`
+ (`Config.noisy_or_init=True`, `QuestionState.init_from_take_rate`
+ takes `team_size_avg`). After the structural change, a 27-trial
+ coord-descent retune on the 20 % hold-out picked `eta0=0.04`
+ (was 0.07), `w_sync=0.5` (was 0.7), `w_online_questions=0.15`
+ (was 0.30), `eta_size=0.001` (was 0.005), `eta_pos=0.001`
+ (was 0.005). Round 1 gain: `logloss 0.5270 → 0.5182` (−0.0088),
+ `AUC 0.8158 → 0.8333` (+0.0175). See
+ `docs/noisy_or_init_experiments.md` and
+ `results/exp_noisy_or_init_retune.csv`.
+- **2026-04 θ̄-aware init + retune (Round 2)**: noisy-OR init
+ still implicitly assumes the average team plays at `θ̄ = 0`,
+ which is wrong on strong-field tournaments where `θ̄ ≈ +0.5…+1.0`.
+ Extended init to incorporate the mean pre-tournament θ of mature
+ players (`games >= theta_bar_min_games=3`) on teams that played
+ each question:
+ `b_init = log(n_avg) + θ̄ - log(-log(1-p))`
+ (`Config.theta_bar_init=True`,
+ `QuestionState.init_from_take_rate(theta_bar=…)`). The cleaner
+ b lets θ updates be ~3.5× more aggressive — a 25-trial retune
+ picked `eta0=0.15` (was 0.04); other knobs unchanged from
+ Round 1. Round 2 gain over Round 1: `logloss 0.5182 → 0.4877`
+ (−0.0305, ~5.9 %), `AUC 0.8333 → 0.8455` (+0.0122);
+ offline-bucket `logloss 0.4791 → 0.4483` (−0.0308). All three
+ modes (offline / sync / async) improved symmetrically.
+ Diagnostic on the 3 days of Vyshka Moscow:
+ `mean(actual − expected)` went from `−5.5` (every team
+ systematically over-predicted) to `+0.3` (unbiased) — the
+ original Юлия observation is fixed at the root.
+ Strong-field veterans no longer systematically lose θ on
+ hard tournaments they actually win.
+ See `docs/theta_bar_init_experiments.md`,
+ `results/exp_theta_bar_retune.csv`,
+ `scripts/diagnostic_compare.py` for the full story. Two failed
+ ablations from this round (`b_pack_shrinkage`, `pack_prior_w`)
+ were removed from `Config`.
 - **Paired tournaments**: Uses `canonical_q_idx` — sync+async pairs share question params (b, a)
 - **Tournament ordering**: By `start_datetime` (date of start, not end)
 
@@ -283,3 +330,5 @@ pip install -r requirements.txt
 - `docs/calendar_decay_experiments.md` — calendar-based decay sweep, why per-tournament decay was wrong, current defaults
 - `docs/team_size_experiments.md` — per-team-size difficulty shift (δ_size) and backtest gains
 - `docs/position_in_tour_experiments.md` — per-position-in-tour shift (δ_pos), empirical curve, anchor choice, backtest gains
+- `docs/noisy_or_init_experiments.md` — noisy-OR-aware question initialisation (`b_init = log(n) - log(-log(1-p))`), why the legacy init under-shot b on hard packs and why that leaked into θ via the noisy-OR gauge, plus the 27-trial coord-descent retune (Round 1)
+- `docs/theta_bar_init_experiments.md` — θ̄-aware extension (`b_init = log(n) + θ̄ - log(-log(1-p))`); Round 2 retune that pushed `eta0` from 0.04 → 0.15 and the diagnostic showing every Vyshka-Moscow team is now unbiased

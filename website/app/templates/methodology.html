@@ -304,7 +304,7 @@
       зафиксировано на 0). Размеры выше 8 клиппятся.
     </p>
     <p class="text-sm text-slate-600">
-      Шаг обновления маленький (<code>eta_size = 0.005</code>),
+      Шаг обновления маленький (<code>eta_size = 0.001</code>),
       приор <code>reg_size = 0.10</code>. Для асинхрона веса обновлений
       урезаны вдвое (<code>w_size_async = 0.5</code>), потому что
       составы там часто заявлены неточно.
@@ -324,7 +324,7 @@
     <p class="text-sm text-slate-600">
       Для турниров с нестандартной длиной тура (≈30 % базы) сигнал
       шумнее, но всё ещё информативен в среднем. Параметры аналогично
-      δ_size: <code>eta_pos = 0.005</code>, <code>reg_pos = 0.10</code>,
+      δ_size: <code>eta_pos = 0.001</code>, <code>reg_pos = 0.10</code>,
       <code>w_pos_async = 0.5</code>.
     </p>
     <p class="text-sm text-slate-600">
@@ -406,9 +406,9 @@
           </tr>
         </thead>
         <tbody class="text-slate-700">
-          <tr class="border-t"><td class="px-3 py-2">θ игрока</td>            <td class="px-3 py-2 text-right num">1.0</td><td class="px-3 py-2 text-right num">0.7</td><td class="px-3 py-2 text-right num">0.5</td></tr>
-          <tr class="border-t"><td class="px-3 py-2">b вопроса</td>           <td class="px-3 py-2 text-right num">1.0</td><td class="px-3 py-2 text-right num">0.7</td><td class="px-3 py-2 text-right num">0.30</td></tr>
-          <tr class="border-t"><td class="px-3 py-2">log a вопроса</td>       <td class="px-3 py-2 text-right num">1.0</td><td class="px-3 py-2 text-right num">0.7</td><td class="px-3 py-2 text-right num">0.05</td></tr>
+          <tr class="border-t"><td class="px-3 py-2">θ игрока</td>            <td class="px-3 py-2 text-right num">1.0</td><td class="px-3 py-2 text-right num">0.5</td><td class="px-3 py-2 text-right num">0.5</td></tr>
+          <tr class="border-t"><td class="px-3 py-2">b вопроса</td>           <td class="px-3 py-2 text-right num">1.0</td><td class="px-3 py-2 text-right num">0.5</td><td class="px-3 py-2 text-right num">0.15</td></tr>
+          <tr class="border-t"><td class="px-3 py-2">log a вопроса</td>       <td class="px-3 py-2 text-right num">1.0</td><td class="px-3 py-2 text-right num">0.5</td><td class="px-3 py-2 text-right num">0.05</td></tr>
           <tr class="border-t"><td class="px-3 py-2">δ_size, δ_pos</td>       <td class="px-3 py-2 text-right num">1.0</td><td class="px-3 py-2 text-right num">1.0</td><td class="px-3 py-2 text-right num">0.5</td></tr>
         </tbody>
       </table>
@@ -416,7 +416,7 @@
     <p class="text-sm text-slate-600 mt-2">
       Эти 12 чисел подобраны через сеточный/случайный поиск (см.
       <a href="#tuning" class="text-indigo-700 hover:underline">раздел 9</a>) —
-      <code>w_online_questions = 0.30</code> и
+      <code>w_online_questions = 0.15</code> и
       <code>w_online_log_a = 0.05</code> (веса для асинхрона) намеренно
       очень малы, потому что пакеты асинхрона быстро «разъезжаются» по
       утечкам (часть команд успевает посмотреть ответы), и сильно
@@ -491,8 +491,8 @@
       первых играх, остаётся «зашитой» в команде навсегда (потому
       что распределение «кредита» за взятие пропорционально
       \( \lambda_k = \exp(a\theta_k - b - \delta) \), а не реальному
-      участию). Особенно ярко это проявляется у супер-стабильных
-      составов вроде Юли Архангельской и Коли Крапиля.
+      участию). Особенно ярко это проявляется у долго не меняющихся
+      командных составов, где одни и те же игроки играют вместе годами.
     </p>
     <p>
       Чтобы такие искусственные щели медленно закрывались, после
@@ -698,14 +698,14 @@
           </tr>
         </thead>
         <tbody class="text-slate-700">
-          <tr class="border-t"><td class="px-3 py-2 num">eta0</td>            <td class="px-3 py-2 text-right num">0.07</td><td class="px-3 py-2">базовый шаг для θ и параметров вопроса</td></tr>
-          <tr class="border-t"><td class="px-3 py-2 num">eta_size, eta_pos</td><td class="px-3 py-2 text-right num">0.005</td><td class="px-3 py-2">шаги для δ_size и δ_pos</td></tr>
+          <tr class="border-t"><td class="px-3 py-2 num">eta0</td>            <td class="px-3 py-2 text-right num">0.15</td><td class="px-3 py-2">базовый шаг для θ и параметров вопроса</td></tr>
+          <tr class="border-t"><td class="px-3 py-2 num">eta_size, eta_pos</td><td class="px-3 py-2 text-right num">0.001</td><td class="px-3 py-2">шаги для δ_size и δ_pos</td></tr>
           <tr class="border-t"><td class="px-3 py-2 num">eta_teammate</td>    <td class="px-3 py-2 text-right num">0.005</td><td class="px-3 py-2">L2-стяжка θ к среднему по команде (борьба с identifiability)</td></tr>
           <tr class="border-t"><td class="px-3 py-2 num">games_offset</td>    <td class="px-3 py-2 text-right num">0.25</td><td class="px-3 py-2">«бонус новичка»: шаг ×2 на первой игре</td></tr>
           <tr class="border-t"><td class="px-3 py-2 num">cold_init_theta</td> <td class="px-3 py-2 text-right num">−1.0</td><td class="px-3 py-2">стартовая θ для нового игрока</td></tr>
-          <tr class="border-t"><td class="px-3 py-2 num">w_sync</td>          <td class="px-3 py-2 text-right num">0.7</td><td class="px-3 py-2">вес обновления θ для синхрона</td></tr>
+          <tr class="border-t"><td class="px-3 py-2 num">w_sync</td>          <td class="px-3 py-2 text-right num">0.5</td><td class="px-3 py-2">вес обновления θ и b для синхрона</td></tr>
           <tr class="border-t"><td class="px-3 py-2 num">w_online (async)</td><td class="px-3 py-2 text-right num">0.5</td><td class="px-3 py-2">вес обновления θ для асинхрона</td></tr>
-          <tr class="border-t"><td class="px-3 py-2 num">w_online_questions</td><td class="px-3 py-2 text-right num">0.30</td><td class="px-3 py-2">вес обновления b для асинхрона</td></tr>
+          <tr class="border-t"><td class="px-3 py-2 num">w_online_questions</td><td class="px-3 py-2 text-right num">0.15</td><td class="px-3 py-2">вес обновления b для асинхрона</td></tr>
           <tr class="border-t"><td class="px-3 py-2 num">recenter_target</td> <td class="px-3 py-2 text-right num">−0.70</td><td class="px-3 py-2">целевая медиана θ ветеранов</td></tr>
           <tr class="border-t"><td class="px-3 py-2 num">recenter_period_days</td><td class="px-3 py-2 text-right num">365</td><td class="px-3 py-2">как часто пересчитывать gauge</td></tr>
           <tr class="border-t"><td class="px-3 py-2 num">recenter_min_games</td><td class="px-3 py-2 text-right num">200</td><td class="px-3 py-2">минимум игр для «ветерана»</td></tr>

@@ -77,6 +77,7 @@ def backtest(
     pred_p = result.predictions["pred_p"]
     actual_y = result.predictions["actual_y"]
     pred_game = result.predictions["game_idx"]
+    pred_thbar = result.predictions.get("team_theta_mean")
 
     # --- determine test games (last test_fraction by date) ---
     gdo = getattr(maps, "game_date_ordinal", None)
@@ -155,6 +156,51 @@ def backtest(
             by_type[name] = sub
         metrics["by_type"] = by_type
 
+    # ---- per-hardness-quartile metrics on the test set ----------------
+    # Bucket test tournaments by mean pre-tournament θ of the rosters
+    # that played them.  q1 = weakest-roster quartile,
+    # q4 = strongest-roster (Vyshka, Гран-при и т.п.).  Quartile cuts
+    # are done over tournaments (each weighted equally), then metrics
+    # are computed on observations within the bucket.
+    by_hardness: dict[str, dict[str, float]] = {}
+    if pred_thbar is not None and len(pred_thbar) == len(pred_p):
+        thbar_test = pred_thbar[test_mask]
+        game_test = pred_game[test_mask]
+        # Per-tournament average team θ.
+        unique_g, inv = np.unique(game_test, return_inverse=True)
+        sums = np.zeros(len(unique_g), dtype=np.float64)
+        cnts = np.zeros(len(unique_g), dtype=np.int64)
+        np.add.at(sums, inv, thbar_test)
+        np.add.at(cnts, inv, 1)
+        per_g_thbar = sums / np.maximum(cnts, 1)
+        # Quartile cuts (avoid duplicate edges).
+        cuts = np.unique(np.quantile(per_g_thbar, [0.25, 0.5, 0.75]))
+        # Map each test obs's tournament to its quartile (1..4).
+        g_to_q = np.searchsorted(cuts, per_g_thbar, side="right") + 1
+        obs_q = g_to_q[inv]
+        # Cut summary (mean θ̄ in each bucket) for printout.
+        q_edges = list(np.round(cuts, 3))
+        for q in (1, 2, 3, 4):
+            mask = obs_q == q
+            n = int(mask.sum())
+            if n == 0:
+                by_hardness[f"q{q}"] = {
+                    "n_obs": 0,
+                    "n_games": 0,
+                    "logloss": float("nan"),
+                    "brier": float("nan"),
+                    "auc": float("nan"),
+                    "mean_team_theta": float("nan"),
+                }
+                continue
+            sub = compute_metrics(p_test[mask], y_test[mask])
+            sub["n_obs"] = n
+            sub["n_games"] = int((g_to_q == q).sum())
+            sub["mean_team_theta"] = float(per_g_thbar[g_to_q == q].mean())
+            by_hardness[f"q{q}"] = sub
+        metrics["by_hardness"] = by_hardness
+        metrics["hardness_cuts"] = q_edges
+
     if verbose:
         print(f"\n{'=' * 50}")
         print(
@@ -173,6 +219,25 @@ def backtest(
                     continue
                 print(
                     f"  {name:7s}: n={m['n_obs']:>9d}  "
+                    f"logloss={m['logloss']:.4f}  "
+                    f"Brier={m['brier']:.4f}  "
+                    f"AUC={m['auc']:.4f}"
+                )
+        if by_hardness:
+            cuts_str = " | ".join(
+                f"{c:+.2f}" for c in metrics.get("hardness_cuts", [])
+            )
+            print(
+                f"  ----- by roster strength quartile (θ̄ cuts: "
+                f"{cuts_str}) -----"
+            )
+            for q in (1, 2, 3, 4):
+                m = by_hardness.get(f"q{q}")
+                if not m or m["n_obs"] == 0:
+                    continue
+                print(
+                    f"  q{q} (θ̄≈{m['mean_team_theta']:+.3f}): "
+                    f"n={m['n_obs']:>9d} games={m['n_games']:>4d}  "
                     f"logloss={m['logloss']:.4f}  "
                     f"Brier={m['brier']:.4f}  "
                     f"AUC={m['auc']:.4f}"

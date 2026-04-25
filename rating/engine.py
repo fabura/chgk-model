@@ -42,13 +42,40 @@ class Config:
     # defaults on the 20 % hold-out: logloss 0.5365 → 0.5309
     # (-0.0056), AUC 0.8065 → 0.8115 (+0.0050).  See `/tmp/exp_*` and
     # the cleanup commit message for the full sweep table.
-    eta0: float = 0.07
+    #
+    # 2026-04 noisy-OR init re-tune.  After fixing the question-init
+    # formula to account for noisy-OR composition over team size
+    # (``noisy_or_init=True``, see below), the gradient dynamics
+    # changed and a 5-knob coord-descent sweep on the same 20 %
+    # hold-out picked **eta0=0.04**, **w_sync=0.5**,
+    # **w_online_questions=0.15**, **eta_size=0.001**,
+    # **eta_pos=0.001** as the new optima.  Cumulative gain over the
+    # legacy defaults: logloss 0.5270 → 0.5182 (-0.0088), AUC
+    # 0.8158 → 0.8333 (+0.0175); offline-bucket logloss
+    # 0.5075 → 0.4791 (-0.0284, ~5.6 %).  Full sweep table in
+    # ``docs/noisy_or_init_experiments.md`` and
+    # ``results/exp_noisy_or_init_retune.csv``.
+    #
+    # 2026-04 θ̄-aware init re-tune.  Adding ``theta_bar_init=True``
+    # (see below) reduced logloss to 0.4950 with the previous defaults.
+    # A follow-up coord-descent sweep showed only ``eta0`` moved
+    # meaningfully — the cleaner b initialisation lets θ updates be
+    # ~3-4× more aggressive without overfitting.  Picked
+    # **eta0=0.15** (peak; 0.10 and 0.20 are ~0.001 worse, 0.25 starts
+    # regressing).  ``w_sync``, ``w_online_questions``, ``eta_size``,
+    # ``eta_pos`` were re-checked and stayed at their previous optima.
+    # Cumulative gain over the previous (noisy-OR-only) re-tune:
+    # logloss 0.5182 → 0.4877 (-0.0305, ~5.9 %), AUC 0.8333 → 0.8455
+    # (+0.0122); offline-bucket logloss 0.4791 → 0.4483 (-0.0308).
+    # Full sweep table in ``docs/theta_bar_init_experiments.md`` and
+    # ``results/exp_theta_bar_retune.csv``.
+    eta0: float = 0.15
     rho: float = 0.9995
     w_online: float = 0.5
 
     w_offline: float = 1.0
-    w_sync: float = 0.7
-    w_online_questions: float = 0.30
+    w_sync: float = 0.5
+    w_online_questions: float = 0.15
     w_online_log_a: float = 0.05
 
     # L2-style shrinkage on player/question parameters.  Default 0.0 keeps
@@ -124,7 +151,7 @@ class Config:
     use_team_size_effect: bool = True
     team_size_max: int = 8
     team_size_anchor: int = 6
-    eta_size: float = 0.005
+    eta_size: float = 0.001
     reg_size: float = 0.10
     w_size_offline: float = 1.0
     w_size_sync: float = 1.0
@@ -151,8 +178,8 @@ class Config:
     #   solo w=0.5           0.5268  0.8160   0.5089  0.5220  0.5440
     #
     # ``w_solo=0.3`` is the lowest-logloss point that still meaningfully
-    # corrects the soloist artefact (Belov θ +0.58 → +0.34, rank 3 → 8;
-    # at w=0.5 the channel is too weak, Belov bounces back to rank 3).
+    # corrects the soloist artefact (motivating case: θ about +0.58 → +0.34,
+    # rank 3 → 8; at w=0.5 the channel is too weak and rank returns to ~3).
     # ``w_solo_questions`` / ``w_solo_log_a`` stay at 0 so the narrow,
     # self-selected population of soloists does not bias question
     # difficulty / discrimination estimates; ``w_size_solo`` = 1 so
@@ -180,7 +207,7 @@ class Config:
     # curve), so all other δ_pos values stay positive and the learned
     # vector reads naturally as "extra difficulty over question 1".
     pos_anchor: int = 0
-    eta_pos: float = 0.005
+    eta_pos: float = 0.001
     reg_pos: float = 0.10
     w_pos_offline: float = 1.0
     w_pos_sync: float = 1.0
@@ -223,6 +250,34 @@ class Config:
     recenter_min_games: int = 200
     recenter_active_days: int = 365
     recenter_target: float = -0.70  # tuned via backtest sweep (best logloss/AUC)
+
+    # Noisy-OR-aware question initialization.  Legacy init was
+    # ``b = -log(p_take)``, which implicitly assumes a 1-player team at
+    # θ=0 and therefore under-estimates b by ``log(team_size)`` for the
+    # typical 6-player teams in the dataset.  When True, init becomes
+    #     b = log(n_avg) - log(-log(1 - p_take))
+    # where ``n_avg`` is the mean roster size of the observations
+    # initialising this question.  This eliminates the systematic
+    # under-estimation of question difficulty on hard packs and
+    # reduces the gauge drift that pushes top players' θ down on
+    # strong-roster tournaments (Vyshka, Гран-при, etc.).
+    noisy_or_init: bool = True
+
+    # θ̄-aware extension of the noisy-OR init.  The plain noisy-OR
+    # init still assumes the average team has θ=0, which is wrong on
+    # strong-roster tournaments where θ̄ ≈ +0.5…+1.0.  When True, init
+    # becomes
+    #     b = log(n_avg) + θ̄ - log(-log(1 - p_take))
+    # where θ̄ is the mean of pre-tournament θ over MATURE players
+    # (``games >= theta_bar_min_games``) of teams that played this
+    # question.  Newcomers are excluded because their θ is dominated
+    # by ``cold_init_theta = -1`` and would systematically bias θ̄
+    # downward, especially in the first weeks of a season; if a team
+    # has no mature players, that observation contributes no θ̄ to
+    # the average, and if no observation contributes any θ̄, init
+    # falls back to the team-size-only formula above.
+    theta_bar_init: bool = True
+    theta_bar_min_games: int = 3
 
 
 # ======================================================================
@@ -464,6 +519,7 @@ def run_sequential(
     pred_p_list: list[float] | None = [] if collect_predictions else None
     pred_y_list: list[int] | None = [] if collect_predictions else None
     pred_g_list: list[int] | None = [] if collect_predictions else None
+    pred_thbar_list: list[float] | None = [] if collect_predictions else None
 
     try:
         from tqdm import tqdm
@@ -545,11 +601,41 @@ def run_sequential(
         # 3. Initialise unseen questions from empirical take rates --------
         #    Keyed by canonical index so paired tournaments share params.
         q_takes: dict[int, list[int]] = defaultdict(list)
+        q_team_sizes: dict[int, list[int]] = defaultdict(list)
+        q_theta_bars: dict[int, list[float]] = defaultdict(list)
+        theta_bar_min_games = max(1, int(cfg.theta_bar_min_games))
         for i in obs_indices:
-            q_takes[_cqi(int(q_idx[i]))].append(int(taken[i]))
+            qi_c = _cqi(int(q_idx[i]))
+            q_takes[qi_c].append(int(taken[i]))
+            if cfg.noisy_or_init:
+                ts = int(offsets[i + 1] - offsets[i])
+                if ts >= 1:
+                    q_team_sizes[qi_c].append(ts)
+            if cfg.theta_bar_init:
+                s, e = int(offsets[i]), int(offsets[i + 1])
+                if e > s:
+                    pids = player_flat[s:e]
+                    mature = players.games[pids] >= theta_bar_min_games
+                    if mature.any():
+                        q_theta_bars[qi_c].append(
+                            float(players.theta[pids[mature]].mean())
+                        )
         for qi, takes in q_takes.items():
             if not questions.initialized[qi]:
-                questions.init_from_take_rate(qi, sum(takes) / len(takes))
+                if cfg.noisy_or_init and q_team_sizes[qi]:
+                    n_avg = sum(q_team_sizes[qi]) / len(q_team_sizes[qi])
+                else:
+                    n_avg = 1.0
+                if cfg.theta_bar_init and q_theta_bars[qi]:
+                    theta_bar = sum(q_theta_bars[qi]) / len(q_theta_bars[qi])
+                else:
+                    theta_bar = None
+                questions.init_from_take_rate(
+                    qi,
+                    sum(takes) / len(takes),
+                    team_size_avg=n_avg,
+                    theta_bar=theta_bar,
+                )
 
         # 4. Record predictions BEFORE updating --------------------------
         if collect_predictions:
@@ -577,6 +663,7 @@ def run_sequential(
                 pred_p_list.append(p)
                 pred_y_list.append(int(taken[i]))
                 pred_g_list.append(g)
+                pred_thbar_list.append(float(th.mean()) if th.size > 0 else 0.0)
 
         # 5. Sequential updates (Numba-accelerated batch) ----------------
         # When ``use_solo_channel`` is enabled, samples with
@@ -743,6 +830,9 @@ def run_sequential(
             "pred_p": np.array(pred_p_list, dtype=np.float64),
             "actual_y": np.array(pred_y_list, dtype=np.int32),
             "game_idx": np.array(pred_g_list, dtype=np.int32),
+            # Pre-tournament mean θ over the predicting team — used by
+            # backtest to bucket test tournaments by roster strength.
+            "team_theta_mean": np.array(pred_thbar_list, dtype=np.float64),
         }
 
     # === Summary =======================================================

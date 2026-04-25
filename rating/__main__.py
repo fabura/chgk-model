@@ -37,7 +37,7 @@ def main() -> int:
 
     hp = parser.add_argument_group("hyperparameters")
     hp.add_argument(
-        "--eta0", type=float, default=0.07, help="Base learning rate"
+        "--eta0", type=float, default=0.15, help="Base learning rate"
     )
     hp.add_argument(
         "--rho", type=float, default=0.9995, help="Rating decay"
@@ -51,7 +51,7 @@ def main() -> int:
     hp.add_argument(
         "--w_online_questions",
         type=float,
-        default=0.30,
+        default=0.15,
         help="Async/online weight for question difficulty updates",
     )
     hp.add_argument(
@@ -147,7 +147,7 @@ def main() -> int:
     hp.add_argument(
         "--eta_size",
         type=float,
-        default=0.005,
+        default=0.001,
         help="Learning rate for delta_size (per-team-size effect).",
     )
     hp.add_argument(
@@ -179,7 +179,7 @@ def main() -> int:
     hp.add_argument(
         "--eta_pos",
         type=float,
-        default=0.005,
+        default=0.001,
         help="Learning rate for delta_pos (per-position-in-tour effect).",
     )
     hp.add_argument(
@@ -217,6 +217,30 @@ def main() -> int:
         type=float,
         default=0.005,
         help="Per-tournament L2 pull of teammate θ toward team mean",
+    )
+    hp.add_argument(
+        "--noisy-or-init",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Initialise b accounting for noisy-OR composition over team "
+        "size: b = log(n) - log(-log(1-p)) instead of legacy b = -log(p). "
+        "Disable with --no-noisy-or-init for baseline ablation.",
+    )
+    hp.add_argument(
+        "--theta-bar-init",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Extend noisy-OR init with average pre-tournament team θ: "
+        "b = log(n) + θ̄ - log(-log(1-p)).  θ̄ averages over mature "
+        "players only (--theta-bar-min-games).  Disable for ablation.",
+    )
+    hp.add_argument(
+        "--theta-bar-min-games",
+        type=int,
+        default=3,
+        help="Minimum games for a player to count toward θ̄ in init "
+        "(default: 3; rookies are excluded because their θ is dominated "
+        "by cold_init_theta).",
     )
 
     ev = parser.add_argument_group("evaluation")
@@ -299,6 +323,9 @@ def main() -> int:
         recenter_target=args.recenter_target,
         recenter_min_games=args.recenter_min_games,
         recenter_active_days=args.recenter_active_days,
+        noisy_or_init=args.noisy_or_init,
+        theta_bar_init=args.theta_bar_init,
+        theta_bar_min_games=args.theta_bar_min_games,
     )
 
     # --- load data ---
