@@ -263,12 +263,39 @@ Potential directions:
 
 ### 5. Check paired sync/async packages directly
 
-`canonical_q_idx` creates a strong quasi-experimental setup. A useful
-future diagnostic:
+`canonical_q_idx` creates a strong quasi-experimental setup.  An
+initial diagnostic pass lives at
+[`scripts/sync_async_question_residuals.py`](../scripts/sync_async_question_residuals.py):
 
-- compare predictions on packages seen in both sync and async
-- measure how much of the difference is captured by `mu_type`
-- inspect whether `eps_t` stays small on such pairs
+- For every observation, look up the team's pre-tournament θ̄ from the
+  saved per-(player, tournament) history snapshots.
+- Aggregate empirical take rate per `(canonical_q_idx, mode)`.
+- Within each canonical, fit a pooled OLS slope `rate ≈ α + β · θ̄`
+  across both buckets and report the team-θ-adjusted gap
+  `Δrate_adj = (rate_async − rate_sync) − β · (θ̄_async − θ̄_sync)`.
+- Output is a CSV ranked by `|Δrate_adj|` with `n_sync`, `n_async`,
+  `θ̄` per bucket and the underlying tournament IDs.
+
+Top rows on the current cache show same-pack swings up to ±0.92 — the
+shared `(b, a)` clearly mis-fits at least one mode for those
+canonical questions, which is consistent with sync↔async absorption
+happening only at the per-mode SGD weight level today.
+
+The script intentionally does NOT use the model's
+per-observation predictions: the engine collects them in
+chronological-game order, which is not the same as the order of
+`arrays['q_idx']`, so any `pred_p[is_known_obs] · q_idx[is_known_obs]`
+pairing is silently misaligned on the mode bucket.  (The same
+silent-misalignment issue appears in
+`scripts/compare_to_baselines.py`'s per-question marginals — out of
+scope for this script but worth fixing separately.)
+
+Possible follow-ups, not done here:
+
+- regenerate `μ_type`-style per-mode offsets restricted to paired
+  packs only, on top of the per-question shared `(b, a)`;
+- per-canonical mode-shift parameter `δ_mode_q[c]` co-fit during
+  training, with a tight prior so unpaired canonicals stay at zero.
 
 ### 6. Consider a contamination-style async term later
 
