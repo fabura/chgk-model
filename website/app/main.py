@@ -575,7 +575,10 @@ def tournament_page(request: Request, tournament_id: int):
         for t in teams:
             t["roster"] = roster_by_team.get(t["team_id"], [])
 
-    # Questions table (joined to canonical params + take stats)
+    # Questions table (joined to canonical params + take stats).
+    # Take rate is per-tournament (qa.n_obs / qa.n_taken) — the
+    # ``questions.n_obs/n_taken`` columns are aggregated by canonical_idx
+    # and so double-count for sync+async pairs.
     questions = db.query(
         """
         SELECT
@@ -583,9 +586,9 @@ def tournament_page(request: Request, tournament_id: int):
             qa.canonical_idx,
             q.b,
             q.a,
-            q.n_obs,
-            q.n_taken,
-            CASE WHEN q.n_obs > 0 THEN q.n_taken::DOUBLE / q.n_obs ELSE NULL END AS take_rate,
+            qa.n_obs,
+            qa.n_taken,
+            CASE WHEN qa.n_obs > 0 THEN qa.n_taken::DOUBLE / qa.n_obs ELSE NULL END AS take_rate,
             q.text,
             q.answer
         FROM question_aliases qa

@@ -689,7 +689,14 @@ CREATE TABLE questions (
 CREATE TABLE question_aliases (
     canonical_idx INTEGER,
     tournament_id INTEGER,
-    q_in_tournament INTEGER
+    q_in_tournament INTEGER,
+    -- per-tournament observation counts; ``questions.n_obs/n_taken`` are
+    -- aggregated across paired tournaments via ``canonical_idx`` and
+    -- therefore double-count for sync+async pairs.  Use these columns
+    -- when displaying the take rate of a question on a specific
+    -- tournament page.
+    n_obs INTEGER,
+    n_taken INTEGER
 );
 
 CREATE TABLE team_games (
@@ -1217,17 +1224,29 @@ def write_duckdb(
 
     # ---- question_aliases ----
     _log("Inserting question_aliases…")
+    # Per-(tournament, q_in_tournament) take counts; raw_q_idx already
+    # uniquely identifies a tournament slot, so a plain bincount over
+    # observations gives us per-tournament n_obs / n_taken (unlike the
+    # canonical bincount above, which collapses sync+async pairs).
+    n_obs_per_raw = np.bincount(raw_q_idx, minlength=len(maps.idx_to_question_id)).astype(
+        np.int64
+    )
+    n_taken_per_raw = np.bincount(
+        raw_q_idx, weights=taken.astype(np.int64), minlength=len(maps.idx_to_question_id)
+    ).astype(np.int64)
     qa_canon = canonical_q_idx.astype(np.int32).tolist()
     qa_tid = [int(k[0]) for k in maps.idx_to_question_id]
     qa_qi = [int(k[1]) for k in maps.idx_to_question_id]
     _bulk_insert(
         con,
         "question_aliases",
-        ["canonical_idx", "tournament_id", "q_in_tournament"],
+        ["canonical_idx", "tournament_id", "q_in_tournament", "n_obs", "n_taken"],
         {
             "canonical_idx": pa.array(qa_canon, type=pa.int32()),
             "tournament_id": pa.array(qa_tid, type=pa.int32()),
             "q_in_tournament": pa.array(qa_qi, type=pa.int32()),
+            "n_obs": pa.array(n_obs_per_raw.tolist(), type=pa.int32()),
+            "n_taken": pa.array(n_taken_per_raw.tolist(), type=pa.int32()),
         },
     )
 
