@@ -604,14 +604,21 @@ def tournament_page(request: Request, tournament_id: int):
     # all sit on the right edge with b clipped to 10 and visually
     # squash every other question to the left half of the plot.
     # We list their numbers separately under the chart instead.
+    # The header summary (mean b / a) is also computed *without* the
+    # dead questions, for the same reason — their clipped b would
+    # dominate the average.
     scatter: list[dict] = []
     dead_q_numbers: list[int] = []
+    live_b: list[float] = []
+    live_a: list[float] = []
     for q in questions:
         rate = q["take_rate"]
         qnum = q["q_in_tournament"] + 1
         if rate is not None and rate <= 0.0:
             dead_q_numbers.append(qnum)
             continue
+        live_b.append(q["b"])
+        live_a.append(q["a"])
         scatter.append(
             {
                 "b": q["b"],
@@ -621,6 +628,16 @@ def tournament_page(request: Request, tournament_id: int):
                 "has_text": bool(q["text"]),
             }
         )
+    summary_stats = (
+        {
+            "mean_b": sum(live_b) / len(live_b),
+            "mean_a": sum(live_a) / len(live_a),
+            "n_live": len(live_b),
+            "n_dead": len(dead_q_numbers),
+        }
+        if live_b
+        else None
+    )
 
     return templates.TemplateResponse(
         request,
@@ -632,6 +649,7 @@ def tournament_page(request: Request, tournament_id: int):
             "questions": questions,
             "scatter_json": json.dumps(scatter, ensure_ascii=False),
             "dead_q_numbers": dead_q_numbers,
+            "summary_stats": summary_stats,
         },
     )
 

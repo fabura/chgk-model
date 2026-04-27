@@ -18,6 +18,16 @@
     · пак: {{ tournament.pack_title }}
     {% endif %}
   </div>
+  {% if summary_stats %}
+  <div class="text-sm text-slate-600 mt-1">
+    средние по вопросам (без гробов):
+    <span class="num">b̄ = {{ "%+.2f"|format(summary_stats.mean_b) }}</span>
+    · <span class="num">ā = {{ "%.2f"|format(summary_stats.mean_a) }}</span>
+    {% if summary_stats.n_dead %}
+    · <span class="text-rose-700">гробов: {{ summary_stats.n_dead }}</span> из {{ summary_stats.n_live + summary_stats.n_dead }}
+    {% endif %}
+  </div>
+  {% endif %}
   {% if editors %}
   <div class="text-sm text-slate-600 mt-1">Редакторы пака: {{ editors|join(", ") }}</div>
   {% endif %}
