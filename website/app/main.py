@@ -798,10 +798,11 @@ def methodology(request: Request):
 
 
 MAX_COMPARE_PLAYERS = 5
+MAX_COMPARE_TOURNAMENTS = 5
 
 
-def _parse_compare_ids(ids_param: str) -> list[int]:
-    """Parse a comma-separated id list, dedupe, ignore non-ints, cap to max."""
+def _parse_compare_ids(ids_param: str, *, cap: int = MAX_COMPARE_PLAYERS) -> list[int]:
+    """Parse a comma-separated id list, dedupe, ignore non-ints, cap to ``cap``."""
     if not ids_param:
         return []
     seen: set[int] = set()
@@ -815,9 +816,34 @@ def _parse_compare_ids(ids_param: str) -> list[int]:
             continue
         seen.add(pid)
         out.append(pid)
-        if len(out) >= MAX_COMPARE_PLAYERS:
+        if len(out) >= cap:
             break
     return out
+
+
+def _sister_tournament_ids(tids: list[int]) -> list[int]:
+    """Return tournament_ids that share at least one canonical_idx with any
+    of the given ``tids`` (i.e. paired sync+async siblings of the same pack).
+
+    Empty list when no sisters exist.  Result is deduplicated, excludes the
+    inputs, and is ordered by descending overlap so the closest sister
+    comes first."""
+    if not tids:
+        return []
+    rows = db.query(
+        f"""
+        SELECT qa2.tournament_id AS sib_id, COUNT(*) AS overlap
+        FROM question_aliases qa1
+        JOIN question_aliases qa2
+          USING (canonical_idx)
+        WHERE qa1.tournament_id IN ({','.join('?' * len(tids))})
+          AND qa2.tournament_id NOT IN ({','.join('?' * len(tids))})
+        GROUP BY qa2.tournament_id
+        ORDER BY overlap DESC
+        """,
+        tids + tids,
+    )
+    return [int(r["sib_id"]) for r in rows]
 
 
 @app.get("/compare", response_class=HTMLResponse)
@@ -825,8 +851,14 @@ def compare_players(
     request: Request,
     ids: str = Query("", max_length=200),
     add: str = Query("", max_length=100),
+    tids: str = Query("", max_length=200),
+    add_t: str = Query("", max_length=100),
 ):
-    """Side-by-side comparison of 2-5 players."""
+    """Side-by-side comparison of players (``ids``) and/or tournaments (``tids``).
+
+    Sister tournaments (sync+async pairs of the same pack) are auto-added
+    so users don't have to discover them manually.  Capped at
+    ``MAX_COMPARE_TOURNAMENTS`` after auto-expansion."""
     player_ids = _parse_compare_ids(ids)
 
     players_by_id: dict[int, dict] = {}
@@ -1073,6 +1105,141 @@ def compare_players(
     remove_url = {pid: _ids_without(pid) for pid in player_ids}
     add_url = {s["player_id"]: _ids_with(s["player_id"]) for s in suggestions}
 
+    # ----------------------------------------------------------------- tournaments
+    requested_tids = _parse_compare_ids(tids, cap=MAX_COMPARE_TOURNAMENTS)
+    auto_added_tids: set[int] = set()
+    if requested_tids:
+        # Auto-add sister (paired sync+async) tournaments.  We expand
+        # one sister at a time so the cap stays predictable.
+        sisters = _sister_tournament_ids(requested_tids)
+        for sib in sisters:
+            if len(requested_tids) >= MAX_COMPARE_TOURNAMENTS:
+                break
+            if sib in requested_tids:
+                continue
+            requested_tids.append(sib)
+            auto_added_tids.add(sib)
+    tournament_ids: list[int] = []
+    tournaments_data: list[dict] = []
+    if requested_tids:
+        rows = db.query(
+            f"""
+            SELECT tournament_id, title, type, start_date, n_questions, n_teams
+            FROM tournaments
+            WHERE tournament_id IN ({','.join('?' * len(requested_tids))})
+            """,
+            requested_tids,
+        )
+        by_tid = {r["tournament_id"]: r for r in rows}
+        for tid in requested_tids:
+            if tid in by_tid:
+                t = by_tid[tid]
+                t["auto_added"] = tid in auto_added_tids
+                tournaments_data.append(t)
+                tournament_ids.append(tid)
+
+    add_t = add_t.strip()
+    tournament_suggestions: list[dict] = []
+    if add_t and len(tournament_ids) < MAX_COMPARE_TOURNAMENTS:
+        if add_t.isdigit():
+            row = db.query_one(
+                "SELECT tournament_id, title, type, start_date, n_questions, n_teams "
+                "FROM tournaments WHERE tournament_id = ?",
+                [int(add_t)],
+            )
+            if row:
+                tournament_suggestions = [row]
+        if not tournament_suggestions:
+            tokens = [t for t in add_t.split() if t]
+            if tokens:
+                cond = "title ILIKE '%' || ? || '%'"
+                where = " AND ".join(cond for _ in tokens)
+                params: list = list(tokens)
+                tournament_suggestions = db.query(
+                    f"""
+                    SELECT tournament_id, title, type, start_date, n_questions, n_teams
+                    FROM tournaments
+                    WHERE {where}
+                    ORDER BY start_date DESC NULLS LAST
+                    LIMIT 15
+                    """,
+                    params,
+                )
+        selected_tset = set(tournament_ids)
+        tournament_suggestions = [
+            s for s in tournament_suggestions if s["tournament_id"] not in selected_tset
+        ]
+
+    # Per-tournament question scatter (canonical b/a + per-tournament take rate).
+    # Skip dead questions (take_rate==0) for the same reason as the per-tournament
+    # page: their b is clipped to +10 and would dominate the layout.
+    tournament_chart_series: list[dict] = []
+    if tournament_ids:
+        rows = db.query(
+            f"""
+            SELECT
+                qa.tournament_id,
+                qa.q_in_tournament,
+                qa.canonical_idx,
+                q.b,
+                q.a,
+                CASE WHEN qa.n_obs > 0 THEN qa.n_taken::DOUBLE / qa.n_obs ELSE NULL END AS take_rate
+            FROM question_aliases qa
+            JOIN questions q ON q.canonical_idx = qa.canonical_idx
+            WHERE qa.tournament_id IN ({','.join('?' * len(tournament_ids))})
+            ORDER BY qa.tournament_id, qa.q_in_tournament
+            """,
+            tournament_ids,
+        )
+        by_tid_qs: dict[int, list[dict]] = {tid: [] for tid in tournament_ids}
+        for r in rows:
+            by_tid_qs.setdefault(r["tournament_id"], []).append(r)
+
+        title_by_tid = {t["tournament_id"]: t["title"] for t in tournaments_data}
+        type_by_tid = {t["tournament_id"]: t["type"] for t in tournaments_data}
+        for tid in tournament_ids:
+            qs = by_tid_qs.get(tid, [])
+            live = [q for q in qs if q["take_rate"] is not None and q["take_rate"] > 0.0]
+            n_dead = sum(
+                1 for q in qs if q["take_rate"] is not None and q["take_rate"] <= 0.0
+            )
+            tournament_chart_series.append(
+                {
+                    "tournament_id": tid,
+                    "title": title_by_tid.get(tid, str(tid)),
+                    "type": type_by_tid.get(tid, ""),
+                    "points": [
+                        {
+                            "b": q["b"],
+                            "a": q["a"],
+                            "take_rate": q["take_rate"],
+                            "q": q["q_in_tournament"] + 1,
+                        }
+                        for q in live
+                    ],
+                    "mean_b": (
+                        sum(q["b"] for q in live) / len(live) if live else None
+                    ),
+                    "mean_a": (
+                        sum(q["a"] for q in live) / len(live) if live else None
+                    ),
+                    "n_live": len(live),
+                    "n_dead": n_dead,
+                }
+            )
+
+    def _tids_without(tid: int) -> str:
+        return ",".join(str(i) for i in tournament_ids if i != tid)
+
+    def _tids_with(tid: int) -> str:
+        return ",".join(str(i) for i in tournament_ids + [tid])
+
+    tournament_remove_url = {tid: _tids_without(tid) for tid in tournament_ids}
+    tournament_add_url = {
+        s["tournament_id"]: _tids_with(s["tournament_id"])
+        for s in tournament_suggestions
+    }
+
     return templates.TemplateResponse(
         request,
         "compare.html",
@@ -1088,6 +1255,18 @@ def compare_players(
             "chart_series_json": json.dumps(chart_series, ensure_ascii=False),
             "common_tournaments": common_tournaments,
             "yearly_by_year": yearly_by_year,
+            # Tournament comparison
+            "tournament_ids": tournament_ids,
+            "tids_csv": ",".join(str(i) for i in tournament_ids),
+            "tournaments": tournaments_data,
+            "max_tournaments": MAX_COMPARE_TOURNAMENTS,
+            "add_tournament_query": add_t,
+            "tournament_suggestions": tournament_suggestions,
+            "tournament_remove_url": tournament_remove_url,
+            "tournament_add_url": tournament_add_url,
+            "tournament_chart_json": json.dumps(
+                tournament_chart_series, ensure_ascii=False, default=str
+            ),
         },
     )
 

@@ -1,21 +1,30 @@
 {% extends "base.html" %}
-{% block title %}Сравнение игроков — ChGK Model{% endblock %}
+{% block title %}Сравнение — ChGK Model{% endblock %}
 
 {% block head_extra %}
 <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
 {% endblock %}
 
+{# Helper macros for preserving the *other* selection (players ↔ tournaments)
+   in URLs so that adding/removing one type doesn't drop the other. #}
+{% macro href_with_extra(qs, extra_key, extra_val) -%}
+{%- if extra_val -%}{{ qs }}&{{ extra_key }}={{ extra_val }}{%- else -%}{{ qs }}{%- endif -%}
+{%- endmacro %}
+
 {% block content %}
 <div class="mb-6">
-  <h1 class="text-2xl font-semibold">Сравнение игроков</h1>
+  <h1 class="text-2xl font-semibold">Сравнение</h1>
   <p class="text-sm text-slate-600 mt-1">
-    До {{ max_players }} игроков на одной странице — оверлей θ во времени, места в рейтинге, годовые перцентили и общие турниры.
+    До {{ max_players }} игроков и до {{ max_tournaments }} турниров на одной странице.
+    Игроки: оверлей θ, места, годовые перцентили, общие турниры.
+    Турниры: карта вопросов (b, a) с цветом по турниру и средней точкой каждого.
+    Парные синхрон↔асинхрон сестры подтягиваются автоматически.
   </p>
 </div>
 
 <section class="bg-white border border-slate-200 rounded shadow-sm mb-6 p-4">
   <h2 class="text-sm font-medium text-slate-600 mb-3">
-    Выбраны: {{ players|length }} / {{ max_players }}
+    Игроки: {{ players|length }} / {{ max_players }}
   </h2>
   {% if players %}
   <div class="flex flex-wrap gap-2 mb-3">
@@ -23,25 +32,25 @@
     <span class="inline-flex items-center gap-2 bg-indigo-50 border border-indigo-200 rounded-full pl-3 pr-2 py-1 text-sm">
       <a href="/player/{{ p.player_id }}" class="text-indigo-700 hover:underline">{{ p|fullname }}</a>
       <span class="text-indigo-400 num text-xs">θ {{ "%.2f"|format(p.theta_display) }}</span>
-      <a href="/compare?ids={{ remove_url[p.player_id] }}"
+      <a href="/compare?{{ href_with_extra('ids=' ~ remove_url[p.player_id], 'tids', tids_csv) }}"
          title="Убрать из сравнения"
          class="w-5 h-5 inline-flex items-center justify-center text-slate-500 hover:text-rose-600 hover:bg-rose-50 rounded-full leading-none">×</a>
     </span>
     {% endfor %}
   </div>
   {% else %}
-  <p class="text-slate-500 text-sm mb-3">Игроки ещё не выбраны — добавьте через поиск ниже.</p>
+  <p class="text-slate-500 text-sm mb-3">Игроки ещё не выбраны.</p>
   {% endif %}
 
   {% if players|length < max_players %}
   <form action="/compare" method="get" class="flex gap-2 items-center">
     <input type="hidden" name="ids" value="{{ ids_csv }}">
+    {% if tids_csv %}<input type="hidden" name="tids" value="{{ tids_csv }}">{% endif %}
     <input type="text" name="add" value="{{ add_query }}" placeholder="Фамилия / имя / ID игрока"
-           class="border border-slate-300 rounded px-3 py-1 text-sm w-72 focus:outline-none focus:ring focus:ring-indigo-200"
-           autofocus>
-    <button type="submit" class="bg-indigo-600 text-white text-sm px-3 py-1 rounded hover:bg-indigo-700">Найти</button>
+           class="border border-slate-300 rounded px-3 py-1 text-sm w-72 focus:outline-none focus:ring focus:ring-indigo-200">
+    <button type="submit" class="bg-indigo-600 text-white text-sm px-3 py-1 rounded hover:bg-indigo-700">Найти игрока</button>
     {% if add_query %}
-    <a href="/compare?ids={{ ids_csv }}" class="text-xs text-slate-500 hover:text-slate-700">сбросить поиск</a>
+    <a href="/compare?{{ href_with_extra('ids=' ~ ids_csv, 'tids', tids_csv) }}" class="text-xs text-slate-500 hover:text-slate-700">сбросить поиск</a>
     {% endif %}
   </form>
 
@@ -55,7 +64,7 @@
           <span class="text-slate-500 num ml-2">θ {{ "%.2f"|format(s.theta) }} · {{ s.games }} игр</span>
           <span class="text-slate-400 text-xs ml-2">id {{ s.player_id }}</span>
         </span>
-        <a href="/compare?ids={{ add_url[s.player_id] }}"
+        <a href="/compare?{{ href_with_extra('ids=' ~ add_url[s.player_id], 'tids', tids_csv) }}"
            class="text-xs bg-emerald-600 text-white px-2 py-1 rounded hover:bg-emerald-700">+ добавить</a>
       </li>
       {% endfor %}
@@ -65,7 +74,66 @@
     {% endif %}
   {% endif %}
   {% else %}
-  <p class="text-xs text-slate-500">Достигнут лимит в {{ max_players }} игроков. Уберите кого-нибудь, чтобы добавить нового.</p>
+  <p class="text-xs text-slate-500">Достигнут лимит в {{ max_players }} игроков.</p>
+  {% endif %}
+</section>
+
+<section class="bg-white border border-slate-200 rounded shadow-sm mb-6 p-4">
+  <h2 class="text-sm font-medium text-slate-600 mb-3">
+    Турниры: {{ tournaments|length }} / {{ max_tournaments }}
+  </h2>
+  {% if tournaments %}
+  <div class="flex flex-wrap gap-2 mb-3">
+    {% for t in tournaments %}
+    <span class="inline-flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-full pl-3 pr-2 py-1 text-sm">
+      <a href="/tournament/{{ t.tournament_id }}" class="text-amber-800 hover:underline">{{ t.title }}</a>
+      <span class="text-amber-700 text-xs">{{ t.type }}{% if t.start_date %} · {{ t.start_date.isoformat() }}{% endif %}</span>
+      {% if t.auto_added %}
+      <span class="text-[10px] uppercase bg-amber-200 text-amber-800 rounded px-1.5 py-0.5">сестра</span>
+      {% endif %}
+      <a href="/compare?{{ href_with_extra('tids=' ~ tournament_remove_url[t.tournament_id], 'ids', ids_csv) }}"
+         title="Убрать из сравнения"
+         class="w-5 h-5 inline-flex items-center justify-center text-slate-500 hover:text-rose-600 hover:bg-rose-50 rounded-full leading-none">×</a>
+    </span>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="text-slate-500 text-sm mb-3">Турниры ещё не выбраны.</p>
+  {% endif %}
+
+  {% if tournaments|length < max_tournaments %}
+  <form action="/compare" method="get" class="flex gap-2 items-center">
+    <input type="hidden" name="tids" value="{{ tids_csv }}">
+    {% if ids_csv %}<input type="hidden" name="ids" value="{{ ids_csv }}">{% endif %}
+    <input type="text" name="add_t" value="{{ add_tournament_query }}" placeholder="Название или ID турнира"
+           class="border border-slate-300 rounded px-3 py-1 text-sm w-72 focus:outline-none focus:ring focus:ring-amber-200">
+    <button type="submit" class="bg-amber-600 text-white text-sm px-3 py-1 rounded hover:bg-amber-700">Найти турнир</button>
+    {% if add_tournament_query %}
+    <a href="/compare?{{ href_with_extra('tids=' ~ tids_csv, 'ids', ids_csv) }}" class="text-xs text-slate-500 hover:text-slate-700">сбросить поиск</a>
+    {% endif %}
+  </form>
+
+  {% if add_tournament_query %}
+    {% if tournament_suggestions %}
+    <ul class="mt-3 bg-slate-50 border border-slate-200 rounded divide-y divide-slate-100">
+      {% for s in tournament_suggestions %}
+      <li class="px-3 py-2 flex justify-between items-center text-sm">
+        <span>
+          <a href="/tournament/{{ s.tournament_id }}" class="text-amber-800 hover:underline">{{ s.title }}</a>
+          <span class="text-slate-500 ml-2">{{ s.type }}{% if s.start_date %} · {{ s.start_date.isoformat() }}{% endif %} · вопросов: {{ s.n_questions }} · команд: {{ s.n_teams }}</span>
+          <span class="text-slate-400 text-xs ml-2">id {{ s.tournament_id }}</span>
+        </span>
+        <a href="/compare?{{ href_with_extra('tids=' ~ tournament_add_url[s.tournament_id], 'ids', ids_csv) }}"
+           class="text-xs bg-emerald-600 text-white px-2 py-1 rounded hover:bg-emerald-700">+ добавить</a>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="mt-3 text-sm text-slate-500">По запросу «{{ add_tournament_query }}» ничего не нашлось.</p>
+    {% endif %}
+  {% endif %}
+  {% else %}
+  <p class="text-xs text-slate-500">Достигнут лимит в {{ max_tournaments }} турниров.</p>
   {% endif %}
 </section>
 
@@ -235,13 +303,76 @@
 </section>
 {% endif %}
 
-{% if players|length >= 1 %}
+{% if tournaments %}
+<section class="bg-white border border-slate-200 rounded shadow-sm mb-6">
+  <div class="flex items-baseline justify-between px-4 py-2 border-b border-slate-100">
+    <h2 class="text-sm font-medium text-slate-600">Карта вопросов: b (сложность) × a (дискриминация)</h2>
+    <span class="text-xs text-slate-500">точка — вопрос; крупный «◆» — среднее b̄, ā турнира; гробы исключены</span>
+  </div>
+  <div id="bq-compare-chart" style="height: 460px;"></div>
+</section>
+{% endif %}
+
 <script>
 (function() {
   const series = {{ chart_series_json|safe }};
-  if (!series.length) return;
-
+  const tournamentSeries = {{ tournament_chart_json|safe }};
   const palette = ['#4f46e5', '#dc2626', '#059669', '#d97706', '#7c3aed'];
+
+  // ---- tournament question scatter (b × a, color per tournament) ----
+  if (tournamentSeries.length) {
+    const traces = [];
+    tournamentSeries.forEach((s, i) => {
+      const color = palette[i % palette.length];
+      const pts = s.points;
+      // Per-question dots.
+      traces.push({
+        x: pts.map(p => p.b),
+        y: pts.map(p => p.a),
+        text: pts.map(p => '#' + p.q + ' · взято ' + (100 * p.take_rate).toFixed(0) + '%'),
+        name: s.title,
+        legendgroup: 't' + s.tournament_id,
+        type: 'scatter', mode: 'markers',
+        marker: {
+          size: pts.map(p => 5 + 14 * (p.take_rate || 0)),
+          color: color, opacity: 0.55, line: { color: 'white', width: 1 },
+        },
+        hovertemplate:
+          '<b>' + s.title + '</b><br>%{text}<br>b=%{x:.2f}, a=%{y:.2f}<extra></extra>',
+      });
+      // Mean point.
+      if (s.mean_b !== null && s.mean_a !== null) {
+        traces.push({
+          x: [s.mean_b],
+          y: [s.mean_a],
+          name: s.title + ' (среднее)',
+          legendgroup: 't' + s.tournament_id,
+          showlegend: false,
+          type: 'scatter', mode: 'markers',
+          marker: {
+            size: 18, color: color, symbol: 'diamond',
+            line: { color: 'white', width: 2 },
+          },
+          hovertemplate:
+            '<b>' + s.title + '</b><br>среднее: b̄=%{x:.2f}, ā=%{y:.2f}'
+            + '<br>вопросов: ' + s.n_live
+            + (s.n_dead ? ' (+' + s.n_dead + ' гробов)' : '')
+            + '<extra></extra>',
+        });
+      }
+    });
+    Plotly.newPlot('bq-compare-chart', traces, {
+      margin: { l: 50, r: 20, t: 10, b: 50 },
+      xaxis: { title: 'b — сложность', gridcolor: '#f1f5f9' },
+      yaxis: { title: 'a — дискриминация', gridcolor: '#f1f5f9' },
+      plot_bgcolor: 'white',
+      legend: { orientation: 'h', y: -0.15 },
+      hovermode: 'closest',
+    }, { displayModeBar: false, responsive: true });
+  }
+
+  // ---- player overlays (θ + rank) ----
+  if (!series.length) return;
 
   const thetaTraces = series.map((s, i) => {
     const color = palette[i % palette.length];
@@ -301,5 +432,4 @@
   }
 })();
 </script>
-{% endif %}
 {% endblock %}
