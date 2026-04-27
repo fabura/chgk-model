@@ -130,7 +130,12 @@
         <tr>
           <th class="px-3 py-2 text-left">Игрок</th>
           <th class="px-3 py-2 text-right">θ</th>
-          <th class="px-3 py-2 text-right">Игр</th>
+          <th class="px-3 py-2 text-right" title="Игр за команду в окне ({{ window }} дн.) / всего за всю историю">
+            Игр<br><span class="normal-case font-normal text-[10px] text-slate-400">окно/всего</span>
+          </th>
+          <th class="px-3 py-2 text-right" title="Доля игр в окне ({{ window }} дн.), которые игрок провёл именно за эту команду">
+            Доля
+          </th>
         </tr>
       </thead>
       <tbody>
@@ -138,11 +143,22 @@
         <tr class="border-t border-slate-100 hover:bg-slate-50">
           <td class="px-3 py-2"><a href="/player/{{ r.player_id }}" class="text-indigo-700 hover:underline">{{ r|fullname }}</a></td>
           <td class="px-3 py-2 text-right num">{{ "%.3f"|format(r.theta) }}</td>
-          <td class="px-3 py-2 text-right num text-slate-600">{{ r.games_with_team }}</td>
+          <td class="px-3 py-2 text-right num text-slate-600 whitespace-nowrap">
+            {{ r.n_app_window }} <span class="text-slate-400">/ {{ r.games_with_team }}</span>
+          </td>
+          <td class="px-3 py-2 text-right num text-slate-600">
+            {% if r.share_window is not none %}{{ "%.0f"|format(100 * r.share_window) }}%{% else %}—{% endif %}
+          </td>
         </tr>
         {% endfor %}
       </tbody>
     </table>
+    <p class="px-3 py-2 text-xs text-slate-500 border-t border-slate-100">
+      Сортировка по доле в окне последних {{ window }} дней. Игрок с долей
+      &lt; 100% играл в этот период не только за эту команду; именно эта
+      доля используется как вес при подсчёте «силы ядра» команды на
+      <a href="/teams" class="text-indigo-700 hover:underline">странице команд</a>.
+    </p>
   </section>
 </div>
 

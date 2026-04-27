@@ -3,7 +3,7 @@
 {% block title %}Команды — ChGK Model{% endblock %}
 
 {% macro page_url(p) -%}
-?min_games={{ min_games }}&min_base={{ min_base }}&window={{ window }}&per_page={{ per_page }}&page={{ p }}
+?min_games={{ min_games }}&min_eff_base={{ min_eff_base }}&window={{ window }}&per_page={{ per_page }}&page={{ p }}
 {%- endmacro %}
 
 {% block content %}
@@ -16,13 +16,12 @@
     <label for="min_games">мин. турниров:</label>
     <input id="min_games" type="number" name="min_games" value="{{ min_games }}" min="1" max="200"
            class="w-20 border border-slate-300 rounded px-2 py-0.5">
-    <label for="min_base">мин. в ядре:</label>
-    <select id="min_base" name="min_base"
-            class="border border-slate-300 rounded px-2 py-0.5 bg-white">
-      {% for opt in [1, 2, 3, 4, 5, 6] %}
-      <option value="{{ opt }}" {% if opt == min_base %}selected{% endif %}>{{ opt }}</option>
-      {% endfor %}
-    </select>
+    <label for="min_eff_base" title="Эффективное число лояльных игроков в ядре (сумма долей в окне)">
+      мин. ядро:
+    </label>
+    <input id="min_eff_base" type="number" name="min_eff_base" value="{{ min_eff_base }}"
+           min="0.5" max="6.0" step="0.5"
+           class="w-20 border border-slate-300 rounded px-2 py-0.5">
     <label for="per_page">на странице:</label>
     <select id="per_page" name="per_page"
             class="border border-slate-300 rounded px-2 py-0.5 bg-white">
@@ -36,14 +35,18 @@
 </div>
 
 <p class="text-xs text-slate-500 mb-3">
-  «Сила базового состава» — среднее текущее θ у шести игроков, чаще всего
-  игравших за команду в последние {{ window }} дней{% if ref_cutoff and ref_today %}
-  (с {{ ref_cutoff.isoformat() }} по {{ ref_today.isoformat() }}){% endif %}.
-  Команды без активности в этом окне в список не входят. В таблице учитываются
-  только составы, сыгравшие в окне ≥ {{ min_games }} турниров и имеющие в ядре
-  ≥ {{ min_base }} игроков (иначе одиночки и дуэты доминировали бы рейтинг).
+  «Сила базового состава» — среднее θ шести самых частых игроков команды
+  за последние {{ window }} дней{% if ref_cutoff and ref_today %}
+  (с {{ ref_cutoff.isoformat() }} по {{ ref_today.isoformat() }}){% endif %},
+  взвешенное по их «доле»&nbsp;— проценту игр в окне, которые игрок провёл
+  именно за эту команду. Игрок, отыгравший за команду 6 туров из 60,
+  даёт 10 % своей θ; «свой» с 50 из 55 — 91 %. «Ядро» — сумма этих долей
+  в топ-6: 6.0 значит шесть полностью преданных игроков, 1.0 — фактически
+  команда из одного человека. Команды без активности в окне в список не
+  входят. Учитываются только составы, сыгравшие в окне ≥ {{ min_games }}
+  турниров и набравшие ядро ≥ {{ "%.1f"|format(min_eff_base) }}.
   {% if total %}
-  · всего {{ total }} активных команд; страница {{ page }} из {{ total_pages }}.
+  · всего {{ total }} команд; страница {{ page }} из {{ total_pages }}.
   {% endif %}
 </p>
 
@@ -54,7 +57,7 @@
         <th class="px-3 py-2 text-right">#</th>
         <th class="px-3 py-2 text-left">Команда</th>
         <th class="px-3 py-2 text-right">θ ядра</th>
-        <th class="px-3 py-2 text-right">Игроков<br>в ядре</th>
+        <th class="px-3 py-2 text-right" title="Эффективное число лояльных игроков в топ-6 (сумма долей)">Ядро</th>
         <th class="px-3 py-2 text-right">Турниров<br>в окне</th>
         <th class="px-3 py-2 text-left">Последняя игра</th>
       </tr>
@@ -69,7 +72,7 @@
           </a>
         </td>
         <td class="px-3 py-2 text-right num font-medium">{{ "%.3f"|format(t.base_theta) }}</td>
-        <td class="px-3 py-2 text-right num text-slate-600">{{ t.n_base }}</td>
+        <td class="px-3 py-2 text-right num text-slate-600">{{ "%.1f"|format(t.eff_n_base) }}</td>
         <td class="px-3 py-2 text-right num text-slate-600">{{ t.n_recent_games }}</td>
         <td class="px-3 py-2 text-slate-600 whitespace-nowrap">
           {{ t.last_played.isoformat() if t.last_played else "—" }}

@@ -200,10 +200,18 @@ def tournaments_list(
 
 
 # Cached SQL for the teams ranking page.  The "current strength" of a
-# team is the average ``theta_display`` of the up-to-6 players who
-# appeared most often in that team over the last ``window`` days
-# (relative to the latest tournament in the database).  Only teams
-# active in that window are listed.
+# team is the *loyalty-weighted* average ``theta_display`` of the up-to-6
+# players who appeared most often in that team over the last ``window``
+# days (relative to the latest tournament in the database).  Loyalty
+# share for player p in team T is ``n_app(p, T) / n_app_total(p)``,
+# i.e. the fraction of p's games in the window that were for T.
+#
+# A guest who played 6/100 games for T contributes weight 0.06 to T's
+# average; a regular with 50/55 contributes 0.91.  This both kills the
+# "Карякин-effect" (one player propping up several teams' rosters) and,
+# combined with the ``eff_n_base`` filter (= sum of shares in top-6),
+# auto-removes ad-hoc / one-off teams whose "core" is a handful of
+# players whose real home is elsewhere.
 _TEAMS_RANK_SQL = """
 WITH cutoff AS (
     SELECT MAX(start_date) - INTERVAL ({window}) DAY AS dt FROM tournaments
@@ -215,18 +223,31 @@ recent_pg AS (
     WHERE t.start_date >= (SELECT dt FROM cutoff)
     GROUP BY pg.team_id, pg.player_id
 ),
+p_total AS (
+    SELECT player_id, SUM(n_app) AS n_app_total
+    FROM recent_pg
+    GROUP BY player_id
+),
+p_share AS (
+    SELECT r.team_id, r.player_id, r.n_app,
+           r.n_app::DOUBLE / pt.n_app_total AS share
+    FROM recent_pg r JOIN p_total pt USING (player_id)
+),
 ranked AS (
-    SELECT r.team_id, r.player_id, r.n_app, p.theta_display,
+    SELECT s.team_id, s.player_id, s.n_app, s.share, p.theta_display,
+           -- Top-6 selection is still by appearance count: the "regular
+           -- roster" is who played most for the team.  Share only
+           -- changes the *weight* in the average below.
            ROW_NUMBER() OVER (
-               PARTITION BY r.team_id
-               ORDER BY r.n_app DESC, p.theta_display DESC, r.player_id
+               PARTITION BY s.team_id
+               ORDER BY s.n_app DESC, p.theta_display DESC, s.player_id
            ) AS rk
-    FROM recent_pg r JOIN players p USING (player_id)
+    FROM p_share s JOIN players p USING (player_id)
 ),
 base AS (
     SELECT team_id,
-           AVG(theta_display) AS base_theta,
-           COUNT(*) AS n_base
+           SUM(share * theta_display) / SUM(share) AS base_theta,
+           SUM(share) AS eff_n_base
     FROM ranked WHERE rk <= 6
     GROUP BY team_id
 ),
@@ -247,15 +268,20 @@ team_meta AS (
 def teams_list(
     request: Request,
     min_games: int = Query(3, ge=1, le=200),
-    min_base: int = Query(4, ge=1, le=6),
+    min_eff_base: float = Query(3.0, ge=0.5, le=6.0),
     window: int = Query(365, ge=30, le=3650),
     per_page: int = Query(100, ge=10, le=500),
     page: int = Query(1, ge=1),
 ):
-    """Teams sorted by current base-roster strength (top-6 regulars in the window).
+    """Teams sorted by current loyalty-weighted base-roster strength.
 
-    Filters out teams whose "core" has fewer than ``min_base`` distinct regulars,
-    so that lone-wolf single-player teams do not dominate the leaderboard.
+    For each (player, team) in the window we compute
+    ``share = n_app(player, team) / n_app_total(player)``.  The team's
+    "base θ" is the share-weighted mean of ``theta_display`` over the
+    top-6 most-frequent players, and ``eff_n_base = Σ share`` over those
+    six.  ``min_eff_base`` filters out ad-hoc teams whose core is
+    actually loyal to other teams (so e.g. a single-player team has
+    eff_n_base ≤ 1, a team of six fully-loyal regulars has eff_n_base = 6).
     """
     sql_head = _TEAMS_RANK_SQL.format(window=int(window))
 
@@ -265,9 +291,9 @@ def teams_list(
             + """
             SELECT COUNT(*) AS n
             FROM base b JOIN team_meta m USING (team_id)
-            WHERE m.n_recent_games >= ? AND b.n_base >= ?
+            WHERE m.n_recent_games >= ? AND b.eff_n_base >= ?
             """,
-            [min_games, min_base],
+            [min_games, min_eff_base],
         )
         or {"n": 0}
     )["n"]
@@ -278,14 +304,14 @@ def teams_list(
     rows = db.query(
         sql_head
         + """
-        SELECT m.team_id, m.team_name, b.base_theta, b.n_base,
+        SELECT m.team_id, m.team_name, b.base_theta, b.eff_n_base,
                m.n_recent_games, m.last_played
         FROM base b JOIN team_meta m USING (team_id)
-        WHERE m.n_recent_games >= ? AND b.n_base >= ?
+        WHERE m.n_recent_games >= ? AND b.eff_n_base >= ?
         ORDER BY b.base_theta DESC, m.team_id
         LIMIT ? OFFSET ?
         """,
-        [min_games, min_base, per_page, offset],
+        [min_games, min_eff_base, per_page, offset],
     )
     for i, r in enumerate(rows, start=1):
         r["rank"] = offset + i
@@ -302,7 +328,7 @@ def teams_list(
         {
             "teams": rows,
             "min_games": min_games,
-            "min_base": min_base,
+            "min_eff_base": min_eff_base,
             "window": window,
             "per_page": per_page,
             "page": page,
@@ -724,7 +750,11 @@ def tournament_page(request: Request, tournament_id: int):
 
 
 @app.get("/team/{team_id}", response_class=HTMLResponse)
-def team_page(request: Request, team_id: int):
+def team_page(
+    request: Request,
+    team_id: int,
+    window: int = Query(365, ge=30, le=3650),
+):
     """Team profile: tournaments played, regular roster, summary stats."""
     # Most recent name for display.
     name_row = db.query_one(
@@ -765,23 +795,57 @@ def team_page(request: Request, team_id: int):
         [team_id],
     )
 
-    # Regular roster: players who appeared most often, with their θ and last
-    # date played for this team.
+    # Regular roster: players who appeared most often, with:
+    #   - games_with_team   — total appearances over team's full history
+    #   - n_app_window      — appearances in the last ``window`` days
+    #   - share_window      — fraction of the player's window appearances
+    #                         that were for this team (= "loyalty"; the
+    #                         same number used in the team-ranking SQL)
+    # Sorted by share desc, then by recent-window appearances, so the
+    # "real core" floats to the top regardless of historic guests.
     roster = db.query(
         """
+        WITH cutoff AS (
+            SELECT MAX(start_date) - INTERVAL (?) DAY AS dt FROM tournaments
+        ),
+        recent_pg AS (
+            SELECT pg.team_id, pg.player_id, COUNT(*) AS n_app
+            FROM player_games pg
+            JOIN tournaments t USING (tournament_id)
+            WHERE t.start_date >= (SELECT dt FROM cutoff)
+            GROUP BY pg.team_id, pg.player_id
+        ),
+        p_total AS (
+            SELECT player_id, SUM(n_app) AS n_app_total
+            FROM recent_pg GROUP BY player_id
+        ),
+        all_time AS (
+            SELECT pg.player_id,
+                   COUNT(*) AS games_with_team,
+                   MAX(t.start_date) AS last_played
+            FROM player_games pg
+            JOIN tournaments t USING (tournament_id)
+            WHERE pg.team_id = ?
+            GROUP BY pg.player_id
+        )
         SELECT
             p.player_id, p.last_name, p.first_name, p.theta,
-            COUNT(*) AS games_with_team,
-            MAX(t.start_date) AS last_played
-        FROM player_games pg
+            a.games_with_team,
+            a.last_played,
+            COALESCE(r.n_app, 0) AS n_app_window,
+            CASE WHEN r.n_app IS NULL THEN NULL
+                 ELSE r.n_app::DOUBLE / pt.n_app_total END AS share_window
+        FROM all_time a
         JOIN players p USING (player_id)
-        JOIN tournaments t USING (tournament_id)
-        WHERE pg.team_id = ?
-        GROUP BY p.player_id, p.last_name, p.first_name, p.theta
-        ORDER BY games_with_team DESC, p.theta DESC
+        LEFT JOIN recent_pg r ON r.player_id = a.player_id AND r.team_id = ?
+        LEFT JOIN p_total pt ON pt.player_id = a.player_id
+        ORDER BY share_window DESC NULLS LAST,
+                 n_app_window DESC,
+                 a.games_with_team DESC,
+                 p.theta DESC
         LIMIT 50
         """,
-        [team_id],
+        [int(window), team_id, team_id],
     )
 
     # Per-tournament roster: who actually played in each game, with their
@@ -852,6 +916,7 @@ def team_page(request: Request, team_id: int):
             "rosters_by_tournament": rosters_by_tournament,
             "summary": summary_row,
             "trend_json": json.dumps(trend_json, ensure_ascii=False),
+            "window": window,
         },
     )
 
