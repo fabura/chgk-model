@@ -54,6 +54,31 @@
   {% endif %}
 </section>
 
+{% if sister_chart %}
+<section class="bg-white border border-slate-200 rounded shadow-sm mb-6">
+  <div class="flex items-baseline justify-between px-4 py-2 border-b border-slate-100">
+    <h2 class="text-sm font-medium text-slate-600">
+      Парный пакет: доля взятых здесь vs у
+      <a href="/tournament/{{ sister_chart.sister_id }}" class="text-indigo-700 hover:underline">{{ sister_chart.sister_title }}</a>
+      <span class="text-slate-400 text-xs">({{ sister_chart.sister_type }})</span>
+    </h2>
+    <span class="text-xs text-slate-500">
+      общих вопросов: {{ sister_chart.n_pairs }}{% if sister_chart.n_other_sisters %}
+      · ещё сёстер: {{ sister_chart.n_other_sisters }}
+      {% endif %}
+    </span>
+  </div>
+  <div id="sister-chart" style="height: 380px;"></div>
+  <p class="px-4 pb-3 text-xs text-slate-500">
+    Один и тот же канонический вопрос. По оси X — доля взятых на этом турнире
+    ({{ sister_chart.self_type }}), по оси Y — на парном ({{ sister_chart.sister_type }}).
+    Чем дальше точка от диагонали, тем сильнее вопрос «играет» по-разному в зависимости
+    от типа турнира. Параметры b и a в модели сейчас общие на пару, поэтому здесь
+    использованы только эмпирические доли.
+  </p>
+</section>
+{% endif %}
+
 <section class="bg-white border border-slate-200 rounded shadow-sm mb-6">
   <div class="flex items-baseline justify-between px-4 py-2 border-b border-slate-100">
     <h2 class="text-sm font-medium text-slate-600">Команды ({{ teams|length }})</h2>
@@ -156,4 +181,44 @@
   }, { displayModeBar: false, responsive: true });
 })();
 </script>
+
+{% if sister_chart %}
+<script>
+(function() {
+  const pts = {{ sister_chart.points_json|safe }};
+  if (!pts.length) return;
+  const selfLabel = {{ sister_chart.self_type|tojson }};
+  const sibLabel  = {{ sister_chart.sister_type|tojson }};
+
+  const trace = {
+    x: pts.map(p => p.x),
+    y: pts.map(p => p.y),
+    text: pts.map(p =>
+      '#' + p.q + ' · '
+      + selfLabel + ': ' + (100 * p.x).toFixed(0) + '% (n=' + p.n_self + ')'
+      + '<br>'
+      + sibLabel + ': ' + (100 * p.y).toFixed(0) + '% (n=' + p.n_sib + ')'
+      + '<br>Δ=' + (100 * (p.y - p.x)).toFixed(1) + ' п.п.'
+    ),
+    mode: 'markers', type: 'scatter',
+    marker: { size: 8, color: '#4f46e5', opacity: 0.6, line: { color: 'white', width: 1 } },
+    hovertemplate: '%{text}<extra></extra>',
+    showlegend: false,
+  };
+  const diag = {
+    x: [0, 1], y: [0, 1],
+    mode: 'lines', type: 'scatter',
+    line: { color: '#cbd5e1', width: 1, dash: 'dot' },
+    hoverinfo: 'skip', showlegend: false,
+  };
+  Plotly.newPlot('sister-chart', [diag, trace], {
+    margin: { l: 60, r: 20, t: 10, b: 50 },
+    xaxis: { title: 'доля взятых: ' + selfLabel, range: [0, 1], gridcolor: '#f1f5f9', tickformat: '.0%' },
+    yaxis: { title: 'доля взятых: ' + sibLabel,  range: [0, 1], gridcolor: '#f1f5f9', tickformat: '.0%' },
+    plot_bgcolor: 'white',
+    hovermode: 'closest',
+  }, { displayModeBar: false, responsive: true });
+})();
+</script>
+{% endif %}
 {% endblock %}

@@ -639,6 +639,74 @@ def tournament_page(request: Request, tournament_id: int):
         else None
     )
 
+    # Sister-tournament diagnostic: when this tournament shares a
+    # canonical question pack with another (sync ↔ async pair), pick
+    # the one with the largest overlap and plot per-question
+    # take-rate(this) vs take-rate(sister).  Questions far from y=x
+    # are mode-sensitive on the same pack.  The (b, a) parameters are
+    # *shared* across paired tournaments, so plotting them in (b, a)
+    # would just produce overlapping points; we use the empirical
+    # rates instead, which are per-tournament.
+    sister_chart: dict | None = None
+    sister_rows = db.query(
+        """
+        SELECT qa2.tournament_id AS sib_id,
+               t2.title AS sib_title,
+               t2.type  AS sib_type,
+               COUNT(*) AS overlap
+        FROM question_aliases qa1
+        JOIN question_aliases qa2 USING (canonical_idx)
+        JOIN tournaments t2 ON t2.tournament_id = qa2.tournament_id
+        WHERE qa1.tournament_id = ? AND qa2.tournament_id != ?
+        GROUP BY qa2.tournament_id, t2.title, t2.type
+        ORDER BY overlap DESC
+        """,
+        [tournament_id, tournament_id],
+    )
+    if sister_rows:
+        top_sister = sister_rows[0]
+        pair_rows = db.query(
+            """
+            SELECT
+                qa_self.q_in_tournament AS q_self,
+                qa_self.canonical_idx,
+                CASE WHEN qa_self.n_obs > 0
+                     THEN qa_self.n_taken::DOUBLE / qa_self.n_obs ELSE NULL END AS rate_self,
+                CASE WHEN qa_sib.n_obs > 0
+                     THEN qa_sib.n_taken::DOUBLE / qa_sib.n_obs ELSE NULL END AS rate_sib,
+                qa_self.n_obs AS n_self,
+                qa_sib.n_obs  AS n_sib
+            FROM question_aliases qa_self
+            JOIN question_aliases qa_sib
+              ON qa_sib.canonical_idx = qa_self.canonical_idx
+             AND qa_sib.tournament_id = ?
+            WHERE qa_self.tournament_id = ?
+            ORDER BY qa_self.q_in_tournament
+            """,
+            [top_sister["sib_id"], tournament_id],
+        )
+        pts = [
+            {
+                "q": int(r["q_self"]) + 1,
+                "x": float(r["rate_self"]),
+                "y": float(r["rate_sib"]),
+                "n_self": int(r["n_self"]) if r["n_self"] is not None else 0,
+                "n_sib": int(r["n_sib"]) if r["n_sib"] is not None else 0,
+            }
+            for r in pair_rows
+            if r["rate_self"] is not None and r["rate_sib"] is not None
+        ]
+        if pts:
+            sister_chart = {
+                "sister_id": int(top_sister["sib_id"]),
+                "sister_title": top_sister["sib_title"],
+                "sister_type": top_sister["sib_type"],
+                "self_type": tournament["type"],
+                "n_pairs": len(pts),
+                "n_other_sisters": len(sister_rows) - 1,
+                "points_json": json.dumps(pts, ensure_ascii=False),
+            }
+
     return templates.TemplateResponse(
         request,
         "tournament.html",
@@ -650,6 +718,7 @@ def tournament_page(request: Request, tournament_id: int):
             "scatter_json": json.dumps(scatter, ensure_ascii=False),
             "dead_q_numbers": dead_q_numbers,
             "summary_stats": summary_stats,
+            "sister_chart": sister_chart,
         },
     )
 
