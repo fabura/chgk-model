@@ -24,6 +24,53 @@ overrides); both experiments only read it and add diagnostics.
 
 ---
 
+## How the backtest works (context for §§1.7, 2.5)
+
+For both train and test tournaments, `run_sequential` does the same
+six-step cycle, in chronological order:
+
+1. Decay θ of returning players by their personal Δdays.
+2. Initialise θ for unseen players (cold-start = −1.0).
+3. **Initialise `b, log_a` for unseen canonical questions**, using
+   the formula `b = log(n_avg) + θ̄ − log(−log(1 − r))` where `r` is
+   the take rate of THIS tournament for THIS question.
+4. Record predictions BEFORE updates — these are what go into
+   metrics.
+5. Run SGD updates on this tournament's observations.
+6. Increment per-player game counts.
+
+The only difference between "train" and "test" is which predictions
+end up in the metrics: backtest filters step-4 predictions by
+`game in last_20_pct_by_date`. Updates from steps 5 still happen on
+test tournaments — they just aren't measured.
+
+Three consequences worth keeping in mind throughout this report:
+
+* **Player θ on test prediction is fully out-of-sample**: θ for
+  every player on the predicting team comes from updates over
+  strictly earlier tournaments.
+* **Question `b, a` on test prediction is NOT fully out-of-sample**.
+  Because pack contents almost never repeat across tournaments,
+  99.0 % of canonical questions in test tournaments are seen for
+  the first time exactly when they're predicted. Their `b` is
+  initialised in step 3 from THAT tournament's take rate — a soft
+  in-sample leak.
+* The leak is **systemic, not concentrated on outliers**: it
+  affects almost every test prediction equally. The reason it
+  doesn't blow up the metric is that the init formula is well
+  calibrated on average — `θ̄` plus the noisy-OR conversion of
+  `r` into `b` produces a reasonable starting point. The pathology
+  shows up only when first-appearance team count is very small or
+  `r` is at an extreme.
+
+So **the headline 0.488 backtest logloss is mildly optimistic**.
+For products on this site (showing posted θ rankings) the leak
+doesn't matter — they don't predict forward. But for any forward-
+looking use ("how many takes will this team score on tomorrow's
+sync?") we'd need a take-rate-free init.
+
+---
+
 ## Part 1. Error structure on the 20 % time tail
 
 Snapshot: 1 749 test tournaments, 4 011 217 observations, overall
@@ -156,36 +203,61 @@ single-pass mean can't catch. The top 5 best, by contrast, are
 
 ### 1.7 Top-30 worst questions
 
-`results/error_analysis/worst_questions.csv`. The pathology is
-clear and shared by ~25 of 30 entries:
+`results/error_analysis/worst_questions.csv`. **Important context
+first**: ChGK question packs almost never repeat across tournaments,
+so 99.0 % of canonical questions in test tournaments have never been
+seen in train (60 116 / 60 728 — only 612 are shared, all via
+`paired sync↔async`, see `scripts/check_dead_questions.py`). The
+"new in test" status is therefore the **default** for almost every
+test question, not a rare pathology — the worst-30 list singles out
+which of those 60 000 newcomers got the WORST initialisation.
+
+The 30 worst questions split into two patterns:
 
 
 | pattern                              | n_q | example b / a   | mean p̂ | actual    |
 | ------------------------------------ | --- | --------------- | ------- | --------- |
-| `b ≈ +9.6` (clamped-ish), `a ≈ 0.94` | ~16 | b=+9.67, a=0.93 | 0.0001  | 0.30–0.50 |
+| `b ≈ +9.6` (init-from-zero clamp)    | ~16 | b=+9.67, a=0.93 | 0.0001  | 0.30–0.50 |
 | `b ≈ 0` or negative, `a ≈ 1.4–1.9`   | ~9  | b=−0.83, a=1.41 | 0.999   | 0.21–0.77 |
 | Other isolated outliers              | ~5  | mixed           | mixed   | mixed     |
 
 
-These are questions that were "perfectly easy" (everyone took, b → −∞)
-or "perfectly hard" (no one took, b → +9.6 clamp) on training data,
-then in the test split a different sample of teams produced a
-radically different take rate. Two scenarios:
+How init works for new-in-test questions: when a tournament is
+processed (train or test), unseen canonical questions get
+`b = log(n_avg) + θ̄ − log(−log(1 − r))`, where `r` is the take rate
+**in this same tournament** (so for test questions, `r` is computed
+on the test data — a soft form of in-sample leak; see report
+discussion). For the 25 hard-fail questions we see here, this init
+already produces an extreme value:
 
-- **Same physical pack played twice (sync→async or asynchron pair)**
-with very different audiences, sharing the canonical `cq` index.
-Most of the `b ≈ +9.6` cluster looks like this: the first pass had
-no teams take (offline tournament with strong teams), the second
-pass (online async with mixed crowd) had ~30 % take.
-- **Genuinely outlier observations** — a single very strong team
-showing up on a "no-one takes" question.
+* `b ≈ +9.6` cluster: in the *first appearance* of these `cq`
+  the take rate `r` was either 0 % (or near 0 %) for the small
+  sample of teams that played them, so `−log(−log(1−r))` blows up,
+  and the SGD updates from those 0-take observations produce zero
+  gradient (`y=0`, `p̂≈0`). The test then recorded these `cq` again
+  in a different tournament where ~30–50 % of teams DID take them
+  — but `b` was already pinned at the clamp.
+* `b ≈ 0` or negative cluster: opposite — first appearance had
+  near-100 % takes by a strong-skewed audience, then the test
+  audience took only 20–80 %.
 
-Either way, the obvious mitigation is **bound `b` away from the hard
-clamp earlier** (e.g. shrinkage of unseen-only questions toward the
-mean of the same tournament's already-seen questions). We previously
-tried "pack-level shrinkage" and rejected it as net-negative; worth
-revisiting now that `θ̄_init` reduced the share of questions hitting
-clamp.
+The most likely root cause is the **paired sync↔async case** plus
+the small handful of cross-tournament shared canonicals (the 612
+shared, of which 10 had 0 train takes — see
+`scripts/check_dead_questions.py`). For all other test questions
+init and predict happen in the same tournament, and the worst
+behaviour comes from extreme small-sample `r` estimates.
+
+Mitigation candidates:
+
+* Use a **shrinkage prior on `r`** for sparsely-played canonicals
+  (e.g. Beta(1,1) Laplace smoothing — `r' = (k+1)/(n+2)`); we
+  previously tried "pack-level shrinkage" and rejected it as
+  net-negative, but only on the pre-θ̄-init engine.
+* Decouple init from take rate when the team count is below some
+  threshold (e.g. `n_obs_first_tourn < 5`) — fall back to a
+  global / per-mode `b` prior plus θ̄ correction.
+* Hard-clip `b` init to `[-3, +6]` so the SGD has room to recover.
 
 ### 1.8 Per-player residuals (uniform attribution)
 
@@ -238,6 +310,131 @@ under-performed expectations during the test window. Both lists are
 dominated by **freshly-cold-started players**, confirming that the
 remaining error structure is mostly "warm-up noise" rather than a
 systematic bias against any particular slice of established players.
+
+### 1.9 Continuous-axis trends (10-quantile binning)
+
+Same test set, every observation projected onto one continuous axis,
+binned into 10 equal-frequency buckets. Source:
+`scripts/analyse_error_patterns.py` → `results/error_patterns/*.csv`.
+Below are only the trends with `Δ logloss > 0.01` between extreme
+deciles plus a couple of nominally-flat axes worth confirming.
+
+#### Strongest signals
+
+**Team size.** The single biggest residual axis after mode:
+
+| size bucket | n | mean p̂ | actual | mean res | logloss |
+|---|---:|---:|---:|---:|---:|
+| 1 (solo) | 199 389 | 0.382 | 0.423 | **+0.041** | **0.5357** |
+| 2 | 348 105 | 0.442 | 0.465 | +0.023 | 0.5139 |
+| 3 | 348 266 | 0.434 | 0.445 | +0.011 | 0.4984 |
+| 4 | 586 554 | 0.470 | 0.474 | +0.004 | 0.4933 |
+| 5 | 845 400 | 0.504 | 0.504 | 0.000 | 0.4874 |
+| 6+ | 1 683 503 | 0.547 | 0.541 | −0.007 | 0.4725 |
+
+Solo loses **+0.063 logloss** vs full team; size 2 loses +0.041. The
+δ_size + solo channel sliced the original +0.10 bias in half but
+the small-team residual is still the largest structural one.
+
+**`q_b_final` (post-training question hardness).** Strong U-shape:
+
+| b decile bucket | mean p̂ | actual | logloss |
+|---|---:|---:|---:|
+| b ≤ −0.29 (easiest) | 0.850 | 0.874 | 0.296 |
+| b ≈ 0.7 (balanced) | 0.562 | 0.562 | **0.591** |
+| b ≈ 1.2 | 0.490 | 0.484 | **0.611** |
+| b ≈ 1.6 | 0.411 | 0.401 | **0.601** |
+| b ≥ 2.7 (hardest) | 0.081 | 0.082 | 0.264 |
+
+This **isn't a bug** — it's the Shannon entropy of `Bernoulli(p)`,
+which peaks at `p = 0.5` (`H = ln 2 ≈ 0.693`). Even a perfect model
+must lose ~0.6 nats per obs near the middle. The corresponding
+"theoretical floor" relative to our actual values:
+
+| bucket | actual ll | Bernoulli(actual) ll | gap |
+|---|---:|---:|---:|
+| b ≤ −0.29 | 0.296 | 0.378 | +0.08 surplus (our model BEATS the actual-frequency baseline by predicting individual variation!) |
+| b ≈ 1.2 | 0.611 | 0.692 | +0.08 surplus |
+| b ≥ 2.7 | 0.264 | 0.286 | +0.02 |
+
+So the U-shape is fundamental and the model is consistently ~0.05–
+0.08 nats *better* than the per-bucket Bernoulli baseline across all
+buckets. **No room for "fixing" this**.
+
+**`tour_mean_take` (tournament hardness).** Same Bernoulli-driven
+shape:
+
+| take rate decile | logloss |
+|---|---:|
+| 0.12–0.39 | 0.448 |
+| 0.43–0.45 | 0.494 |
+| 0.50–0.53 | **0.505** |
+| 0.55–0.58 | 0.504 |
+| 0.62–0.78 | 0.473 |
+
+#### Trends about TEAMS
+
+**Roster experience: rookies are the EASIEST to predict.** This
+took me by surprise — gut said "rookies are noisy". Empirically:
+
+| `team_mean_games` decile | n | mean p̂ | actual | logloss |
+|---|---:|---:|---:|---:|
+| ≤ 32 (greenest team) | 400 468 | 0.389 | 0.360 | **0.4774** |
+| 33–75 | 401 449 | 0.413 | 0.405 | 0.4861 |
+| 76–128 | 401 319 | 0.436 | 0.439 | 0.4908 |
+| 129–185 | 400 992 | 0.460 | 0.465 | 0.4924 |
+| 186–248 | 399 976 | 0.483 | 0.490 | 0.4924 |
+| 249–325 | 402 115 | 0.510 | 0.516 | 0.4913 |
+| 326–411 | 401 318 | 0.538 | 0.546 | 0.4868 |
+| 411–541 | 400 920 | 0.563 | 0.573 | 0.4876 |
+| 541–735 | 401 439 | 0.591 | 0.602 | 0.4837 |
+| 735+ (most veteran) | 401 221 | 0.614 | 0.629 | 0.4881 |
+
+Reading: cold-start prior + rookies' typical low scores produce
+**low-variance "weak team" predictions** that match reality well.
+Ironically, the biggest residual variance in this list is at the
+veteran end (mean p̂ = 0.61, actual 0.63 — model under-predicts the
+strongest teams by ~2 pp, because they over-perform their mean θ
+slightly).
+
+The same effect on `team_min_games` (greenest player on the
+roster): bin 0 (≤13 games) logloss = 0.479, bin 9 (≥421 games on
+the WEAKEST link) logloss = 0.503 — **all-veteran rosters are the
+HARDEST to predict accurately**, probably because they self-select
+into the most demanding tournaments (hardness × variance).
+
+**Team strength `team_theta_mean` is essentially flat (`Δ = 0.003`).**
+Logloss bin 0 (θ̄ ≤ −1.6) = 0.473 vs bin 9 (θ̄ ≥ −0.29) = 0.470,
+peak in middle (0.497). Just the Bernoulli effect again — the model
+is well-calibrated across all skill bands.
+
+#### Nothing-to-see axes
+
+* `q_n_obs_train` collapses to one bucket — 99 % of test obs have
+  this = 0 (the question is new in test, by design). Doesn't
+  discriminate.
+* `q_first_app_size` (team count on the very first appearance of
+  the canonical, anywhere in the dataset) shows **no monotone
+  trend**: bin 0 (1–26 teams) logloss 0.478, bin 9 (≥282 teams)
+  logloss 0.491. So **the init pathology in §1.7 is NOT explained
+  by "small first sample"** — the worst-30 list is genuinely a tail
+  of `r` extremities (very near 0 or 1), not a sample-size phenomenon.
+
+#### Summary of new signals
+
+* **Small teams (size 1–3) are ~5–6 % of logloss above full teams.**
+  Lines up with §1.3; the next mitigation belongs there.
+* **Veteran-only rosters are slightly harder to predict (+2.5 % vs
+  greenest teams).** Selection effect — they play harder
+  tournaments. Not a model bug.
+* **Question hardness and tournament hardness curves are
+  Bernoulli-driven**, not model-driven. The model is ~0.05–0.08
+  nats *below* the per-bucket Bernoulli floor across all buckets,
+  i.e. it does extract individual-team signal on top of the
+  population baseline.
+* **Init pathology is about the take-rate tail, not the sample-size
+  tail.** Whatever fix we pick for §1.7 should care about extreme
+  `r`, not about "small first sample".
 
 ---
 
@@ -370,60 +567,105 @@ overfitting blow-up that K ≥ 2 brings.
 
 ## Conclusions and follow-up candidates
 
-### Where the model loses
+### What we learned (revised in light of test-time init mechanics)
 
-1. **Async quizzes drive the global error.** Logloss 0.517 on async
-  vs 0.448 offline / 0.482 sync; +0.010 mean residual (model
-   under-predicts). The 27/30 worst tournaments are async. Mitigations
-   that have NOT been tried yet:
-  - separate `b` distribution (or stronger regularisation toward the
-  async population mean);
-  - larger `w_size_async` for the under-predicted small-team strata.
-2. **Hard-clamp pathology on `b`.** A few hundred questions sit at the
-  `b ≈ +9.6` clamp (or beyond), then the test split has 30–50 % take
-   and the model loses 3–5 nats per observation. Pack-level shrinkage
-   was rejected previously, but only on the pre-θ̄-init engine; worth
-   re-trying with a **conservative pull toward the tournament-level
-   `b̄` for `cq` with `n_obs < 5`**.
-3. **Solo and 2-player residuals are still positive.** δ_size + solo
-  channel reduce the bias from ~+0.10 to +0.04 / +0.02 but selection
-   bias (strong soloists) lingers.
-4. **All player-level residuals concentrate in rookies (≤ 70 games).**
-  Suggests the cold-start prior is the right thing to keep working
-   on; nothing structurally wrong with the established-player tail.
+1. **The biggest unknown is no longer "where does the model lose
+   the most" but "is our metric measuring the right thing".**
+   Because pack contents almost never repeat across tournaments
+   (99.0 % of test canonicals are first seen in their own test
+   tournament), every test prediction relies on a `b` initialised
+   from THAT tournament's take rate. The headline 0.488 logloss is
+   thus a hybrid of "how well θ predicts forward" and "how well the
+   init formula calibrates to a freshly-observed take rate". For
+   any forward-looking use we don't have a number yet; we need a
+   take-rate-free init evaluated on the same split.
 
-### Things to try next (in rough cost order)
+2. **The init formula does most of the work for new questions, and
+   it does it well — on average.** Calibration is excellent (ECE =
+   0.011) and 60 000 first-appearance questions average to
+   logloss ≈ 0.49. Where it fails is the small-sample tail: the
+   25 of 30 worst test questions all have first-appearance team
+   count below ~50 with extreme take rate (very near 0 or 1), and
+   the formula sends `b` to the ±clamp.
 
-1. **Adopt `n_extra_epochs = 1` as default.** −0.0065 logloss / +0.003
-   AUC for ~30 % more wallclock per nightly retrain. The gain is
-   concentrated exactly in the slices Part 1 flagged (async, hard
-   tournaments, clamped questions). NOTE: re-tuning of `eta0` /
-   regularisation could push the optimum further; current sweep was
-   only over `K`.
-2. Re-try **pack-level shrinkage** with conservative weight (`w ≤
-   0.05`) only for canonical questions with very few observations
-   (Part 1 §1.7 + Part 2 §2.5 both point to the clamp pathology as
-   the single biggest residual source).
-3. **Async-specific `b` regulariser** centred on async population mean
-   (instead of zero).
-4. **Noisy-OR-weighted player residual attribution** in
-   `analyse_errors.py` — to confirm the rookie-only pattern.
-5. **Per-tournament `b` shift** (reintroduce `ε_t` but with a stronger
-   prior) — would directly absorb the pathological per-tournament
-   residuals seen on Brain Link 3 / ШАНс-2.
+3. **Async drives the global error** (0.517 vs 0.448 offline /
+   0.482 sync; +0.010 mean residual). Same population-of-questions
+   problem: async-online packs come from a different writer pool /
+   audience pool and the per-mode update weights alone don't absorb
+   that. Could be init-formula problem (theta_bar there is biased
+   downward by online-quiz crowd) or update-weight problem.
 
-### What we learned from multi-epoch
+4. **Multi-epoch (`n_extra_epochs = 1`) gives `−0.0065` logloss
+   and concentrates exactly on async / hard tournaments**, but its
+   gain is partly an artefact of the same in-sample leak: extra
+   epochs improve the precomputed θ's, which then make the test-time
+   init formula more accurate (because `θ̄` in the init becomes
+   tighter). Without re-running multi-epoch alongside a
+   take-rate-free init we can't separate "more SGD helps" from
+   "tighter θ helps the leak".
 
-* The single-pass online model **is genuinely under-trained** by
-  about one epoch's worth of gradient updates — and the under-training
-  manifests **exactly** as the residual pattern Part 1 found.
-* The mechanism is **questions whose `b` is clamped at ~+9.6** during
-  the single pass: one extra epoch un-clamps them (Δb ≈ 1–3) and the
-  test logloss on async / hard tournaments drops by 1–3 %.
-* K ≥ 2 over-fits — typical small-sample players' θ runs to the ±10
-  clamp.
-* No retuning was tried alongside `n_extra_epochs`; if we adopt
-  `K = 1` as the default we should re-sweep `eta0`, `reg_b`, and the
-  `w_*_questions` weights to see if a slightly smaller learning rate
-  + 2 epochs beats the current K = 1 result. Cheap follow-up
-  experiment.
+5. **Player-level residuals concentrate in rookies (< 70 games).**
+   Nothing structurally wrong with established players. Cold-start
+   prior keeps working as expected.
+
+6. **Solo / 2-player residuals are still slightly positive (+0.04 /
+   +0.02)** — selection bias most likely.
+
+### Things to try next (revised priority order)
+
+The mechanics review suggests reordering around init quality first,
+fairness of the metric second, and other things later:
+
+1. **Take-rate-free `b` init (decouples test from in-sample leak).**
+   Replace the existing formula with:
+   `b = b̄_mode + θ̄`
+   for canonical questions on their FIRST APPEARANCE in any
+   tournament, where `b̄_mode` is a running per-mode median of `b`
+   over already-trained canonicals. Take rate from the current
+   tournament is no longer used. Two experiments to run together:
+   * (a) honest-mode backtest with this init — gives us a true
+     forward-looking number;
+   * (b) keep current init but ALSO record the honest-mode
+     prediction as a side channel — lets us measure the
+     leak-attributable portion of every gain we've ever claimed.
+
+2. **Tame the init at the EXTREME-rate tail** (NOT the small-sample
+   tail — §1.9 confirmed first-appearance team count is uncorrelated
+   with logloss). Laplace shrinkage `r' = (k+1)/(n+2)` automatically
+   pulls `r` away from 0/1 in proportion to sample size, plus
+   hard-clip `b` init to `[-3, +6]` to give SGD a chance to recover
+   when the formula does send `b` to ±∞. Cheap defensive fix.
+
+3. **Re-run `n_extra_epochs` sweep on top of (1)+(2).** Multi-epoch
+   may keep most of its gain (because more SGD helps the per-mode
+   `b̄` accumulate) or it may collapse (if leak was the whole
+   story). Cheap to find out.
+
+4. **Async-specific init / regulariser**: per-mode `b̄_mode` already
+   addresses some of this; the next step is per-mode `θ̄_mode`
+   correction (online-quiz audience is on average weaker than
+   sync, the global θ̄ shrinkage in init under-corrects for that).
+
+5. **Per-tournament `b` shift `ε_t` with a strong prior.** Was
+   removed in 2026-04 because the global gain was net-negative,
+   but it could specifically help the Brain Link 3 / ШАНс-2 type
+   of outlier tournament.
+
+6. **Noisy-OR-weighted player residual attribution** in
+   `analyse_errors.py` — to confirm the rookie-only pattern more
+   rigorously.
+
+7. **Re-tune `δ_size` / `w_solo`** specifically for the size-1 / 2
+   tail. §1.9 shows the largest remaining structural residual is on
+   small teams (logloss +0.06 for solo, +0.04 for pairs). Could
+   also try giving size-1 / 2 their own per-mode update weights.
+
+### What we'd NOT prioritise any more
+
+* **"Excluding true graveyards"** — empirically negligible
+  (`scripts/check_dead_questions.py` shows 1.35 % of obs, with
+   `ll ≈ 0` per obs and `∂L/∂· ≈ 0`). Cosmetic at best.
+
+* **Pack-level shrinkage as a top-level fix** — the previous
+  rejection was on the pre-θ̄-init engine; (2) above subsumes it
+  in a less invasive form (just on the init, not on the SGD path).
