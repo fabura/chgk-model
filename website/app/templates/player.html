@@ -31,6 +31,7 @@
     · последняя игра: {{ player.last_game_date.isoformat() }}
     {% endif %}
     · ID: {{ player.player_id }}
+    · <a href="/compare?ids={{ player.player_id }}" class="text-indigo-700 hover:underline">сравнить с другими →</a>
   </div>
   {% if decay_diff > 0.001 %}
   <p class="mt-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2">

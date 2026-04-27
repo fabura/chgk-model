@@ -772,6 +772,306 @@ def methodology(request: Request):
 
 
 # ---------------------------------------------------------------------------
+# Compare players (2-5 players overlaid on charts + common tournaments)
+# ---------------------------------------------------------------------------
+
+
+MAX_COMPARE_PLAYERS = 5
+
+
+def _parse_compare_ids(ids_param: str) -> list[int]:
+    """Parse a comma-separated id list, dedupe, ignore non-ints, cap to max."""
+    if not ids_param:
+        return []
+    seen: set[int] = set()
+    out: list[int] = []
+    for tok in ids_param.split(","):
+        tok = tok.strip()
+        if not tok or not tok.lstrip("-").isdigit():
+            continue
+        pid = int(tok)
+        if pid in seen:
+            continue
+        seen.add(pid)
+        out.append(pid)
+        if len(out) >= MAX_COMPARE_PLAYERS:
+            break
+    return out
+
+
+@app.get("/compare", response_class=HTMLResponse)
+def compare_players(
+    request: Request,
+    ids: str = Query("", max_length=200),
+    add: str = Query("", max_length=100),
+):
+    """Side-by-side comparison of 2-5 players."""
+    player_ids = _parse_compare_ids(ids)
+
+    players_by_id: dict[int, dict] = {}
+    if player_ids:
+        rows = db.query(
+            f"""
+            SELECT player_id, last_name, first_name, theta, theta_display,
+                   games, last_game_date
+            FROM players
+            WHERE player_id IN ({','.join('?' * len(player_ids))})
+            """,
+            player_ids,
+        )
+        players_by_id = {r["player_id"]: r for r in rows}
+    # Drop ids that didn't resolve, keep URL order.
+    players = [players_by_id[pid] for pid in player_ids if pid in players_by_id]
+    player_ids = [p["player_id"] for p in players]
+    selected_set = set(player_ids)
+
+    # "+ add player" suggestions (driven by the inline form).
+    add = add.strip()
+    suggestions: list[dict] = []
+    if add and len(player_ids) < MAX_COMPARE_PLAYERS:
+        if add.isdigit():
+            row = db.query_one(
+                "SELECT player_id, last_name, first_name, theta, games "
+                "FROM players WHERE player_id = ?",
+                [int(add)],
+            )
+            if row:
+                suggestions = [row]
+        if not suggestions:
+            tokens = [t for t in add.split() if t]
+            if tokens:
+                cond = (
+                    "(last_name ILIKE '%' || ? || '%' "
+                    "OR first_name ILIKE '%' || ? || '%')"
+                )
+                where = " AND ".join(cond for _ in tokens)
+                params: list = []
+                for t in tokens:
+                    params.extend([t, t])
+                suggestions = db.query(
+                    f"""
+                    SELECT player_id, last_name, first_name, theta, games
+                    FROM players
+                    WHERE {where}
+                    ORDER BY theta DESC
+                    LIMIT 15
+                    """,
+                    params,
+                )
+        suggestions = [s for s in suggestions if s["player_id"] not in selected_set]
+
+    # θ + rank history (single batched query).
+    history_by_player: dict[int, list[dict]] = {pid: [] for pid in player_ids}
+    if player_ids:
+        history_rows = db.query(
+            f"""
+            SELECT
+                ph.player_id, ph.theta, ph.rank_global, ph.n_active,
+                t.tournament_id, t.title, t.start_date
+            FROM player_history ph
+            JOIN tournaments t USING (tournament_id)
+            WHERE ph.player_id IN ({','.join('?' * len(player_ids))})
+            ORDER BY t.start_date NULLS LAST, t.tournament_id
+            """,
+            player_ids,
+        )
+        for r in history_rows:
+            history_by_player.setdefault(r["player_id"], []).append(r)
+
+    # Common tournaments (≥ 2 of the selected players played).
+    common_tournaments: list[dict] = []
+    if len(player_ids) >= 2:
+        rows = db.query(
+            f"""
+            WITH sel AS (
+                SELECT pg.tournament_id, pg.player_id, pg.team_id, pg.theta_after
+                FROM player_games pg
+                WHERE pg.player_id IN ({','.join('?' * len(player_ids))})
+            ),
+            shared AS (
+                SELECT tournament_id
+                FROM sel
+                GROUP BY tournament_id
+                HAVING COUNT(DISTINCT player_id) >= 2
+            )
+            SELECT
+                s.tournament_id,
+                t.title,
+                t.type,
+                t.start_date,
+                t.n_questions,
+                s.player_id,
+                s.team_id,
+                tg.team_name,
+                tg.score_actual,
+                tg.expected_takes,
+                tg.place,
+                s.theta_after
+            FROM sel s
+            JOIN shared USING (tournament_id)
+            JOIN tournaments t USING (tournament_id)
+            LEFT JOIN team_games tg USING (tournament_id, team_id)
+            ORDER BY t.start_date DESC NULLS LAST, t.tournament_id DESC,
+                     s.player_id
+            """,
+            player_ids,
+        )
+        bucket: dict[int, dict] = {}
+        for r in rows:
+            tid = r["tournament_id"]
+            if tid not in bucket:
+                bucket[tid] = {
+                    "tournament_id": tid,
+                    "title": r["title"],
+                    "type": r["type"],
+                    "start_date": r["start_date"],
+                    "n_questions": r["n_questions"],
+                    "by_player": {},
+                }
+            bucket[tid]["by_player"][r["player_id"]] = {
+                "team_id": r["team_id"],
+                "team_name": r["team_name"],
+                "score_actual": r["score_actual"],
+                "expected_takes": r["expected_takes"],
+                "place": r["place"],
+                "theta_after": r["theta_after"],
+            }
+        for v in bucket.values():
+            team_ids = {p["team_id"] for p in v["by_player"].values()}
+            v["same_team"] = len(team_ids) == 1 and len(v["by_player"]) >= 2
+            v["n_present"] = len(v["by_player"])
+        # bucket already preserves insertion order which mirrors the SQL ordering
+        common_tournaments = list(bucket.values())
+
+    # Yearly side-by-side (only years where ≥1 selected player has ≥10 games).
+    yearly_by_year: list[dict] = []
+    if player_ids:
+        rows = db.query(
+            f"""
+            WITH games_by_year AS (
+                SELECT
+                    ph.player_id,
+                    EXTRACT(year FROM t.start_date)::INT AS yr,
+                    t.start_date,
+                    ph.theta
+                FROM player_history ph
+                JOIN tournaments t USING (tournament_id)
+                WHERE t.start_date IS NOT NULL
+            ),
+            per_player_year AS (
+                SELECT player_id, yr,
+                       COUNT(*) AS n_games,
+                       ARG_MAX(theta, start_date) AS end_theta
+                FROM games_by_year
+                GROUP BY player_id, yr
+                HAVING COUNT(*) >= 10
+            ),
+            sel_yrs AS (
+                SELECT DISTINCT yr FROM per_player_year
+                WHERE player_id IN ({','.join('?' * len(player_ids))})
+            ),
+            agg AS (
+                SELECT yr,
+                       COUNT(*) AS pop,
+                       approx_quantile(end_theta, 0.5) AS p50,
+                       approx_quantile(end_theta, 0.95) AS p95,
+                       approx_quantile(end_theta, 0.99) AS p99
+                FROM per_player_year
+                WHERE yr IN (SELECT yr FROM sel_yrs)
+                GROUP BY yr
+            ),
+            sel AS (
+                SELECT pp.yr, pp.player_id, pp.n_games, pp.end_theta,
+                       (SELECT COUNT(*) FROM per_player_year p2
+                        WHERE p2.yr = pp.yr AND p2.end_theta < pp.end_theta) AS n_below
+                FROM per_player_year pp
+                WHERE pp.player_id IN ({','.join('?' * len(player_ids))})
+            )
+            SELECT s.yr, s.player_id, s.n_games, s.end_theta,
+                   a.pop, a.p50, a.p95, a.p99,
+                   s.n_below,
+                   (s.n_below * 1.0 / NULLIF(a.pop, 0)) AS pct_below
+            FROM sel s JOIN agg a USING (yr)
+            ORDER BY s.yr, s.player_id
+            """,
+            player_ids + player_ids,
+        )
+        bucket_y: dict[int, dict] = {}
+        for r in rows:
+            yr = int(r["yr"])
+            if yr not in bucket_y:
+                bucket_y[yr] = {
+                    "yr": yr,
+                    "pop": int(r["pop"]),
+                    "p50": r["p50"],
+                    "p95": r["p95"],
+                    "p99": r["p99"],
+                    "by_player": {},
+                }
+            bucket_y[yr]["by_player"][r["player_id"]] = {
+                "n_games": int(r["n_games"]),
+                "end_theta": r["end_theta"],
+                "pct_below": r["pct_below"],
+            }
+        yearly_by_year = sorted(bucket_y.values(), key=lambda v: v["yr"])
+
+    chart_series = [
+        {
+            "player_id": pid,
+            "name": _player_full_name(p),
+            "theta_points": [
+                {
+                    "date": (h["start_date"].isoformat()
+                             if h["start_date"] else None),
+                    "theta": h["theta"],
+                    "title": h["title"],
+                }
+                for h in history_by_player.get(pid, [])
+            ],
+            "rank_points": [
+                {
+                    "date": (h["start_date"].isoformat()
+                             if h["start_date"] else None),
+                    "rank": h["rank_global"],
+                    "n_active": h["n_active"],
+                    "title": h["title"],
+                }
+                for h in history_by_player.get(pid, [])
+                if h["rank_global"] and h["rank_global"] > 0
+            ],
+        }
+        for pid, p in zip(player_ids, players)
+    ]
+
+    def _ids_without(pid: int) -> str:
+        return ",".join(str(i) for i in player_ids if i != pid)
+
+    def _ids_with(pid: int) -> str:
+        return ",".join(str(i) for i in player_ids + [pid])
+
+    remove_url = {pid: _ids_without(pid) for pid in player_ids}
+    add_url = {s["player_id"]: _ids_with(s["player_id"]) for s in suggestions}
+
+    return templates.TemplateResponse(
+        request,
+        "compare.html",
+        {
+            "player_ids": player_ids,
+            "ids_csv": ",".join(str(i) for i in player_ids),
+            "players": players,
+            "max_players": MAX_COMPARE_PLAYERS,
+            "add_query": add,
+            "suggestions": suggestions,
+            "remove_url": remove_url,
+            "add_url": add_url,
+            "chart_series_json": json.dumps(chart_series, ensure_ascii=False),
+            "common_tournaments": common_tournaments,
+            "yearly_by_year": yearly_by_year,
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
 # Search (basic)
 # ---------------------------------------------------------------------------
 

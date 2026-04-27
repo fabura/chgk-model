@@ -1,0 +1,305 @@
+{% extends "base.html" %}
+{% block title %}Сравнение игроков — ChGK Model{% endblock %}
+
+{% block head_extra %}
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+{% endblock %}
+
+{% block content %}
+<div class="mb-6">
+  <h1 class="text-2xl font-semibold">Сравнение игроков</h1>
+  <p class="text-sm text-slate-600 mt-1">
+    До {{ max_players }} игроков на одной странице — оверлей θ во времени, места в рейтинге, годовые перцентили и общие турниры.
+  </p>
+</div>
+
+<section class="bg-white border border-slate-200 rounded shadow-sm mb-6 p-4">
+  <h2 class="text-sm font-medium text-slate-600 mb-3">
+    Выбраны: {{ players|length }} / {{ max_players }}
+  </h2>
+  {% if players %}
+  <div class="flex flex-wrap gap-2 mb-3">
+    {% for p in players %}
+    <span class="inline-flex items-center gap-2 bg-indigo-50 border border-indigo-200 rounded-full pl-3 pr-2 py-1 text-sm">
+      <a href="/player/{{ p.player_id }}" class="text-indigo-700 hover:underline">{{ p|fullname }}</a>
+      <span class="text-indigo-400 num text-xs">θ {{ "%.2f"|format(p.theta_display) }}</span>
+      <a href="/compare?ids={{ remove_url[p.player_id] }}"
+         title="Убрать из сравнения"
+         class="w-5 h-5 inline-flex items-center justify-center text-slate-500 hover:text-rose-600 hover:bg-rose-50 rounded-full leading-none">×</a>
+    </span>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="text-slate-500 text-sm mb-3">Игроки ещё не выбраны — добавьте через поиск ниже.</p>
+  {% endif %}
+
+  {% if players|length < max_players %}
+  <form action="/compare" method="get" class="flex gap-2 items-center">
+    <input type="hidden" name="ids" value="{{ ids_csv }}">
+    <input type="text" name="add" value="{{ add_query }}" placeholder="Фамилия / имя / ID игрока"
+           class="border border-slate-300 rounded px-3 py-1 text-sm w-72 focus:outline-none focus:ring focus:ring-indigo-200"
+           autofocus>
+    <button type="submit" class="bg-indigo-600 text-white text-sm px-3 py-1 rounded hover:bg-indigo-700">Найти</button>
+    {% if add_query %}
+    <a href="/compare?ids={{ ids_csv }}" class="text-xs text-slate-500 hover:text-slate-700">сбросить поиск</a>
+    {% endif %}
+  </form>
+
+  {% if add_query %}
+    {% if suggestions %}
+    <ul class="mt-3 bg-slate-50 border border-slate-200 rounded divide-y divide-slate-100">
+      {% for s in suggestions %}
+      <li class="px-3 py-2 flex justify-between items-center text-sm">
+        <span>
+          <a href="/player/{{ s.player_id }}" class="text-indigo-700 hover:underline">{{ s|fullname }}</a>
+          <span class="text-slate-500 num ml-2">θ {{ "%.2f"|format(s.theta) }} · {{ s.games }} игр</span>
+          <span class="text-slate-400 text-xs ml-2">id {{ s.player_id }}</span>
+        </span>
+        <a href="/compare?ids={{ add_url[s.player_id] }}"
+           class="text-xs bg-emerald-600 text-white px-2 py-1 rounded hover:bg-emerald-700">+ добавить</a>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="mt-3 text-sm text-slate-500">По запросу «{{ add_query }}» ничего не нашлось (или все совпадения уже выбраны).</p>
+    {% endif %}
+  {% endif %}
+  {% else %}
+  <p class="text-xs text-slate-500">Достигнут лимит в {{ max_players }} игроков. Уберите кого-нибудь, чтобы добавить нового.</p>
+  {% endif %}
+</section>
+
+{% if players|length >= 1 %}
+<section class="bg-white border border-slate-200 rounded shadow-sm mb-6">
+  <h2 class="px-4 py-2 text-sm font-medium text-slate-600 border-b border-slate-100">Сводка</h2>
+  <div class="overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead class="bg-slate-100 text-slate-600 uppercase text-xs">
+        <tr>
+          <th class="px-3 py-2 text-left">Игрок</th>
+          <th class="px-3 py-2 text-right">θ (текущ.)</th>
+          <th class="px-3 py-2 text-right">θ модели</th>
+          <th class="px-3 py-2 text-right">Игр</th>
+          <th class="px-3 py-2 text-left">Последняя игра</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for p in players %}
+        <tr class="border-t border-slate-100 hover:bg-slate-50">
+          <td class="px-3 py-2">
+            <a href="/player/{{ p.player_id }}" class="text-indigo-700 hover:underline">{{ p|fullname }}</a>
+            <span class="text-slate-400 text-xs ml-2">id {{ p.player_id }}</span>
+          </td>
+          <td class="px-3 py-2 text-right num font-medium">{{ "%.3f"|format(p.theta_display) if p.theta_display is not none else "%.3f"|format(p.theta) }}</td>
+          <td class="px-3 py-2 text-right num text-slate-500">{{ "%.3f"|format(p.theta) }}</td>
+          <td class="px-3 py-2 text-right num text-slate-600">{{ p.games }}</td>
+          <td class="px-3 py-2 text-slate-600">{{ p.last_game_date.isoformat() if p.last_game_date else "" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+
+{% if players|length >= 1 %}
+<section class="bg-white border border-slate-200 rounded shadow-sm mb-6">
+  <h2 class="px-4 py-2 text-sm font-medium text-slate-600 border-b border-slate-100">θ во времени</h2>
+  <div id="theta-chart" style="height: 360px;"></div>
+</section>
+
+<section class="bg-white border border-slate-200 rounded shadow-sm mb-6">
+  <div class="flex items-baseline justify-between px-4 py-2 border-b border-slate-100">
+    <h2 class="text-sm font-medium text-slate-600">Место в общем рейтинге во времени</h2>
+    <span class="text-xs text-slate-500">среди активных игроков (≥30 игр, играл в последние 365 дней)</span>
+  </div>
+  <div id="rank-chart" style="height: 360px;"></div>
+</section>
+{% endif %}
+
+{% if yearly_by_year and players|length >= 1 %}
+<section class="bg-white border border-slate-200 rounded shadow-sm mb-6">
+  <div class="flex items-baseline justify-between px-4 py-2 border-b border-slate-100">
+    <h2 class="text-sm font-medium text-slate-600">Относительная позиция по годам</h2>
+    <span class="text-xs text-slate-500">θ на конец года (среди активных, ≥10 игр в году)</span>
+  </div>
+  <div class="overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead class="bg-slate-100 text-slate-600 uppercase text-xs">
+        <tr>
+          <th class="px-3 py-2 text-left">Год</th>
+          <th class="px-3 py-2 text-right">Активных</th>
+          <th class="px-3 py-2 text-right">p50</th>
+          <th class="px-3 py-2 text-right">p95</th>
+          <th class="px-3 py-2 text-right">p99</th>
+          {% for p in players %}
+          <th class="px-3 py-2 text-right border-l border-slate-200">{{ p|fullname }}</th>
+          {% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in yearly_by_year %}
+        <tr class="border-t border-slate-100 hover:bg-slate-50">
+          <td class="px-3 py-2 font-medium">{{ r.yr }}</td>
+          <td class="px-3 py-2 text-right num text-slate-500">{{ r["pop"] }}</td>
+          <td class="px-3 py-2 text-right num text-slate-500">{{ "%+.3f"|format(r.p50) }}</td>
+          <td class="px-3 py-2 text-right num text-slate-500">{{ "%+.3f"|format(r.p95) }}</td>
+          <td class="px-3 py-2 text-right num text-slate-500">{{ "%+.3f"|format(r.p99) }}</td>
+          {% for p in players %}
+            {% set entry = r.by_player.get(p.player_id) %}
+            <td class="px-3 py-2 text-right num border-l border-slate-200">
+              {% if entry %}
+                <span class="font-medium">{{ "%+.3f"|format(entry.end_theta) }}</span>
+                {% if entry.pct_below is not none %}
+                <span class="text-slate-400 text-xs"> ({{ "%.0f"|format(100 * entry.pct_below) }}%)</span>
+                {% endif %}
+              {% else %}
+                <span class="text-slate-300">—</span>
+              {% endif %}
+            </td>
+          {% endfor %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="px-4 py-2 text-xs text-slate-500 border-t border-slate-100">
+    В скобках — перцентиль среди активных за год (выше = лучше). «—» означает, что у игрока было меньше 10 игр в этом году.
+  </div>
+</section>
+{% endif %}
+
+{% if players|length >= 2 %}
+<section class="bg-white border border-slate-200 rounded shadow-sm mb-6">
+  <div class="flex items-baseline justify-between px-4 py-2 border-b border-slate-100">
+    <h2 class="text-sm font-medium text-slate-600">Общие турниры ({{ common_tournaments|length }})</h2>
+    <span class="text-xs text-slate-500">где играли минимум двое из выбранных</span>
+  </div>
+  {% if common_tournaments %}
+  <div class="overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead class="bg-slate-100 text-slate-600 uppercase text-xs">
+        <tr>
+          <th class="px-3 py-2 text-left">Дата</th>
+          <th class="px-3 py-2 text-left">Турнир</th>
+          <th class="px-3 py-2 text-left">Тип</th>
+          {% for p in players %}
+          <th class="px-3 py-2 text-left border-l border-slate-200">{{ p|fullname }}</th>
+          {% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for t in common_tournaments %}
+        <tr class="border-t border-slate-100 hover:bg-slate-50">
+          <td class="px-3 py-2 text-slate-600 whitespace-nowrap">{{ t.start_date.isoformat() if t.start_date else "" }}</td>
+          <td class="px-3 py-2">
+            <a href="/tournament/{{ t.tournament_id }}" class="text-indigo-700 hover:underline">{{ t.title }}</a>
+            {% if t.same_team %}
+            <span class="ml-2 inline-block text-[10px] uppercase bg-emerald-100 text-emerald-700 rounded px-1.5 py-0.5 align-middle">в одной команде</span>
+            {% endif %}
+          </td>
+          <td class="px-3 py-2 text-slate-600">{{ t.type|type_label }}</td>
+          {% for p in players %}
+            {% set entry = t.by_player.get(p.player_id) %}
+            <td class="px-3 py-2 text-sm border-l border-slate-200 align-top">
+              {% if entry %}
+                {% if entry.team_name %}
+                <a href="/team/{{ entry.team_id }}" class="text-indigo-700 hover:underline">{{ entry.team_name }}</a>
+                {% else %}
+                <span class="text-slate-500">—</span>
+                {% endif %}
+                <div class="text-xs text-slate-500 mt-0.5">
+                  {% if entry.score_actual is not none %}
+                  <span class="num">{{ entry.score_actual }}/{{ t.n_questions }}</span>
+                  {% endif %}
+                  {% if entry.place %}
+                  · место <span class="num">#{{ entry.place|int }}</span>
+                  {% endif %}
+                  {% if entry.theta_after is not none %}
+                  · θ <span class="num">{{ "%.2f"|format(entry.theta_after) }}</span>
+                  {% endif %}
+                </div>
+              {% else %}
+                <span class="text-slate-300">—</span>
+              {% endif %}
+            </td>
+          {% endfor %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="px-4 py-3 text-sm text-slate-500">Общих турниров нет — выбранные игроки никогда не пересекались на одном турнире.</p>
+  {% endif %}
+</section>
+{% endif %}
+
+{% if players|length >= 1 %}
+<script>
+(function() {
+  const series = {{ chart_series_json|safe }};
+  if (!series.length) return;
+
+  const palette = ['#4f46e5', '#dc2626', '#059669', '#d97706', '#7c3aed'];
+
+  const thetaTraces = series.map((s, i) => {
+    const color = palette[i % palette.length];
+    const pts   = s.theta_points;
+    return {
+      x: pts.map(p => p.date),
+      y: pts.map(p => p.theta),
+      text: pts.map(p => p.title || ""),
+      name: s.name,
+      type: 'scatter', mode: 'lines+markers',
+      line: { color: color, width: 1.5 },
+      marker: { size: 4, color: color },
+      hovertemplate: '<b>' + s.name + '</b><br>%{x}<br>%{text}<br>θ = %{y:.3f}<extra></extra>',
+    };
+  });
+  Plotly.newPlot('theta-chart', thetaTraces, {
+    margin: { l: 50, r: 20, t: 10, b: 40 },
+    xaxis: { type: 'date', gridcolor: '#f1f5f9' },
+    yaxis: { title: 'θ', gridcolor: '#f1f5f9' },
+    plot_bgcolor: 'white',
+    legend: { orientation: 'h', y: -0.2 },
+    hovermode: 'closest',
+  }, { displayModeBar: false, responsive: true });
+
+  const rankTraces = series
+    .map((s, i) => ({ s: s, color: palette[i % palette.length] }))
+    .filter(o => o.s.rank_points.length > 0)
+    .map(o => {
+      const pts = o.s.rank_points;
+      return {
+        x: pts.map(p => p.date),
+        y: pts.map(p => p.rank),
+        text: pts.map(p => p.title || ""),
+        customdata: pts.map(p => p.n_active || 0),
+        name: o.s.name,
+        type: 'scatter', mode: 'lines+markers',
+        line: { color: o.color, width: 1.5 },
+        marker: { size: 4, color: o.color },
+        hovertemplate:
+          '<b>' + o.s.name + '</b><br>%{x}<br>%{text}<br>' +
+          'место: <b>#%{y}</b> из %{customdata}<extra></extra>',
+      };
+    });
+  if (rankTraces.length) {
+    Plotly.newPlot('rank-chart', rankTraces, {
+      margin: { l: 60, r: 20, t: 10, b: 40 },
+      xaxis: { type: 'date', gridcolor: '#f1f5f9' },
+      yaxis: {
+        title: 'место в общем рейтинге',
+        gridcolor: '#f1f5f9',
+        autorange: 'reversed',
+      },
+      plot_bgcolor: 'white',
+      legend: { orientation: 'h', y: -0.2 },
+      hovermode: 'closest',
+    }, { displayModeBar: false, responsive: true });
+  }
+})();
+</script>
+{% endif %}
+{% endblock %}
