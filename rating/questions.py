@@ -29,9 +29,13 @@ class QuestionState:
     def init_from_take_rate(
         self,
         idx: int,
-        take_rate: float,
+        takes_sum: int,
+        n_obs: int,
         team_size_avg: float = 1.0,
         theta_bar: float | None = None,
+        laplace_alpha: float = 0.0,
+        b_clip_lo: float = -10.0,
+        b_clip_hi: float = 10.0,
     ) -> None:
         """Initialise b from empirical take rate.
 
@@ -55,18 +59,38 @@ class QuestionState:
           played the question.  Removes the residual leak of pack
           hardness into player θ on strong-roster tournaments
           (Высшая лига Москвы, Гран-при etc.).
+
+        Defensive corrections (see docs/error_structure_2026-04.md):
+
+        * ``laplace_alpha`` — Beta(α, α) shrinkage of the observed
+          take rate before the formula: ``r' = (k+α)/(n+2α)``.
+          α=0 = legacy (no shrinkage); α=1 = classical Laplace
+          (rule of succession).  Pulls extreme rates (0 or 1) away
+          from the boundary in proportion to sample size, which
+          stops ``b`` from running off to ±∞ on small samples with
+          all-0 or all-1 takes.
+        * ``b_clip_lo`` / ``b_clip_hi`` — hard clamp on the
+          initialised ``b``.  SGD can still escape this range later;
+          this only governs the starting point.
         """
-        r = max(min(take_rate, 1.0 - 1e-6), 1e-6)
+        # Laplace shrinkage on the observed take rate.
+        k = float(takes_sum)
+        n_o = max(int(n_obs), 1)
+        a = max(float(laplace_alpha), 0.0)
+        r = (k + a) / (n_o + 2.0 * a)
+        # Numerical safety after shrinkage.
+        r = max(min(r, 1.0 - 1e-6), 1e-6)
         n = max(float(team_size_avg), 1.0)
         neg_log_1mr = -math.log(max(1.0 - r, 1e-12))
         if theta_bar is not None:
-            self.b[idx] = (
+            b_val = (
                 math.log(n) + float(theta_bar) - math.log(max(neg_log_1mr, 1e-12))
             )
         elif n <= 1.0:
-            self.b[idx] = -math.log(r)
+            b_val = -math.log(r)
         else:
-            self.b[idx] = math.log(n) - math.log(max(neg_log_1mr, 1e-12))
+            b_val = math.log(n) - math.log(max(neg_log_1mr, 1e-12))
+        self.b[idx] = max(min(b_val, float(b_clip_hi)), float(b_clip_lo))
         self.log_a[idx] = 0.0
         self.initialized[idx] = True
 

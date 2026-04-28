@@ -669,3 +669,156 @@ fairness of the metric second, and other things later:
 * **Pack-level shrinkage as a top-level fix** — the previous
   rejection was on the pre-θ̄-init engine; (2) above subsumes it
   in a less invasive form (just on the init, not on the SGD path).
+
+* **Curriculum filter on the SGD path** — see §3 below; tried
+  exactly this idea, monotone hurts.
+
+* **Per-mode `δ_size[mode][size]`** — see §4 below; the +0.04 / +0.02
+  residual on small teams turned out to be uniform across modes
+  (offline / sync / async cells all within ±0.01 of each other),
+  and a single global δ_size sweep recovered ~96 % of the
+  size-only post-hoc upper bound.  Per-mode adds < 0.0001 logloss.
+
+---
+
+## Part 3. Curriculum filter on the SGD path
+
+### 3.1 Hypothesis
+
+If the noise on θ comes from "lottery" questions — those with very
+few takes (or very few non-takes) across the whole dataset — then
+those rare-event observations send a one-shot, large-magnitude
+gradient kick to whichever players happened to be on the lucky
+side, indistinguishable from luck.  Skipping them on the SGD path
+(but keeping them for init and for prediction, so backtest stays
+honest) might stabilise θ and improve generalisation, especially on
+async / hard packs where "lottery" obs are most common.
+
+### 3.2 Setup
+
+* Added `Config.curriculum_min_events: int = 0` (legacy = no filter).
+* For each canonical question, pre-compute
+  `min_events = min(takes_q, n_q − takes_q)` over the **whole**
+  dataset (train + test — global property of the question).
+* On the SGD update path (single pass + extra epochs), skip any
+  observation whose canonical falls below `curriculum_min_events`.
+* Init from take rate, predictions, per-player `games` counters,
+  decay and recentre statistics are all left **unchanged** — only
+  the gradient signal on lottery obs is suppressed.
+* Sweep N ∈ {0, 1, 3, 5, 10}.  Script: `scripts/exp_curriculum.py`.
+  Raw CSV: `results/exp_curriculum.csv`.
+
+### 3.3 Results — hypothesis falsified
+
+| `min_events` | logloss | brier | auc | offline | sync | async | q4 | θ_std |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| **0** | **0.48767** | **0.16053** | **0.84553** | 0.44827 | 0.48181 | 0.51719 | 0.49902 | 0.525 |
+| 1 | 0.48767 | 0.16053 | 0.84553 | 0.44828 | 0.48181 | 0.51718 | 0.49902 | 0.525 |
+| 3 | 0.48771 | 0.16055 | 0.84550 | 0.44838 | 0.48183 | 0.51724 | 0.49866 | 0.520 |
+| 5 | 0.48779 | 0.16059 | 0.84543 | 0.44859 | 0.48188 | 0.51732 | 0.49984 | 0.513 |
+| 10 | 0.48818 | 0.16077 | 0.84507 | 0.44960 | 0.48214 | 0.51763 | 0.49940 | 0.492 |
+
+Effects are tiny (Δlogloss ≤ +5e-4) but **monotonically negative**
+on every metric, in every slice — including async and the hardest
+quartile, exactly where we hoped to gain.
+
+### 3.4 Interpretation
+
+* `θ_std` shrinks systematically (0.525 → 0.492 going N=0→10),
+  i.e. dropping lottery obs **does** suppress the "lottery kick" on
+  θ.  But test loss says those kicks were **net informative**, not
+  net noise — the rare-event observations on hard questions are
+  exactly what discriminates the strongest players from merely
+  good ones.
+* No regime where skipping helps: async (gets worse), q4 (gets
+  worse at N≥5), q3 (gets worse), even q1 / q2 mostly worsen.
+  The smallest perturbation (N=1, ≈ excluding obs of pure
+  zero-take questions only) is a true no-op (Δ = 2e-6).
+* `b_mean` drifts up (1.52 → 1.53) as N grows, consistent with
+  the model losing the SGD pressure that pulls extreme `b`s back
+  toward a posterior estimate.
+
+### 3.5 Decision
+
+* Keep `Config.curriculum_min_events = 0` as the production default.
+* Leave the flag in the codebase (the implementation is small,
+  costs nothing at the default, and the experiment is reproducible
+  in 40 min if anyone wants to revisit it under different defaults).
+* **Cross "filter lottery obs from SGD" off the candidate list.**
+  The remaining structural error (small teams, async overhead) is
+  not driven by lottery questions in any way the data supports.
+
+---
+
+## Part 4. Small-team residual — `reg_size` re-tune
+
+### 4.1 Problem
+
+§1.3 + §1.9 showed the largest remaining structural residual was
+on small teams: solo (+0.041 mean residual, logloss 0.5357), pairs
+(+0.023, 0.5139), triples (+0.011, 0.4984).  δ_size + the solo
+channel knock the original ~+0.10 bias roughly in half but don't
+close it.
+
+### 4.2 Diagnostic — is the residual mode-dependent?
+
+`scripts/diag_size_by_mode.py`:
+
+| size | offline Δ | sync Δ | async Δ | ALL Δ |
+|---:|---:|---:|---:|---:|
+| 1 | +0.044 | +0.046 | +0.038 | +0.041 |
+| 2 | +0.014 | +0.023 | +0.024 | +0.023 |
+| 3 | −0.011 | +0.012 | +0.012 | +0.011 |
+
+The bias is **uniform across modes** (within ±0.01).  Conclusion:
+no need for `δ_size[mode][size]` — a single global δ_size shift,
+just larger in magnitude on the small-team end, would fix it.
+
+### 4.3 Upper bound — post-hoc oracle
+
+`scripts/diag_size_posthoc_upper.py` fits the optimal logit shift
+inside each cell (in-sample, so over-optimistic):
+
+| variant | logloss | Δ vs baseline |
+|---|---:|---:|
+| baseline | 0.48767 | — |
+| δ[size] (oracle) | 0.48716 | **−0.00051** |
+| δ[size, mode] (oracle) | 0.48707 | −0.00060 |
+
+Per-mode adds only −0.00008 → confirms (4.2).  The whole
+size-direction is at most worth ≈ 0.001 logloss.
+
+### 4.4 Online sweep
+
+`scripts/exp_size_retune.py` — 3 backtests on `data.npz`:
+
+| variant | logloss | brier | auc | δ[1] | δ[2] |
+|---|---:|---:|---:|---:|---:|
+| v0 baseline (`reg_size=0.10`) | 0.48767 | 0.16053 | 0.84553 | −0.39 | −0.11 |
+| **v1 `reg_size=0.0`** | **0.48718** | **0.16028** | **0.84599** | **−0.58** | **−0.20** |
+| v2 `reg_size=0, eta_size×5` | 0.48772 | 0.16048 | 0.84558 | −0.57 | −0.16 |
+
+* v1 captures `−0.00049` of the `−0.00051` upper bound (≈ 96 %).
+* AUC `+0.0005`, brier `−0.00025`, async logloss `−0.00076`,
+  hardness q4 `−0.00488` — gains concentrated exactly where the
+  diagnostic flagged the residual.
+* v2 (5× eta) is **worse than baseline**: a higher step makes the
+  online δ_size estimate noisy (e.g. `δ[3] = +0.09` is a clear
+  overshoot vs the post-hoc target ≈ −0.07).  The bottleneck was
+  L2, not learning rate.
+
+### 4.5 Decision
+
+* **`Config.reg_size: float = 0.10 → 0.0`** as the new production
+  default, with an explanatory comment.  Single-line change in
+  `rating/engine.py`.
+* No need for per-mode size or for raising `eta_size`.
+
+### 4.6 Where the residual now lives
+
+After v1, the size-direction is essentially saturated by an online
+fit (v1 ≈ post-hoc oracle).  What remains in the residual must be:
+* the systematic Bernoulli-entropy floor (§1.9, not fixable),
+* and the async-online-quiz overhead (§1.2 `+0.010` mean residual,
+  not size-driven).  The latter is the natural next target, but it
+  is a separate axis from team size.

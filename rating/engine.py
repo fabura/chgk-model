@@ -152,7 +152,14 @@ class Config:
     team_size_max: int = 8
     team_size_anchor: int = 6
     eta_size: float = 0.001
-    reg_size: float = 0.10
+    # 2026-04: dropped from 0.10 → 0.0 after the small-team residual
+    # sweep (see docs/error_structure_2026-04.md Part 4).  The L2
+    # was pulling δ_size[1..3] toward 0, leaving solo +0.04 and pairs
+    # +0.02 systematically under-predicted; with reg_size=0 the
+    # learned δ matches the post-hoc oracle (logloss −0.0005, AUC
+    # +0.0005, brier −0.00025; gains concentrate in async and the
+    # hardest tournament quartile).
+    reg_size: float = 0.0
     w_size_offline: float = 1.0
     w_size_sync: float = 1.0
     w_size_async: float = 0.5
@@ -278,6 +285,53 @@ class Config:
     # falls back to the team-size-only formula above.
     theta_bar_init: bool = True
     theta_bar_min_games: int = 3
+
+    # ------------------------------------------------------------------
+    # Defensive corrections to ``init_from_take_rate`` for the
+    # extreme-take-rate tail (see docs/error_structure_2026-04.md
+    # §1.7 + §1.9).  When the first appearance of a canonical
+    # question has all-0 or all-1 takes, the noisy-OR formula
+    # ``b = log(n) + θ̄ − log(−log(1 − r))`` blows up to ±∞ and the
+    # SGD clamp pins ``b`` at ±10, after which the only gradient
+    # signal (zero-take observations) cannot move it.
+    #
+    # ``init_laplace_alpha`` adds a Beta(α, α) shrinkage to the
+    # observed take rate before passing it through the formula:
+    # ``r' = (k + α) / (n + 2α)``.  α=0 disables it (legacy default);
+    # α=1 is classical Laplace ("rule of succession").
+    #
+    # ``init_b_clip_lo`` / ``init_b_clip_hi`` clamp the initialised
+    # ``b`` to a physically sensible range, leaving SGD room to
+    # recover even if the formula sends ``b`` far outside it.
+    # The defaults (-10, +10) are no-ops — the existing SGD clamp
+    # is at ±10 anyway; tighter values like (-3, +6) start
+    # excluding init pathology.
+    init_laplace_alpha: float = 0.0
+    init_b_clip_lo: float = -10.0
+    init_b_clip_hi: float = 10.0
+
+    # ------------------------------------------------------------------
+    # Curriculum filter on the SGD path (skip "lottery" questions).
+    #
+    # Hypothesis (see docs/error_structure_2026-04.md): questions with
+    # extreme take rates (≪N takes or ≪N misses across the whole
+    # dataset) contribute almost no usable signal to θ — the few rare
+    # take/miss observations send a large one-shot gradient kick to
+    # whichever players happened to be on the lucky side,
+    # indistinguishable from noise.
+    #
+    # ``curriculum_min_events = N`` excludes from the SGD update path
+    # any observation whose canonical question has fewer than N takes
+    # OR fewer than N non-takes across the WHOLE dataset (computed
+    # once, train + test).  The init step (which seeds b from take
+    # rate) and the prediction step (always needed for backtest
+    # metrics) keep seeing all observations — only SGD updates skip
+    # the lottery cases.  Per-player ``games`` counters and recenter
+    # statistics also keep counting all tournaments unchanged; we
+    # just don't learn θ from a handful of rare-event obs.
+    #
+    # Default 0 = disabled (legacy).  Recommended starting value: 3.
+    curriculum_min_events: int = 0
 
     # ------------------------------------------------------------------
     # Multi-epoch warm-start refit (``n_extra_epochs``).
@@ -488,6 +542,36 @@ def run_sequential(
 
     game_order = sorted(obs_by_game, key=_sort_key)
 
+    # --- curriculum filter (skip SGD on lottery questions) -----------
+    # Pre-compute, per canonical question, ``min(takes_q, n_q-takes_q)``
+    # over the whole dataset.  Observations whose canonical falls
+    # below ``cfg.curriculum_min_events`` are excluded from SGD updates.
+    curriculum_min_events = max(0, int(getattr(cfg, "curriculum_min_events", 0) or 0))
+    if curriculum_min_events > 0:
+        cq_obs_all = cq[q_idx]
+        n_per_cq = np.bincount(cq_obs_all, minlength=num_q_params)
+        takes_per_cq = np.bincount(
+            cq_obs_all, weights=taken.astype(np.float64), minlength=num_q_params
+        ).astype(np.int64)
+        min_events_per_cq = np.minimum(takes_per_cq, n_per_cq - takes_per_cq)
+        # Per-observation mask: True = keep (use in SGD).
+        keep_for_sgd = (
+            min_events_per_cq[cq_obs_all] >= curriculum_min_events
+        )
+        n_kept = int(keep_for_sgd.sum())
+        n_total = len(keep_for_sgd)
+        n_lottery_cqs = int((min_events_per_cq < curriculum_min_events).sum())
+        if verbose:
+            print(
+                f"[curriculum] skip {n_total - n_kept:,} / {n_total:,} "
+                f"obs ({100*(n_total-n_kept)/n_total:.2f}%) "
+                f"on {n_lottery_cqs:,} / {num_q_params:,} canonical "
+                f"questions with min(takes, n-takes) < "
+                f"{curriculum_min_events}"
+            )
+    else:
+        keep_for_sgd = None  # ``None`` = no filtering (legacy)
+
     # --- state ---
     players = PlayerState(num_players)
     questions = QuestionState(num_q_params)
@@ -654,9 +738,13 @@ def run_sequential(
                     theta_bar = None
                 questions.init_from_take_rate(
                     qi,
-                    sum(takes) / len(takes),
+                    int(sum(takes)),
+                    int(len(takes)),
                     team_size_avg=n_avg,
                     theta_bar=theta_bar,
+                    laplace_alpha=cfg.init_laplace_alpha,
+                    b_clip_lo=cfg.init_b_clip_lo,
+                    b_clip_hi=cfg.init_b_clip_hi,
                 )
 
         # 4. Record predictions BEFORE updating --------------------------
@@ -701,13 +789,20 @@ def run_sequential(
         if cfg.use_solo_channel:
             for qi_raw in sorted(by_q):
                 for i in by_q[qi_raw]:
+                    if keep_for_sgd is not None and not keep_for_sgd[i]:
+                        continue
                     if int(team_sizes[i]) == 1:
                         obs_order_solo.append(i)
                     else:
                         obs_order_team.append(i)
         else:
             for qi_raw in sorted(by_q):
-                obs_order_team.extend(by_q[qi_raw])
+                if keep_for_sgd is None:
+                    obs_order_team.extend(by_q[qi_raw])
+                else:
+                    obs_order_team.extend(
+                        i for i in by_q[qi_raw] if keep_for_sgd[i]
+                    )
         tourn_players: set[int] = set()
         for i in obs_indices:
             s, e = int(offsets[i]), int(offsets[i + 1])
@@ -892,13 +987,23 @@ def run_sequential(
                 if cfg.use_solo_channel:
                     for qi_raw in sorted(by_q):
                         for i in by_q[qi_raw]:
+                            if (
+                                keep_for_sgd is not None
+                                and not keep_for_sgd[i]
+                            ):
+                                continue
                             if int(team_sizes[i]) == 1:
                                 obs_order_solo_e.append(i)
                             else:
                                 obs_order_team_e.append(i)
                 else:
                     for qi_raw in sorted(by_q):
-                        obs_order_team_e.extend(by_q[qi_raw])
+                        if keep_for_sgd is None:
+                            obs_order_team_e.extend(by_q[qi_raw])
+                        else:
+                            obs_order_team_e.extend(
+                                i for i in by_q[qi_raw] if keep_for_sgd[i]
+                            )
 
                 if obs_order_team_e:
                     obs_arr_e = np.array(
