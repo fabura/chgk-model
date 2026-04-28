@@ -153,8 +153,10 @@ def main() -> int:
     hp.add_argument(
         "--reg_size",
         type=float,
-        default=0.10,
-        help="L2-style shrinkage for delta_size.",
+        default=0.0,
+        help="L2-style shrinkage for delta_size (default 0.0; "
+             "raised values pull δ_size toward 0 — see "
+             "docs/error_structure_2026-04.md §3).",
     )
     hp.add_argument(
         "--use-pos-effect",

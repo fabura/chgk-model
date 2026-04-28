@@ -104,6 +104,14 @@ Sequential model: computes player strength changes week by week, tournament by t
  the leaner model. Cumulative gain on the 20 % hold-out:
  `logloss 0.5365 → 0.5309` (−0.0056), `AUC 0.8065 → 0.8115` (+0.0050).
  The full sweep tables live in `/tmp/exp_*.py`.
+- **Small-team residual fix (2026-04)**: dropped `reg_size` from
+ `0.10 → 0.0`; the L2 was holding `δ_size[1..3]` ≈ 0.2 nats short of
+ the post-hoc oracle, leaving solo (+0.04) and pairs (+0.02)
+ systematically under-predicted. Single-line change, captures ~96 %
+ of the size-only upper bound: `logloss 0.4877 → 0.4872` (AUC
+ +0.0005, brier −0.00025); per-slice gains concentrate in async
+ (−0.0008) and the hardest tournament quartile (−0.0049). See
+ `docs/error_structure_2026-04.md` §3.
 - **2026-04 noisy-OR init + retune (Round 1)**: a follow-up
  investigation (chat thread on Vyshka Moscow over-prediction)
  showed the legacy question initialisation `b_init = -log(p_take)`

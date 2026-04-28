@@ -669,3 +669,49 @@ fairness of the metric second, and other things later:
 * **Pack-level shrinkage as a top-level fix** — the previous
   rejection was on the pre-θ̄-init engine; (2) above subsumes it
   in a less invasive form (just on the init, not on the SGD path).
+
+* **Curriculum filter on the SGD path** — tried it (skip SGD on
+  observations of canonicals with `min(takes, n−takes) < N` for
+  N ∈ {0,1,3,5,10}), monotone hurts every metric in every slice.
+  `θ_std` shrinks as N grows, but test loss says the rare-event
+  obs are net informative, not net noise.
+
+* **Per-mode `δ_size[mode][size]`** — the +0.04 / +0.02 residual on
+  small teams is uniform across modes (offline / sync / async cells
+  within ±0.01 of each other), and a global `δ_size` re-tune
+  recovered ~96 % of the size-only post-hoc upper bound; per-mode
+  adds < 0.0001 logloss.  See §3 below.
+
+---
+
+## §3. Small-team residual fix — `reg_size` re-tune
+
+§1.3 / §1.9 flagged the largest remaining structural residual as
+the small-team tail (mean residual +0.04 on solo, +0.02 on pairs,
+logloss 0.54 / 0.51 vs 0.47 on full teams).  Quick check (raw
+diagnostic numbers in transcript): the residual is uniform across
+modes (offline ≈ sync ≈ async, within ±0.01), so a single global
+`δ_size` shift would suffice if the online fit were free to find
+it.
+
+A post-hoc oracle (best logit shift per `size` cell, in-sample on
+test) caps the achievable gain at `−0.00051` logloss.  Online sweep
+on the existing engine (`scripts/exp_size_retune.py`,
+`results/exp_size_retune.csv`):
+
+| variant | logloss | brier | auc | δ[1] | δ[2] |
+|---|---:|---:|---:|---:|---:|
+| baseline (`reg_size=0.10`) | 0.4877 | 0.16053 | 0.84553 | −0.39 | −0.11 |
+| **`reg_size=0.0`** | **0.4872** | **0.16028** | **0.84599** | **−0.58** | **−0.20** |
+| `reg_size=0.0, eta_size×5` | 0.4877 | 0.16048 | 0.84558 | −0.57 | −0.16 |
+
+`reg_size=0.0` captures `−0.00049` of the `−0.00051` upper bound
+(~96 %).  Bottleneck was the L2, not the step size — at 5× eta the
+δ_size estimate becomes noisy (e.g. `δ[3]=+0.09` overshoots the
+oracle target ≈ −0.07) and the win is lost.
+
+**Decision:** `Config.reg_size: 0.10 → 0.0` (one line).  Per-slice
+gains line up with the diagnostic — async `−0.0008`, hardness q4
+`−0.0049`.  After this, the size-direction is essentially
+saturated; the remaining residual must be Bernoulli-floor (§1.9,
+not fixable) or async-online-quiz overhead (§1.2, separate axis).

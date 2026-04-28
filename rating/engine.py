@@ -152,7 +152,10 @@ class Config:
     team_size_max: int = 8
     team_size_anchor: int = 6
     eta_size: float = 0.001
-    reg_size: float = 0.10
+    # 2026-04: 0.10 → 0.0; the L2 was pulling δ_size[1..3] toward 0,
+    # leaving solo (+0.04) and pairs (+0.02) systematically
+    # under-predicted.  See docs/error_structure_2026-04.md §3.
+    reg_size: float = 0.0
     w_size_offline: float = 1.0
     w_size_sync: float = 1.0
     w_size_async: float = 0.5
