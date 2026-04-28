@@ -152,7 +152,10 @@ class Config:
     team_size_max: int = 8
     team_size_anchor: int = 6
     eta_size: float = 0.001
-    reg_size: float = 0.10
+    # 2026-04: 0.10 → 0.0; the L2 was pulling δ_size[1..3] toward 0,
+    # leaving solo (+0.04) and pairs (+0.02) systematically
+    # under-predicted.  See docs/error_structure_2026-04.md §3.
+    reg_size: float = 0.0
     w_size_offline: float = 1.0
     w_size_sync: float = 1.0
     w_size_async: float = 0.5
@@ -278,6 +281,27 @@ class Config:
     # falls back to the team-size-only formula above.
     theta_bar_init: bool = True
     theta_bar_min_games: int = 3
+
+    # ------------------------------------------------------------------
+    # Multi-epoch warm-start refit (``n_extra_epochs``).
+    #
+    # 0 = current behavior: a single chronological pass over all
+    # tournaments with predict-then-update on each observation.
+    #
+    # K > 0 = after the standard pass, run K additional chronological
+    # passes over the TRAINING tournaments only (first
+    # ``1 - extra_test_fraction`` of games by date), with SGD updates
+    # only — no init, no decay, no re-centering, no predictions.
+    # Then re-collect predictions on the test tournaments using the
+    # post-warm-start (frozen) state, overwriting whatever the main
+    # pass had written for those observations.  Train-tournament
+    # predictions stay as recorded during the main pass.
+    #
+    # Designed to answer "is the online single-pass model
+    # under-trained?" without changing semantics for n_extra=0 and
+    # without leaking test data into the extra training.
+    n_extra_epochs: int = 0
+    extra_test_fraction: float = 0.2
 
 
 # ======================================================================
@@ -520,6 +544,7 @@ def run_sequential(
     pred_y_list: list[int] | None = [] if collect_predictions else None
     pred_g_list: list[int] | None = [] if collect_predictions else None
     pred_thbar_list: list[float] | None = [] if collect_predictions else None
+    pred_obs_list: list[int] | None = [] if collect_predictions else None
 
     try:
         from tqdm import tqdm
@@ -664,6 +689,7 @@ def run_sequential(
                 pred_y_list.append(int(taken[i]))
                 pred_g_list.append(g)
                 pred_thbar_list.append(float(th.mean()) if th.size > 0 else 0.0)
+                pred_obs_list.append(int(i))
 
         # 5. Sequential updates (Numba-accelerated batch) ----------------
         # When ``use_solo_channel`` is enabled, samples with
@@ -823,6 +849,163 @@ def run_sequential(
                 )
                 history.append((pid, gid, float(players.theta[pidx])))
 
+    # === Multi-epoch warm-start refit (optional) =======================
+    n_extra = max(0, int(getattr(cfg, "n_extra_epochs", 0)))
+    if n_extra > 0:
+        # Identify train/test split chronologically (matching the
+        # backtest()'s slicing rule).
+        if gdo is not None:
+            known_games = [
+                g for g in game_order
+                if g < len(gdo) and int(gdo[g]) >= 0
+            ]
+            ordered = sorted(
+                known_games, key=lambda x: int(gdo[x])
+            )
+        else:
+            ordered = list(game_order)
+        test_frac = float(getattr(cfg, "extra_test_fraction", 0.2))
+        n_test_games = max(1, int(len(ordered) * test_frac))
+        test_games_set = set(ordered[-n_test_games:])
+        train_games = [g for g in game_order if g not in test_games_set]
+
+        if verbose:
+            print(
+                f"\n[multi-epoch] running {n_extra} extra "
+                f"chronological pass(es) over "
+                f"{len(train_games)} train games "
+                f"({len(test_games_set)} test games held out)…"
+            )
+
+        for epoch in range(n_extra):
+            for g in train_games:
+                obs_indices = obs_by_game[g]
+                gt = (
+                    game_types[g] if g < len(game_types) else "offline"
+                )
+                theta_w, b_w, log_a_w, size_w, pos_w = (
+                    _type_update_weights(gt, cfg)
+                )
+
+                by_q: dict[int, list[int]] = defaultdict(list)
+                for i in obs_indices:
+                    by_q[int(q_idx[i])].append(i)
+                obs_order_team_e: list[int] = []
+                obs_order_solo_e: list[int] = []
+                if cfg.use_solo_channel:
+                    for qi_raw in sorted(by_q):
+                        for i in by_q[qi_raw]:
+                            if int(team_sizes[i]) == 1:
+                                obs_order_solo_e.append(i)
+                            else:
+                                obs_order_team_e.append(i)
+                else:
+                    for qi_raw in sorted(by_q):
+                        obs_order_team_e.extend(by_q[qi_raw])
+
+                if obs_order_team_e:
+                    obs_arr_e = np.array(
+                        obs_order_team_e, dtype=np.int64
+                    )
+                    process_batch_nb(
+                        obs_arr_e, offsets, player_flat, q_idx, taken,
+                        cq, q_pos_in_tour,
+                        players.theta, questions.b, questions.log_a,
+                        delta_size, delta_pos, players.games,
+                        cfg.eta0, theta_w, b_w, log_a_w,
+                        size_w if cfg.use_team_size_effect else 0.0,
+                        pos_w if cfg.use_pos_effect else 0.0,
+                        eta_size_eff, eta_pos_eff,
+                        cfg.reg_size, cfg.reg_pos,
+                        team_size_anchor, pos_anchor,
+                        cfg.reg_theta, cfg.reg_b, cfg.reg_log_a,
+                        20.0, cfg.games_offset,
+                    )
+                if obs_order_solo_e:
+                    sw_t, sw_b, sw_la, sw_s, sw_p = (
+                        _solo_update_weights(cfg)
+                    )
+                    obs_arr_e_s = np.array(
+                        obs_order_solo_e, dtype=np.int64
+                    )
+                    process_batch_nb(
+                        obs_arr_e_s, offsets, player_flat, q_idx, taken,
+                        cq, q_pos_in_tour,
+                        players.theta, questions.b, questions.log_a,
+                        delta_size, delta_pos, players.games,
+                        cfg.eta0, sw_t, sw_b, sw_la,
+                        sw_s if cfg.use_team_size_effect else 0.0,
+                        sw_p if cfg.use_pos_effect else 0.0,
+                        eta_size_eff, eta_pos_eff,
+                        cfg.reg_size, cfg.reg_pos,
+                        team_size_anchor, pos_anchor,
+                        cfg.reg_theta, cfg.reg_b, cfg.reg_log_a,
+                        20.0, cfg.games_offset,
+                    )
+                np.clip(players.theta, -10.0, 10.0, out=players.theta)
+            if verbose:
+                print(
+                    f"  [extra-epoch {epoch + 1}/{n_extra}] "
+                    f"done — θ stats: mean={players.theta.mean():+.3f} "
+                    f"std={players.theta.std():.3f}"
+                )
+
+        # Re-collect predictions for test games against the post-warm
+        # state (frozen — no further updates).
+        if collect_predictions:
+            # Filter out previous test predictions; keep train preds.
+            keep_mask = [
+                int(pg) not in test_games_set for pg in pred_g_list
+            ]
+            pred_p_list[:] = [
+                p for p, k in zip(pred_p_list, keep_mask) if k
+            ]
+            pred_y_list[:] = [
+                p for p, k in zip(pred_y_list, keep_mask) if k
+            ]
+            pred_g_list[:] = [
+                p for p, k in zip(pred_g_list, keep_mask) if k
+            ]
+            pred_thbar_list[:] = [
+                p for p, k in zip(pred_thbar_list, keep_mask) if k
+            ]
+            pred_obs_list[:] = [
+                p for p, k in zip(pred_obs_list, keep_mask) if k
+            ]
+
+            for g in ordered[-n_test_games:]:
+                obs_indices = obs_by_game[g]
+                for i in obs_indices:
+                    qi = _cqi(int(q_idx[i]))
+                    s, e = int(offsets[i]), int(offsets[i + 1])
+                    th = players.theta[player_flat[s:e]]
+                    a_val = math.exp(
+                        max(min(questions.log_a[qi], 3.0), -3.0)
+                    )
+                    ts_raw = e - s
+                    if ts_raw < 1:
+                        ts_idx = 1
+                    elif ts_raw > team_size_max:
+                        ts_idx = team_size_max
+                    else:
+                        ts_idx = ts_raw
+                    pos_idx_pred = int(q_pos_in_tour[int(q_idx[i])])
+                    delta_g = 0.0
+                    if cfg.use_team_size_effect and ts_idx != team_size_anchor:
+                        delta_g += float(delta_size[ts_idx])
+                    if cfg.use_pos_effect and pos_idx_pred != pos_anchor:
+                        delta_g += float(delta_pos[pos_idx_pred])
+                    p, _, _ = forward(
+                        th, questions.b[qi], a_val, delta=delta_g
+                    )
+                    pred_p_list.append(p)
+                    pred_y_list.append(int(taken[i]))
+                    pred_g_list.append(g)
+                    pred_thbar_list.append(
+                        float(th.mean()) if th.size > 0 else 0.0
+                    )
+                    pred_obs_list.append(int(i))
+
     # === Assemble predictions ==========================================
     predictions = None
     if collect_predictions and pred_p_list:
@@ -833,6 +1016,7 @@ def run_sequential(
             # Pre-tournament mean θ over the predicting team — used by
             # backtest to bucket test tournaments by roster strength.
             "team_theta_mean": np.array(pred_thbar_list, dtype=np.float64),
+            "obs_idx": np.array(pred_obs_list, dtype=np.int64),
         }
 
     # === Summary =======================================================
