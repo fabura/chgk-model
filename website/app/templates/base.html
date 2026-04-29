@@ -35,9 +35,17 @@
     {% block content %}{% endblock %}
   </main>
 
-  <footer class="max-w-7xl mx-auto px-4 py-6 text-xs text-slate-500">
-    Модель: noisy-OR с θ игрока и (b, a) вопроса. Подробнее — на
-    <a href="/methodology" class="text-indigo-600 hover:underline">странице модели</a>.
+  <footer class="max-w-7xl mx-auto px-4 py-6 text-xs text-slate-500 space-y-2">
+    <p>
+      Модель: noisy-OR с θ игрока и (b, a) вопроса. Подробнее — на
+      <a href="/methodology" class="text-indigo-600 hover:underline">странице модели</a>.
+    </p>
+    {% if request.state.data_as_of_display %}
+    <p>Данные учитывают турниры по {{ request.state.data_as_of_display }} включительно.</p>
+    {% endif %}
+    {% if request.state.model_built_display %}
+    <p>Модель пересчитана: {{ request.state.model_built_display }}.</p>
+    {% endif %}
   </footer>
 </body>
 </html>

@@ -88,3 +88,19 @@ def query(sql: str, params: Iterable[Any] | None = None) -> list[dict]:
 def query_one(sql: str, params: Iterable[Any] | None = None) -> dict | None:
     rows = query(sql, params)
     return rows[0] if rows else None
+
+
+def get_site_meta() -> dict | None:
+    """
+    Single-row footer metadata from ``site_meta`` (written by ``build_db``).
+
+    Returns ``None`` if the table is missing (pre-migration DuckDB) or empty.
+    """
+    try:
+        return query_one(
+            "SELECT CAST(data_as_of AS VARCHAR) AS data_as_of_iso, "
+            "       model_built_at "
+            "FROM site_meta LIMIT 1"
+        )
+    except Exception:
+        return None

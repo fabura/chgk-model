@@ -6,7 +6,7 @@ import math
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -25,6 +25,64 @@ app = FastAPI(title="ChGK Model")
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 templates.env.cache = None
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+
+_RU_MONTHS_GEN = (
+    "января",
+    "февраля",
+    "марта",
+    "апреля",
+    "мая",
+    "июня",
+    "июля",
+    "августа",
+    "сентября",
+    "октября",
+    "ноября",
+    "декабря",
+)
+
+
+def _ru_date_long(data_as_of_iso: Optional[str]) -> Optional[str]:
+    if not data_as_of_iso:
+        return None
+    parts = data_as_of_iso.strip().split("-")
+    if len(parts) != 3:
+        return None
+    try:
+        y, mo, d = int(parts[0]), int(parts[1]), int(parts[2])
+    except ValueError:
+        return None
+    if not 1 <= mo <= 12:
+        return None
+    return f"{d} {_RU_MONTHS_GEN[mo - 1]} {y}"
+
+
+def _fmt_model_built_utc(dt: Any) -> Optional[str]:
+    if dt is None:
+        return None
+    if isinstance(dt, datetime):
+        u = dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+        return u.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    s = str(dt).strip()
+    if not s:
+        return None
+    if len(s) >= 16 and ("T" in s or " " in s):
+        return s[:16].replace("T", " ") + " UTC"
+    return s
+
+
+@app.middleware("http")
+async def site_meta_footer(request: Request, call_next):
+    try:
+        row = db.get_site_meta()
+    except Exception:
+        row = None
+    disp = _ru_date_long(row["data_as_of_iso"]) if row else None
+    built = _fmt_model_built_utc(row.get("model_built_at")) if row else None
+    request.state.data_as_of_display = disp
+    request.state.model_built_display = built
+    return await call_next(request)
 
 
 # ---------------------------------------------------------------------------

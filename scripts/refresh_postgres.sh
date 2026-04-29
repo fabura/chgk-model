@@ -5,25 +5,28 @@
 #
 # Steps:
 #   1. cd $RATING_DB_DIR (default: /Users/fbr/Projects/personal/rating-db)
-#   2. download YYYY-MM-DD_rating.backup directly from R2, walking back day
-#      by day until a valid (>=100 MB and `pg_restore --list` clean) archive
-#      is found.  `download.sh` from the rating-db repo is intentionally
-#      bypassed because it doesn't fail on HTTP 404 and we don't want to
-#      clobber the prior backup with a 30 KB Cloudflare HTML error page.
+#   2. For each calendar day (starting yesterday or today, then walking back):
+#      download YYYY-MM-DD_rating.backup from R2 if present (>=100 MB,
+#      ``pg_restore --list`` clean), run ``restore.sh``, then require
+#      ``COUNT(*) FROM public.tournaments`` ≥ 1000.  Truncated uploads
+#      (EOF mid-restore) are rejected and an older day is tried.
+#      ``download.sh`` from the rating-db repo is intentionally bypassed
+#      because it doesn't fail on HTTP 404.
 #   3. docker-compose up -d             # start if not already
 #   4. wait for pg_isready
 #   5. exec /docker-entrypoint-initdb.d/restore.sh inside the container
 #      (drops public schema, then pg_restore from /backup/rating.backup).
-#      restore.sh exits 1 when matview refresh hits ignorable errors; we
-#      accept 0/1 and use the tournaments row count as the success signal.
+#      restore.sh may exit 1 for benign matview noise; the tournament
+#      row-count check is the real success criterion.
 #
 # Usage:
 #   ./scripts/refresh_postgres.sh           # start from yesterday, walk back
 #   ./scripts/refresh_postgres.sh --today   # start from today, walk back
 #
 # Env:
-#   REFRESH_MAX_WALKBACK_DAYS  — how many older days to try if the start
-#                                day is missing (default 7).
+#   REFRESH_MAX_WALKBACK_DAYS  — how many older calendar days to try after
+#                                the start day (default 21). Raise if many
+#                                consecutive R2 uploads are truncated.
 #
 # Exit codes:
 #   0 — postgres ready and re-restored
@@ -51,7 +54,7 @@ fi
 
 MIN_BACKUP_BYTES=$((100 * 1024 * 1024))   # real dumps are ~800 MB; HTML 404 ~30 KB
 R2_PREFIX="https://pub-5200ce7fb4b64b5ea3b6b0b0f05cfcd5.r2.dev"
-MAX_WALKBACK_DAYS="${REFRESH_MAX_WALKBACK_DAYS:-7}"
+MAX_WALKBACK_DAYS="${REFRESH_MAX_WALKBACK_DAYS:-21}"
 
 # Try a specific YYYY-MM-DD: download to rating.backup and validate.
 # Echoes 0 on success, non-zero on failure.  Caller decides whether to
@@ -89,8 +92,9 @@ try_download_date() {
 }
 
 # Pick start day: today (--today) or yesterday (default), then walk back
-# day-by-day if R2 doesn't have it yet (backups appear ~23:00 UTC, so
-# the previous day's file is sometimes still missing in the morning).
+# day-by-day.  A dump can pass ``curl`` + ``pg_restore --list`` yet still
+# be truncated (EOF mid-restore) or otherwise leave ``tournaments`` empty;
+# in that case we try an older day until restore + row-count check passes.
 if [[ "$DOWNLOAD_FLAG" == "--today" ]]; then
   start_offset=0
 else
@@ -102,25 +106,6 @@ date_for_offset() {
   date -u -v "-${off}d" '+%Y-%m-%d' 2>/dev/null \
     || date -u -d "${off} days ago" '+%Y-%m-%d'
 }
-
-found=0
-for off in $(seq "$start_offset" $((start_offset + MAX_WALKBACK_DAYS))); do
-  d=$(date_for_offset "$off")
-  if try_download_date "$d"; then
-    found=1
-    break
-  fi
-done
-if [[ $found -ne 1 ]]; then
-  echo "[refresh_postgres] error: no valid backup in last $MAX_WALKBACK_DAYS days." >&2
-  [[ -n "$PREV_BACKUP" ]] && mv -f "$PREV_BACKUP" rating.backup
-  exit 3
-fi
-
-# Validation passed — drop the saved previous backup.
-[[ -n "$PREV_BACKUP" ]] && rm -f "$PREV_BACKUP"
-backup_size=$(du -h rating.backup | cut -f1)
-echo "[refresh_postgres] using ${d}_rating.backup ($backup_size)"
 
 echo "[refresh_postgres] starting docker-compose (idempotent)..."
 docker-compose up -d
@@ -137,36 +122,55 @@ if ! docker-compose exec -T postgres pg_isready -U postgres -q 2>/dev/null; then
   exit 4
 fi
 
-# ----------------------------------------------------------------------
-# Run restore synchronously (no `tail -f --pid` — BSD tail on macOS
-# ignores --pid and the parent hangs forever).  We accept exit codes 0
-# (clean) and 1 (matview-refresh errors are typically benign), then rely
-# on the row-count sanity check below to confirm the data is there.
-# ----------------------------------------------------------------------
-echo "[refresh_postgres] running restore.sh inside container (this can take 5–10 min)..."
 restore_log=/tmp/refresh_postgres_restore.log
-set +e
-docker-compose exec -T postgres bash /docker-entrypoint-initdb.d/restore.sh \
-  > "$restore_log" 2>&1
-restore_rc=$?
-set -e
-echo "[refresh_postgres] restore.sh exited $restore_rc"
-tail -20 "$restore_log" || true
-if [[ $restore_rc -ne 0 && $restore_rc -ne 1 ]]; then
-  echo "[refresh_postgres] error: restore.sh failed; see $restore_log" >&2
-  exit $restore_rc
+restore_ok=0
+used_date=""
+
+for off in $(seq "$start_offset" $((start_offset + MAX_WALKBACK_DAYS))); do
+  d=$(date_for_offset "$off")
+  if ! try_download_date "$d"; then
+    continue
+  fi
+  backup_size=$(du -h rating.backup | cut -f1)
+  echo "[refresh_postgres] restore trial: ${d}_rating.backup ($backup_size)"
+
+  echo "[refresh_postgres] running restore.sh inside container (this can take 5–10 min)..."
+  set +e
+  docker-compose exec -T postgres bash /docker-entrypoint-initdb.d/restore.sh \
+    > "$restore_log" 2>&1
+  restore_rc=$?
+  set -e
+  echo "[refresh_postgres] restore.sh exited $restore_rc"
+  tail -20 "$restore_log" || true
+  if [[ $restore_rc -ne 0 && $restore_rc -ne 1 ]]; then
+    echo "[refresh_postgres] WARN: restore.sh hard-failed for $d; trying older dump…" >&2
+    continue
+  fi
+
+  n=$(docker-compose exec -T postgres psql -U postgres -tAc \
+    "SELECT COUNT(*) FROM public.tournaments" 2>/dev/null || echo 0)
+  n=$(echo "$n" | tr -d '[:space:]')
+  if [[ -z "$n" || "$n" -lt 1000 ]]; then
+    echo "[refresh_postgres] WARN: public.tournaments has only ${n:-0} rows after $d; trying older dump…" >&2
+    continue
+  fi
+
+  restore_ok=1
+  used_date="$d"
+  break
+done
+
+if [[ $restore_ok -ne 1 ]]; then
+  echo "[refresh_postgres] error: no backup in the last $MAX_WALKBACK_DAYS day(s) produced a valid restore." >&2
+  [[ -n "$PREV_BACKUP" && -s "$PREV_BACKUP" ]] && mv -f "$PREV_BACKUP" rating.backup
+  exit 3
 fi
 
-# Sanity: tournaments table must exist + have rows.  This is the real
-# success criterion — pg_restore can return 1 due to ignored matview
-# refresh errors while still leaving all the data in place.
+[[ -n "$PREV_BACKUP" ]] && rm -f "$PREV_BACKUP"
+echo "[refresh_postgres] using ${used_date}_rating.backup ($(du -h rating.backup | cut -f1))"
+
 n=$(docker-compose exec -T postgres psql -U postgres -tAc \
-  "SELECT COUNT(*) FROM public.tournaments" 2>/dev/null || echo 0)
-n=$(echo "$n" | tr -d '[:space:]')
-if [[ -z "$n" || "$n" -lt 1000 ]]; then
-  echo "[refresh_postgres] error: public.tournaments has only $n rows after restore" >&2
-  exit 5
-fi
+  "SELECT COUNT(*) FROM public.tournaments" 2>/dev/null | tr -d '[:space:]')
 latest=$(docker-compose exec -T postgres psql -U postgres -tAc \
   "SELECT MAX(start_datetime)::date FROM public.tournaments WHERE start_datetime < NOW()" \
   2>/dev/null | tr -d '[:space:]')

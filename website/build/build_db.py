@@ -19,7 +19,7 @@ import sqlite3
 import sys
 import time
 from collections import defaultdict
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -638,6 +638,7 @@ DROP TABLE IF EXISTS question_aliases;
 DROP TABLE IF EXISTS team_games;
 DROP TABLE IF EXISTS player_games;
 DROP TABLE IF EXISTS player_history;
+DROP TABLE IF EXISTS site_meta;
 
 CREATE TABLE players (
     player_id INTEGER PRIMARY KEY,
@@ -744,6 +745,12 @@ CREATE TABLE player_history (
                               -- threshold on this row (chart skips it).
     n_active INTEGER          -- size of the qualified pool on this date
                               -- (denominator for rank_global).
+);
+
+-- Single-row snapshot metadata for the public site footer.
+CREATE TABLE site_meta (
+    data_as_of DATE,           -- latest tournament start_date in this build
+    model_built_at TIMESTAMPTZ -- when DuckDB was baked (UTC)
 );
 
 CREATE INDEX idx_player_games_player ON player_games(player_id);
@@ -1135,6 +1142,17 @@ def write_duckdb(
             "pack_id": pa.array(cols["pack_id"], type=pa.int32()),
             "pack_title": pa.array(cols["pack_title"], type=pa.string()),
         },
+    )
+
+    starts_nonnull = [d for d in cols["start_date"] if d is not None]
+    data_as_of_max = max(starts_nonnull) if starts_nonnull else None
+    built_at_utc = datetime.now(timezone.utc)
+    con.execute(
+        "INSERT INTO site_meta (data_as_of, model_built_at) VALUES (?, ?)",
+        [data_as_of_max, built_at_utc],
+    )
+    _log(
+        f"site_meta: data_as_of={data_as_of_max}, model_built_at={built_at_utc.isoformat()}"
     )
 
     # ---- pack_editors ----
