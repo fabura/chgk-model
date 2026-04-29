@@ -749,8 +749,8 @@ CREATE TABLE player_history (
 
 -- Single-row snapshot metadata for the public site footer.
 CREATE TABLE site_meta (
-    data_as_of DATE,           -- latest tournament start_date in this build
-    model_built_at TIMESTAMPTZ -- when DuckDB was baked (UTC)
+    data_as_of DATE,         -- latest tournament start_date in this build
+    model_built_at TIMESTAMP -- when DuckDB was baked (naive UTC; pytz-free read)
 );
 
 CREATE INDEX idx_player_games_player ON player_games(player_id);
@@ -1146,13 +1146,14 @@ def write_duckdb(
 
     starts_nonnull = [d for d in cols["start_date"] if d is not None]
     data_as_of_max = max(starts_nonnull) if starts_nonnull else None
-    built_at_utc = datetime.now(timezone.utc)
+    built_at_utc = datetime.now(timezone.utc).replace(tzinfo=None)
     con.execute(
         "INSERT INTO site_meta (data_as_of, model_built_at) VALUES (?, ?)",
         [data_as_of_max, built_at_utc],
     )
     _log(
-        f"site_meta: data_as_of={data_as_of_max}, model_built_at={built_at_utc.isoformat()}"
+        f"site_meta: data_as_of={data_as_of_max}, "
+        f"model_built_at={built_at_utc.isoformat()}Z"
     )
 
     # ---- pack_editors ----

@@ -148,8 +148,9 @@ $SSH "unzstd -c ${REMOTE_TAR_ZST} | docker load && rm -f ${REMOTE_TAR_ZST}"
 
 # ---- 4. compose files (only when not --image-only) ----------------------
 if [[ ${IMAGE_ONLY} -eq 0 ]]; then
-  log "Uploading docker-compose.yml + nginx.conf…"
+  log "Uploading docker-compose.yml + nginx.conf + nginx-main.conf…"
   $SCP "${SCRIPT_DIR}/docker-compose.yml" "${SCRIPT_DIR}/nginx.conf" \
+       "${SCRIPT_DIR}/nginx-main.conf" \
        "${REMOTE_USER}@${REMOTE_HOST}:${DEPLOY_DIR}/"
 
   log "Checking remote .env (must contain ADMIN_TOKEN)…"
