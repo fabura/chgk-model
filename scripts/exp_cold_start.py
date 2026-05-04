@@ -2,11 +2,11 @@
 Cold-start experiment: compare three regimes for initialising new players
 and the adaptive learning-rate offset.
 
-Reports backtest metrics (logloss / Brier / AUC) and the multi-year drift
-of the median θ for the top-1000 most active players.
-
-Usage:
-    python -m scripts.exp_cold_start
+NOTE (2026-05): this script predates the 2026-05 Config cleanup and
+references ``cold_init_use_team_mean``, which was removed when the
+fixed-prior cold-start became the only behaviour.  Saved results are
+in ``results/exp_cold_start.json``.  Restore from git history before
+2026-05 to re-run.
 """
 from __future__ import annotations
 
@@ -103,6 +103,11 @@ def population_drift(result, maps) -> dict[int, dict[str, float]]:
 
 
 def main() -> int:
+    sys.exit(
+        "scripts/exp_cold_start.py is historical (pre-2026-05 Config "
+        "cleanup) and no longer runs against the current Config. "
+        "See results/exp_cold_start.json for the original output."
+    )
     print(f"Loading {CACHE_FILE} ...", flush=True)
     arrays, maps = load_cached(CACHE_FILE)
     print(

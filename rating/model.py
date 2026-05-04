@@ -29,6 +29,7 @@ def forward(
     a: float,
     delta: float = 0.0,
     clamp: float = 20.0,
+    lapse: float = 0.0,
 ) -> tuple[float, float, np.ndarray]:
     """
     Compute team-answer probability for one (team, question) pair.
@@ -39,6 +40,8 @@ def forward(
         a:     question discrimination  (> 0)
         delta: tournament difficulty offset (positive = harder)
         clamp: bounds on z_k to avoid exp overflow
+        lapse: lapse-rate floor π ∈ [0, 1).  ``p = (1 − π) · p_noisy_or``,
+            i.e. the predicted probability is capped at ``(1 − π)``.
 
     Returns:
         (p, S, lam)  where lam[k] = λ_k
@@ -47,7 +50,8 @@ def forward(
     z = np.clip(-eff_b + a * theta, -clamp, clamp)
     lam = np.exp(z)
     S = float(lam.sum())
-    p = float(-math.expm1(-S))
+    p_raw = float(-math.expm1(-S))
+    p = (1.0 - lapse) * p_raw
     p = max(min(p, 1.0 - 1e-15), 1e-15)
     return p, S, lam
 
@@ -181,12 +185,15 @@ def process_batch_nb(
     reg_log_a: float = 0.0,
     clamp: float = 20.0,
     games_offset: float = 1.0,
+    lapse_arr: np.ndarray = np.zeros(1, dtype=np.float64),
+    eta_lapse: float = 0.0,
+    lapse_max: float = 0.30,
 ) -> float:
     """
     Process a batch of observations.
 
-    Updates ``theta``, ``b``, ``log_a``, ``delta_size`` and
-    ``delta_pos`` in-place.
+    Updates ``theta``, ``b``, ``log_a``, ``delta_size``, ``delta_pos``
+    and ``lapse_arr[0]`` in-place.
 
     The effective tournament shift is
 
@@ -195,6 +202,16 @@ def process_batch_nb(
     where ``delta_size`` is anchored at ``size_anchor`` and
     ``delta_pos`` at ``pos_anchor``: updates are skipped at the anchor
     index, and the anchor entry is treated as structurally zero.
+
+    The forward applies a lapse-rate floor:
+
+        p = (1 − π) · (1 − exp(−S))   with  π = lapse_arr[0]
+
+    so the model can learn to leave the high-p region uncalibrated
+    when format-specific noise (typos, distraction, glitches) keeps
+    even strong teams from achieving p ≈ 1.  When ``eta_lapse > 0``
+    the per-batch lapse is itself updated; otherwise it stays fixed
+    at the value the caller put in.
 
     L2-style shrinkage is applied as a multiplicative pull toward zero
     after each gradient step (``param *= max(0, 1 - lr * reg)``).  For
@@ -206,6 +223,14 @@ def process_batch_nb(
     total_ll = 0.0
     max_size_idx = len(delta_size) - 1
     n_pos = len(delta_pos)
+    lapse = lapse_arr[0]
+    if lapse < 0.0:
+        lapse = 0.0
+    elif lapse > lapse_max:
+        lapse = lapse_max
+    one_minus_lapse = 1.0 - lapse
+    log_one_minus_lapse = math.log(one_minus_lapse) if one_minus_lapse > 1e-15 else math.log(1e-15)
+    dlapse_acc = 0.0  # accumulated dL/dπ over the batch
     for j in range(len(obs_indices)):
         i = obs_indices[j]
         s, e = int(offsets[i]), int(offsets[i + 1])
@@ -236,19 +261,43 @@ def process_batch_nb(
         elif log_a_val < -3.0:
             log_a_val = -3.0
         a_val = math.exp(log_a_val)
-        # Get team theta
         team_size = e - s
         th = np.empty(team_size)
         pids = np.empty(team_size, dtype=np.int32)
         for k in range(team_size):
             pids[k] = player_flat[s + k]
             th[k] = theta[pids[k]]
-        p, S, lam = _forward_nb(th, b_val, a_val, delta_g, clamp)
+        p_raw, S, lam = _forward_nb(th, b_val, a_val, delta_g, clamp)
         if y == 1:
-            total_ll += math.log(p)
+            # log p = log(1-π) + log p_raw
+            ll_term = log_one_minus_lapse + math.log(p_raw)
+            total_ll += ll_term
+            # dL/dS unchanged from no-lapse case (constant shift in π)
+            grad_scale = 1.0
+            # dL/dπ = -1/(1-π)
+            dlapse_acc += -1.0 / max(one_minus_lapse, 1e-15)
         else:
-            total_ll += math.log(1.0 - p)
+            # 1 - p = 1 - (1-π) p_raw = π + (1-π) (1 - p_raw)
+            # exp(-S) = 1 - p_raw, so:
+            # 1 - p = π + (1-π) exp(-S)
+            exp_neg_S = math.exp(-S) if S < 500.0 else 0.0
+            q = lapse + one_minus_lapse * exp_neg_S
+            if q < 1e-15:
+                q = 1e-15
+            total_ll += math.log(q)
+            # dL/dS = -(1-π) exp(-S) / q  vs  old -1
+            # gradient scaling factor relative to the no-lapse case:
+            # old dL/dS = -1 ⇒ scale = (1-π) exp(-S) / q
+            grad_scale = one_minus_lapse * exp_neg_S / q
+            # dL/dπ = (1 - exp(-S)) / q
+            dlapse_acc += (1.0 - exp_neg_S) / q
         dL_dth, dL_db, dL_dloga, dL_ddelta = _gradients_nb(S, lam, a_val, th, y)
+        if grad_scale != 1.0:
+            for k in range(team_size):
+                dL_dth[k] *= grad_scale
+            dL_db *= grad_scale
+            dL_dloga *= grad_scale
+            dL_ddelta *= grad_scale
         for k in range(team_size):
             pidx = pids[k]
             lr = eta0 / math.sqrt(games_offset + games[pidx])
@@ -298,4 +347,13 @@ def process_batch_nb(
             elif dp_val < -10.0:
                 dp_val = -10.0
             delta_pos[pos_idx] = dp_val
+    if eta_lapse > 0.0 and len(obs_indices) > 0:
+        # Batch update: step in mean-gradient direction.  Gradient
+        # ascent (we accumulated dL/dπ, want to maximise log-lik).
+        new_lapse = lapse + eta_lapse * (dlapse_acc / float(len(obs_indices)))
+        if new_lapse < 0.0:
+            new_lapse = 0.0
+        elif new_lapse > lapse_max:
+            new_lapse = lapse_max
+        lapse_arr[0] = new_lapse
     return total_ll

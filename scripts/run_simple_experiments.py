@@ -44,22 +44,18 @@ CONFIGS = {
     "reg_theta_0.0001": base_cfg(reg_theta=0.0001),
     "reg_theta_0.001":  base_cfg(reg_theta=0.001),
 
-    "cold_init_0.5": base_cfg(cold_init_factor=0.5),
+    # Note (2026-05): the legacy ``cold_init_factor`` and
+    # ``use_calendar_decay`` knobs were removed during the cleanup.
+    # See ``docs/cleanup_2026-05.md``.  Calendar-decay is now always
+    # on, configured solely via ``rho_calendar``; cold-start is always
+    # the fixed-prior path (``cold_init_theta``).
 
-    "cal_decay_0.99":  base_cfg(use_calendar_decay=True, rho_calendar=0.99),
-    "cal_decay_0.995": base_cfg(use_calendar_decay=True, rho_calendar=0.995),
-    "cal_decay_0.997": base_cfg(use_calendar_decay=True, rho_calendar=0.997),
-    "cal_decay_0.998": base_cfg(use_calendar_decay=True, rho_calendar=0.998),
-    "cal_decay_0.999": base_cfg(use_calendar_decay=True, rho_calendar=0.999),
-    "cal_decay_1.000": base_cfg(use_calendar_decay=True, rho_calendar=1.0),
-
-    # Combined: pick the cheapest meaningful overlay (will be revised
-    # based on single-knob results)
-    "combo_v1": base_cfg(
-        cold_init_factor=0.5,
-        use_calendar_decay=True,
-        rho_calendar=0.99,
-    ),
+    "cal_decay_0.99":  base_cfg(rho_calendar=0.99),
+    "cal_decay_0.995": base_cfg(rho_calendar=0.995),
+    "cal_decay_0.997": base_cfg(rho_calendar=0.997),
+    "cal_decay_0.998": base_cfg(rho_calendar=0.998),
+    "cal_decay_0.999": base_cfg(rho_calendar=0.999),
+    "cal_decay_1.000": base_cfg(rho_calendar=1.0),
 }
 
 

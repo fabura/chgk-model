@@ -1,12 +1,12 @@
 """
 Hyperparameter tuning for sequential rating.
 
-Grid or random search over eta0, rho, w_online via time-based backtest.
+Grid or random search over eta0, w_online, w_sync via per-cell hold-out.
 """
 from __future__ import annotations
 
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Optional
 
 import numpy as np
@@ -28,38 +28,38 @@ class TuneResult:
 
 
 def _default_grid() -> list[dict[str, Any]]:
-    """Default grid: eta0 × rho × w_online (~36 trials)."""
-    eta0_vals = [0.04, 0.07, 0.10]
-    rho_vals = [0.997, 0.999, 0.9995]
-    w_online_vals = [0.5, 0.7, 0.8]
+    """Default grid: eta0 × w_online × w_sync (~27 trials)."""
+    eta0_vals = [0.10, 0.15, 0.20]
+    w_online_vals = [0.3, 0.5, 0.7]
+    w_sync_vals = [0.3, 0.5, 0.7]
     configs = []
     for eta0 in eta0_vals:
-        for rho in rho_vals:
-            for w in w_online_vals:
+        for wo in w_online_vals:
+            for ws in w_sync_vals:
                 configs.append({
                     "eta0": eta0,
-                    "rho": rho,
-                    "w_online": w,
+                    "w_online": wo,
+                    "w_sync": ws,
                 })
     return configs
 
 
 def random_search(
     n_trials: int = 24,
-    eta0_range: tuple[float, float] = (0.03, 0.12),
-    rho_range: tuple[float, float] = (0.996, 0.9998),
-    w_online_range: tuple[float, float] = (0.5, 0.9),
+    eta0_range: tuple[float, float] = (0.05, 0.30),
+    w_online_range: tuple[float, float] = (0.2, 0.8),
+    w_sync_range: tuple[float, float] = (0.2, 0.8),
 ) -> list[dict[str, Any]]:
     """Generate random configs for search."""
     configs = []
     for _ in range(n_trials):
         eta0 = random.uniform(*eta0_range)
-        rho = random.uniform(*rho_range)
-        w = random.uniform(*w_online_range)
+        wo = random.uniform(*w_online_range)
+        ws = random.uniform(*w_sync_range)
         configs.append({
             "eta0": round(eta0, 4),
-            "rho": round(rho, 4),
-            "w_online": round(w, 2),
+            "w_online": round(wo, 2),
+            "w_sync": round(ws, 2),
         })
     return configs
 
@@ -133,8 +133,9 @@ def tune(
                 )
             else:
                 summary = (
-                    f"eta0={cfg.eta0:.4f} rho={cfg.rho:.4f} "
-                    f"w_online={cfg.w_online:.2f}"
+                    f"eta0={cfg.eta0:.4f} "
+                    f"w_online={cfg.w_online:.2f} "
+                    f"w_sync={cfg.w_sync:.2f}"
                 )
             print(
                 f"Trial {i + 1}/{n} | {summary}",

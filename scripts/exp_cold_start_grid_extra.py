@@ -32,7 +32,6 @@ def main() -> int:
     for theta_p, offset in GRID:
         print(f"\n===== θ_prior={theta_p:+.2f}  offset={offset:.2f} =====", flush=True)
         cfg = Config(
-            cold_init_use_team_mean=False,
             cold_init_theta=theta_p,
             games_offset=offset,
         )

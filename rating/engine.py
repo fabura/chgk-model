@@ -14,7 +14,7 @@ from typing import Optional
 
 import numpy as np
 
-from rating.decay import apply_calendar_decay, apply_decay
+from rating.decay import apply_calendar_decay
 from rating.model import forward, process_batch_nb
 from rating.players import PlayerState
 from rating.questions import QuestionState
@@ -69,9 +69,22 @@ class Config:
     # (+0.0122); offline-bucket logloss 0.4791 → 0.4483 (-0.0308).
     # Full sweep table in ``docs/theta_bar_init_experiments.md`` and
     # ``results/exp_theta_bar_retune.csv``.
-    eta0: float = 0.15
-    rho: float = 0.9995
-    w_online: float = 0.5
+    # 2026-05: bumped from 0.15 → 0.22 after a 9-cell honest cell-
+    # holdout sweep (results/exp_eta0_sweep_honest{_high}.csv).  The
+    # higher rate is enabled by ``freeze_log_a=True`` (less competing
+    # capacity per gradient step) and ``n_extra_epochs=1`` (an extra
+    # pass to absorb any residual oscillation).  Net gain: -0.0008
+    # overall logloss and +0.0010 AUC on the held-out cells.
+    eta0: float = 0.22
+    # 2026-05: bumped from 0.5 → 1.0.  After enabling the per-mode
+    # lapse rate (which absorbed a chunk of the noise that
+    # previously demanded a smaller online step), the w_online sweep
+    # under honest cell-holdout monotonically improved up to ~1.0
+    # (results/exp_w_online_sweep_honest{_high}.csv).  At 1.0 the
+    # online (sync+async) θ-update step has the same magnitude as
+    # the offline one — i.e. there is no longer a special discount
+    # for online tournaments.
+    w_online: float = 1.0
 
     w_offline: float = 1.0
     w_sync: float = 0.5
@@ -85,52 +98,44 @@ class Config:
     reg_b: float = 0.0
     reg_log_a: float = 0.0
 
-    # Calendar-based decay.  When ``use_calendar_decay`` is True the
-    # global per-tournament ``apply_decay(theta, rho)`` is replaced with
-    # a per-player decay: ``theta_k *= rho_calendar ** (Δdays /
-    # decay_period_days)`` applied lazily to each player when they next
-    # appear in a tournament.  This decouples decay from the dataset
-    # tournament cadence (which is highly uneven across weeks).
+    # Calendar-based per-player decay: ``theta_k *= rho_calendar **
+    # (Δdays / decay_period_days)`` applied lazily to each player when
+    # they next appear in a tournament.  Decouples decay from the
+    # dataset tournament cadence (which is highly uneven across weeks).
     #
-    # Empirically (see ``docs/calendar_decay_experiments.md``), the per-
-    # tournament global decay ``rho=0.9995`` was over-aggressive on the
-    # rating-DB cadence (~21 tournaments/week × ~8 years ⇒ effective
-    # multiplier ≈ 0.014).  Replacing it with calendar decay
-    # (``rho_calendar=1.0`` ⇒ no decay) cut backtest logloss from 0.602
-    # to 0.532.  ``rho_calendar=1.0`` is the new default; lower values
-    # introduce mild long-term shrinkage at a small accuracy cost.
-    use_calendar_decay: bool = True
+    # Empirically (see ``docs/calendar_decay_experiments.md``), the
+    # legacy per-tournament global decay ``rho=0.9995`` was over-
+    # aggressive on the rating-DB cadence (~21 tournaments/week × ~8
+    # years ⇒ effective multiplier ≈ 0.014).  Calendar decay with
+    # ``rho_calendar=1.0`` (i.e. *no decay*) cut backtest logloss from
+    # 0.602 to 0.532; ``1.0`` stayed the best in subsequent sweeps and
+    # is the production default.  Lower values introduce mild long-
+    # term shrinkage at a small accuracy cost.
+    #
+    # The legacy global decay path (``apply_decay`` and the
+    # ``rho``/``use_calendar_decay`` knobs) was removed in 2026-05;
+    # see ``docs/cleanup_2026-05.md``.
     rho_calendar: float = 1.0  # 1.0 = disable; <1 = per-week multiplicative decay
     decay_period_days: float = 7.0
 
-    # Cold-start shrinkage for first-time players.  ``cold_init_factor``
-    # multiplies the team-mean θ when initialising a new player.  1.0
-    # reproduces the previous behaviour ("inherit team average"); values
-    # < 1.0 protect against a strong roster instantly inflating a
-    # rookie's rating.
-    cold_init_factor: float = 1.0
-
-    # Cold-start prior θ for first-time players.  When
-    # ``cold_init_use_team_mean=False`` every newcomer starts at
-    # ``cold_init_theta`` regardless of their team.  Combined with
-    # ``games_offset`` < 1 (rookie boost), this breaks the positive-
-    # feedback loop where weak rookies → lower team means → even lower
-    # starting θ for the next rookies, which causes the multi-year θ
-    # drift visible on population plots.
+    # Cold-start prior θ for first-time players.  Every newcomer starts
+    # at ``cold_init_theta``; combined with ``games_offset`` < 1
+    # (rookie boost) this breaks the positive-feedback loop where weak
+    # rookies → lower team means → even lower starting θ for the next
+    # rookies, which caused the multi-year θ drift visible on
+    # population plots.
     #
-    # When ``cold_init_use_team_mean=True`` (default, legacy) the prior
-    # is blended with the team mean as
-    #     θ_new = cold_init_factor·mean(team) + (1−cold_init_factor)·prior
-    # and reduces to "no teammates → θ_new = prior".
+    # Tuned default (see ``scripts/exp_cold_start_grid.py`` and
+    # ``docs/cold_start_experiments.md``): −1.0 with the rookie boost
+    # gave the lowest backtest logloss (0.5129) over a 12-cell sweep
+    # on the 2018-04 → 2025-12 hold-out, a ~1.3 % improvement over
+    # the legacy team-mean inheritance and effectively eliminating the
+    # long-term drift of the top-1000 player median.
     #
-    # Tuned defaults (see ``scripts/exp_cold_start_grid.py`` and
-    # ``docs/cold_start_experiments.md``): a fixed prior of −1.0 with the
-    # rookie boost gave the lowest backtest logloss (0.5129) over a 12-
-    # cell sweep on the 2018-04 → 2025-12 hold-out, a ~1.3 % improvement
-    # over the legacy team-mean inheritance, and effectively eliminated
-    # the long-term drift of the top-1000 player median.
+    # The legacy "inherit team average" cold-start (``cold_init_factor``
+    # and ``cold_init_use_team_mean``) was removed in 2026-05; see
+    # ``docs/cleanup_2026-05.md``.
     cold_init_theta: float = -1.0
-    cold_init_use_team_mean: bool = False
 
     # Adaptive learning-rate offset.  η_k = η0 / √(games_offset + games_k).
     # Default 0.25 gives a chess-Elo-style "rookie boost": at games=0 the
@@ -149,7 +154,13 @@ class Config:
     # 9+ are rare and often roster errors).  ``w_size`` allows shutting
     # the effect off for async tournaments where rosters are noisier.
     use_team_size_effect: bool = True
-    team_size_max: int = 8
+    # 2026-05: bumped from 8 → 12 after the cell-holdout calibration
+    # showed that the previously-collapsed "size 10+" bucket was
+    # under-predicted by ~3 p.p.; separate δ for sizes 9, 10, 11, 12
+    # closes the gap with no measurable change in overall logloss
+    # (those sizes are 0.36 % of obs).  See
+    # ``results/exp_size_max.csv``.
+    team_size_max: int = 12
     team_size_anchor: int = 6
     eta_size: float = 0.001
     # 2026-04: 0.10 → 0.0; the L2 was pulling δ_size[1..3] toward 0,
@@ -191,7 +202,17 @@ class Config:
     # ``w_pos_solo`` = 0 (positional structure on solo packs is atypical
     # — most are 36-question online quizzes).
     use_solo_channel: bool = True
-    w_solo: float = 0.3
+    # 2026-05: bumped 0.3 → 0.7 after the lapse rate took over the
+    # noise-absorption role for solo high-p misses.  The previous 0.3
+    # value was tuned in 2026-04 to dampen an over-aggressive solo
+    # gradient; with the lapse rate in place that dampening is now
+    # double-counted and unnecessarily slowed θ growth for soloists
+    # (e.g. Семушин at ~35 % solo games).  A 1D sweep under cell-
+    # holdout (results/exp_w_solo_sweep_honest{_high}.csv) showed a
+    # broad plateau 0.5–0.9 on overall logloss; 0.7 is the best on
+    # the solo-only slice (−0.0012 logloss vs 0.3) and ties best
+    # overall.
+    w_solo: float = 0.7
     w_solo_questions: float = 0.0
     w_solo_log_a: float = 0.0
     w_size_solo: float = 1.0
@@ -300,8 +321,89 @@ class Config:
     # Designed to answer "is the online single-pass model
     # under-trained?" without changing semantics for n_extra=0 and
     # without leaking test data into the extra training.
-    n_extra_epochs: int = 0
+    # 2026-05: bumped from 0 → 1.  Under the honest cell-holdout
+    # ablation (results/exp_multi_epoch_honest.csv), one extra
+    # chronological pass cuts overall logloss by 0.0009 and the
+    # async-only logloss by 0.0024.  A second extra epoch plateaus
+    # (no further improvement), so the model is essentially at a
+    # local optimum after pass 2 — the SGD optimizer is sufficient
+    # and a more sophisticated one (Adam/L-BFGS) is unlikely to help.
+    n_extra_epochs: int = 1
     extra_test_fraction: float = 0.2
+
+    # ------------------------------------------------------------------
+    # Per-observation hold-out for leakage-free evaluation
+    # (``holdout_obs_fraction``).
+    #
+    # 0.0 = current behavior: every observation participates in init,
+    # SGD updates, and game counters.
+    #
+    # >0 = randomly mark this fraction of observations as "held out".
+    # Held-out observations are completely invisible to training:
+    #
+    #   * skipped from question initialisation (``q_takes`` /
+    #     ``q_team_sizes`` / ``q_theta_bars``) so b_init does not
+    #     leak the held-out take rate;
+    #   * skipped from player initialisation (a player whose only
+    #     appearance is held out stays uninitialised);
+    #   * skipped from SGD batches (no θ / b / log_a / δ_size /
+    #     δ_pos updates);
+    #   * skipped from game counters and per-tournament calendar
+    #     decay so they don't artificially age η_k.
+    #
+    # Predictions are still recorded for ALL observations (including
+    # held-out ones) using the state at the moment of the tournament,
+    # so a downstream analysis can compute logloss on the held-out
+    # subset only.  ``predictions['is_holdout']`` flags which rows
+    # are held out.
+    #
+    # This implements the "intersection of random questions and
+    # random teams" hold-out methodology from the 2026-04 review:
+    # b_i and θ_k are estimated only from non-held-out observations,
+    # so the held-out logloss is genuinely out-of-sample.
+    holdout_obs_fraction: float = 0.0
+    holdout_seed: int = 42
+
+    # Freeze ``log_a`` (i.e. fix discrimination ``a_i = 1``) across
+    # all update channels (offline, sync, async, solo).  Default
+    # ``True`` since 2026-05: a 5-variant cell-holdout ablation
+    # showed that learning ``a_i`` did not buy us anything on the
+    # honest hold-out (logloss tied at 0.5078 with frozen vs learned
+    # ``a``; async slightly improved).  Removing ~25 k learnable
+    # parameters also makes SGD a touch faster.  Set to ``False`` to
+    # re-enable learning for ablation experiments.  See
+    # ``results/exp_holdout_ablations.csv``.
+    freeze_log_a: bool = True
+
+    # ------------------------------------------------------------------
+    # Lapse rate (per (game-type × team/solo)) — added 2026-05.  See
+    # ``docs/calibration_2026-05.md`` for motivation: the noisy-OR
+    # forward asymptotically goes to 1, but empirically even strong
+    # solo / async players miss "easy" questions ~5–10 % of the time
+    # (typos, distraction, format glitches).  Without a floor the
+    # model is over-confident on the high-p tail (calibration bias
+    # +9.5 p.p. for solo, +3.9 p.p. for async).
+    #
+    # Modified forward:   p = (1 − π_{mode, is_solo}) · p_noisy_or
+    # 6 learnable scalars indexed by (mode ∈ {offline, sync, async},
+    # is_solo ∈ {team, solo}).  ``mode`` here is the tournament's
+    # game_type bucket (same dispatch as ``_type_update_weights``);
+    # ``is_solo`` distinguishes obs with ``team_size == 1``.  The
+    # init values below are warm-started from the high-p calibration
+    # bias measured under the previous (lapse-free) defaults.
+    use_lapse_rate: bool = True
+    lapse_init_offline_team: float = 0.03
+    lapse_init_offline_solo: float = 0.10
+    lapse_init_sync_team: float = 0.01
+    lapse_init_sync_solo: float = 0.07
+    lapse_init_async_team: float = 0.04
+    lapse_init_async_solo: float = 0.10
+    # SGD step size for the lapse parameters.  Tiny because there are
+    # ~10 M observations and only 6 scalars; the gradient magnitude
+    # is bounded (always ≤ 1/π).
+    eta_lapse: float = 1e-4
+    # Hard clip to keep π in a sane range.
+    lapse_max: float = 0.30
 
 
 # ======================================================================
@@ -323,6 +425,10 @@ class SequentialResult:
     team_size_anchor: int = 6
     delta_pos: Optional[np.ndarray] = None  # learned position-in-tour effect
     pos_anchor: int = 6
+    # Final lapse rates per (mode, is_solo); shape (3, 2) where
+    # rows are mode (0=offline, 1=sync, 2=async) and columns are
+    # (team, solo).  ``None`` when ``use_lapse_rate=False``.
+    lapse: Optional[np.ndarray] = None
     # Yearly gauge re-centering events: list of (ord_day, median_before,
     # delta_applied, n_active_veterans).  Used by build_db.py to retroactively
     # bring all historical θ rows into a single (final) gauge so the displayed
@@ -335,6 +441,15 @@ class SequentialResult:
 # Helpers
 # ======================================================================
 
+def _mode_idx(game_type: str) -> int:
+    """0 = offline, 1 = sync, 2 = async (matches lapse-rate dispatch)."""
+    if "async" in game_type:
+        return 2
+    if "sync" in game_type:
+        return 1
+    return 0
+
+
 def _type_update_weights(
     game_type: str, cfg: Config
 ) -> tuple[float, float, float, float, float]:
@@ -342,11 +457,12 @@ def _type_update_weights(
 
     Returns ``(theta_w, b_w, log_a_w, size_w, pos_w)``.
     """
+    log_a_mul = 0.0 if cfg.freeze_log_a else 1.0
     if "async" in game_type:
         return (
             cfg.w_online,
             cfg.w_online_questions,
-            cfg.w_online_log_a,
+            cfg.w_online_log_a * log_a_mul,
             cfg.w_size_async,
             cfg.w_pos_async,
         )
@@ -354,14 +470,14 @@ def _type_update_weights(
         return (
             cfg.w_sync,
             cfg.w_sync,
-            cfg.w_sync,
+            cfg.w_sync * log_a_mul,
             cfg.w_size_sync,
             cfg.w_pos_sync,
         )
     return (
         cfg.w_offline,
         cfg.w_offline,
-        cfg.w_offline,
+        cfg.w_offline * log_a_mul,
         cfg.w_size_offline,
         cfg.w_pos_offline,
     )
@@ -375,10 +491,11 @@ def _solo_update_weights(
     Solo samples are routed through their own channel regardless of
     the tournament's nominal type — see ``Config.w_solo``.
     """
+    log_a_mul = 0.0 if cfg.freeze_log_a else 1.0
     return (
         cfg.w_solo,
         cfg.w_solo_questions,
-        cfg.w_solo_log_a,
+        cfg.w_solo_log_a * log_a_mul,
         cfg.w_size_solo,
         cfg.w_pos_solo,
     )
@@ -455,6 +572,24 @@ def run_sequential(
     num_players = maps.num_players
     num_questions = maps.num_questions
 
+    # Per-observation hold-out mask (see Config.holdout_obs_fraction).
+    # When enabled, marked observations are excluded from question/
+    # player initialisation, SGD updates, game counters, and calendar
+    # decay; predictions are still recorded so the caller can compute
+    # leakage-free logloss on the held-out subset.
+    holdout_frac = float(getattr(cfg, "holdout_obs_fraction", 0.0))
+    if holdout_frac > 0.0:
+        _ho_rng = np.random.default_rng(int(getattr(cfg, "holdout_seed", 42)))
+        is_holdout = _ho_rng.random(n_obs) < holdout_frac
+        if verbose:
+            print(
+                f"[holdout] fraction={holdout_frac:.3f}, "
+                f"masking {int(is_holdout.sum())}/{n_obs} obs "
+                f"(seed={int(cfg.holdout_seed)})"
+            )
+    else:
+        is_holdout = np.zeros(n_obs, dtype=bool)
+
     # Canonical question mapping for paired tournaments (sync+async
     # sharing the same question package).  When available, multiple raw
     # question indices map to the same canonical index so they share b/a.
@@ -515,6 +650,25 @@ def run_sequential(
     else:
         eta_size_eff = float(cfg.eta_size)
 
+    # Lapse-rate state: 6 scalars indexed by (mode, is_solo).  Stored
+    # as 6 single-element arrays so each can be passed to (and mutated
+    # by) ``process_batch_nb``.  Layout:
+    #   lapse_team[mode]  → process_batch_nb on team obs in that mode
+    #   lapse_solo[mode]  → process_batch_nb on solo obs in that mode
+    # mode ∈ {0=offline, 1=sync, 2=async} (see ``_mode_idx``).
+    lapse_team = [
+        np.array([float(cfg.lapse_init_offline_team)], dtype=np.float64),
+        np.array([float(cfg.lapse_init_sync_team)], dtype=np.float64),
+        np.array([float(cfg.lapse_init_async_team)], dtype=np.float64),
+    ]
+    lapse_solo = [
+        np.array([float(cfg.lapse_init_offline_solo)], dtype=np.float64),
+        np.array([float(cfg.lapse_init_sync_solo)], dtype=np.float64),
+        np.array([float(cfg.lapse_init_async_solo)], dtype=np.float64),
+    ]
+    eta_lapse_eff = float(cfg.eta_lapse) if cfg.use_lapse_rate else 0.0
+    lapse_max_eff = float(cfg.lapse_max)
+
     # Position-in-tour effect: vector of length tour_len, indexed by
     # raw_question_index_within_tournament % tour_len.  Anchored at
     # pos_anchor (delta_pos at that index stays zero).
@@ -545,6 +699,7 @@ def run_sequential(
     pred_g_list: list[int] | None = [] if collect_predictions else None
     pred_thbar_list: list[float] | None = [] if collect_predictions else None
     pred_obs_list: list[int] | None = [] if collect_predictions else None
+    pred_holdout_list: list[int] | None = [] if collect_predictions else None
 
     try:
         from tqdm import tqdm
@@ -602,25 +757,20 @@ def run_sequential(
                 last_recenter_epoch = current_epoch
 
         # 1. Decay -------------------------------------------------------
-        # Calendar-based decay is applied later, *after* we collect the
-        # set of players appearing in this tournament (so it touches
-        # only those players and uses their personal Δdays).  When
-        # disabled, fall back to the original global decay.
-        if not cfg.use_calendar_decay:
-            apply_decay(players.theta, cfg.rho)
+        # Calendar-based decay is applied below in step 4b, *after* we
+        # collect the set of players appearing in this tournament (so
+        # it touches only those players and uses their personal Δdays).
 
         # 2. Initialise unseen players from teammates --------------------
         for i in obs_indices:
+            if is_holdout[i]:
+                continue
             s, e = int(offsets[i]), int(offsets[i + 1])
             pids = player_flat[s:e]
             for pidx in pids:
                 if not players.seen[int(pidx)]:
                     players.initialize_new(
-                        int(pidx),
-                        pids.tolist(),
-                        cold_factor=cfg.cold_init_factor,
-                        prior=cfg.cold_init_theta,
-                        use_team_mean=cfg.cold_init_use_team_mean,
+                        int(pidx), prior=cfg.cold_init_theta,
                     )
 
         # 3. Initialise unseen questions from empirical take rates --------
@@ -630,6 +780,8 @@ def run_sequential(
         q_theta_bars: dict[int, list[float]] = defaultdict(list)
         theta_bar_min_games = max(1, int(cfg.theta_bar_min_games))
         for i in obs_indices:
+            if is_holdout[i]:
+                continue
             qi_c = _cqi(int(q_idx[i]))
             q_takes[qi_c].append(int(taken[i]))
             if cfg.noisy_or_init:
@@ -664,6 +816,9 @@ def run_sequential(
 
         # 4. Record predictions BEFORE updating --------------------------
         if collect_predictions:
+            mode_idx_pred = _mode_idx(game_types[g])
+            lapse_t_pred = float(lapse_team[mode_idx_pred][0])
+            lapse_s_pred = float(lapse_solo[mode_idx_pred][0])
             for i in obs_indices:
                 qi = _cqi(int(q_idx[i]))
                 s, e = int(offsets[i]), int(offsets[i + 1])
@@ -684,12 +839,17 @@ def run_sequential(
                     delta_g += float(delta_size[ts_idx])
                 if cfg.use_pos_effect and pos_idx_pred != pos_anchor:
                     delta_g += float(delta_pos[pos_idx_pred])
-                p, _, _ = forward(th, questions.b[qi], a_val, delta=delta_g)
+                lapse_pred = lapse_s_pred if (e - s) == 1 else lapse_t_pred
+                p, _, _ = forward(
+                    th, questions.b[qi], a_val,
+                    delta=delta_g, lapse=lapse_pred,
+                )
                 pred_p_list.append(p)
                 pred_y_list.append(int(taken[i]))
                 pred_g_list.append(g)
                 pred_thbar_list.append(float(th.mean()) if th.size > 0 else 0.0)
                 pred_obs_list.append(int(i))
+                pred_holdout_list.append(1 if is_holdout[i] else 0)
 
         # 5. Sequential updates (Numba-accelerated batch) ----------------
         # When ``use_solo_channel`` is enabled, samples with
@@ -698,6 +858,8 @@ def run_sequential(
         # everything flows through the legacy single-batch path.
         by_q: dict[int, list[int]] = defaultdict(list)
         for i in obs_indices:
+            if is_holdout[i]:
+                continue
             by_q[int(q_idx[i])].append(i)
         obs_order_team: list[int] = []
         obs_order_solo: list[int] = []
@@ -713,29 +875,31 @@ def run_sequential(
                 obs_order_team.extend(by_q[qi_raw])
         tourn_players: set[int] = set()
         for i in obs_indices:
+            if is_holdout[i]:
+                continue
             s, e = int(offsets[i]), int(offsets[i + 1])
             tourn_players.update(int(p) for p in player_flat[s:e])
 
         # 4b. Calendar-based decay: only touch participating players,
         #     proportional to their own days-since-last-game.
-        if cfg.use_calendar_decay:
-            current_ord = (
-                int(gdo[g])
-                if gdo is not None and g < len(gdo) and int(gdo[g]) >= 0
-                else -1
+        current_ord = (
+            int(gdo[g])
+            if gdo is not None and g < len(gdo) and int(gdo[g]) >= 0
+            else -1
+        )
+        if current_ord >= 0:
+            pids_arr = np.fromiter(tourn_players, dtype=np.int64, count=len(tourn_players))
+            apply_calendar_decay(
+                players.theta,
+                players.last_seen_ordinal,
+                current_ord,
+                pids_arr,
+                cfg.rho_calendar,
+                cfg.decay_period_days,
             )
-            if current_ord >= 0:
-                pids_arr = np.fromiter(tourn_players, dtype=np.int64, count=len(tourn_players))
-                apply_calendar_decay(
-                    players.theta,
-                    players.last_seen_ordinal,
-                    current_ord,
-                    pids_arr,
-                    cfg.rho_calendar,
-                    cfg.decay_period_days,
-                )
-                players.last_seen_ordinal[pids_arr] = current_ord
+            players.last_seen_ordinal[pids_arr] = current_ord
 
+        mode_idx_g = _mode_idx(game_types[g])
         if obs_order_team:
             obs_arr = np.array(obs_order_team, dtype=np.int64)
             total_loglik += process_batch_nb(
@@ -769,6 +933,9 @@ def run_sequential(
                 cfg.reg_log_a,
                 20.0,
                 cfg.games_offset,
+                lapse_team[mode_idx_g],
+                eta_lapse_eff,
+                lapse_max_eff,
             )
             total_obs_count += len(obs_order_team)
         if obs_order_solo:
@@ -807,6 +974,9 @@ def run_sequential(
                 cfg.reg_log_a,
                 20.0,
                 cfg.games_offset,
+                lapse_solo[mode_idx_g],
+                eta_lapse_eff,
+                lapse_max_eff,
             )
             total_obs_count += len(obs_order_solo)
 
@@ -818,6 +988,8 @@ def run_sequential(
         if cfg.eta_teammate > 0.0:
             seen_rosters: set[tuple[int, ...]] = set()
             for i in obs_indices:
+                if is_holdout[i]:
+                    continue
                 s, e = int(offsets[i]), int(offsets[i + 1])
                 if e - s < 2:
                     continue
@@ -889,6 +1061,8 @@ def run_sequential(
 
                 by_q: dict[int, list[int]] = defaultdict(list)
                 for i in obs_indices:
+                    if is_holdout[i]:
+                        continue
                     by_q[int(q_idx[i])].append(i)
                 obs_order_team_e: list[int] = []
                 obs_order_solo_e: list[int] = []
@@ -903,6 +1077,7 @@ def run_sequential(
                     for qi_raw in sorted(by_q):
                         obs_order_team_e.extend(by_q[qi_raw])
 
+                mode_idx_e = _mode_idx(gt)
                 if obs_order_team_e:
                     obs_arr_e = np.array(
                         obs_order_team_e, dtype=np.int64
@@ -920,6 +1095,9 @@ def run_sequential(
                         team_size_anchor, pos_anchor,
                         cfg.reg_theta, cfg.reg_b, cfg.reg_log_a,
                         20.0, cfg.games_offset,
+                        lapse_team[mode_idx_e],
+                        eta_lapse_eff,
+                        lapse_max_eff,
                     )
                 if obs_order_solo_e:
                     sw_t, sw_b, sw_la, sw_s, sw_p = (
@@ -941,6 +1119,9 @@ def run_sequential(
                         team_size_anchor, pos_anchor,
                         cfg.reg_theta, cfg.reg_b, cfg.reg_log_a,
                         20.0, cfg.games_offset,
+                        lapse_solo[mode_idx_e],
+                        eta_lapse_eff,
+                        lapse_max_eff,
                     )
                 np.clip(players.theta, -10.0, 10.0, out=players.theta)
             if verbose:
@@ -972,9 +1153,17 @@ def run_sequential(
             pred_obs_list[:] = [
                 p for p, k in zip(pred_obs_list, keep_mask) if k
             ]
+            pred_holdout_list[:] = [
+                p for p, k in zip(pred_holdout_list, keep_mask) if k
+            ]
 
             for g in ordered[-n_test_games:]:
                 obs_indices = obs_by_game[g]
+                mode_idx_post = _mode_idx(
+                    game_types[g] if g < len(game_types) else "offline"
+                )
+                lapse_t_post = float(lapse_team[mode_idx_post][0])
+                lapse_s_post = float(lapse_solo[mode_idx_post][0])
                 for i in obs_indices:
                     qi = _cqi(int(q_idx[i]))
                     s, e = int(offsets[i]), int(offsets[i + 1])
@@ -995,8 +1184,10 @@ def run_sequential(
                         delta_g += float(delta_size[ts_idx])
                     if cfg.use_pos_effect and pos_idx_pred != pos_anchor:
                         delta_g += float(delta_pos[pos_idx_pred])
+                    lapse_post = lapse_s_post if (e - s) == 1 else lapse_t_post
                     p, _, _ = forward(
-                        th, questions.b[qi], a_val, delta=delta_g
+                        th, questions.b[qi], a_val,
+                        delta=delta_g, lapse=lapse_post,
                     )
                     pred_p_list.append(p)
                     pred_y_list.append(int(taken[i]))
@@ -1005,6 +1196,7 @@ def run_sequential(
                         float(th.mean()) if th.size > 0 else 0.0
                     )
                     pred_obs_list.append(int(i))
+                    pred_holdout_list.append(1 if is_holdout[i] else 0)
 
     # === Assemble predictions ==========================================
     predictions = None
@@ -1017,6 +1209,7 @@ def run_sequential(
             # backtest to bucket test tournaments by roster strength.
             "team_theta_mean": np.array(pred_thbar_list, dtype=np.float64),
             "obs_idx": np.array(pred_obs_list, dtype=np.int64),
+            "is_holdout": np.array(pred_holdout_list, dtype=np.int8),
         }
 
     # === Summary =======================================================
@@ -1082,6 +1275,14 @@ def run_sequential(
                 f"std={float(th_seen.std()):.3f} "
                 f"clamped={th_clamp}/{n_p} ({100.0 * th_clamp / n_p:.2f}%)"
             )
+        if cfg.use_lapse_rate:
+            mode_names = ("offline", "sync", "async")
+            print("Lapse rate π (1 − π = predicted-probability ceiling):")
+            for m, name in enumerate(mode_names):
+                print(
+                    f"  {name:7s}: team={float(lapse_team[m][0]):.4f}  "
+                    f"solo={float(lapse_solo[m][0]):.4f}"
+                )
 
         experienced = players.games >= 30
         if experienced.any():
@@ -1100,6 +1301,13 @@ def run_sequential(
                     f"games={players.games[idx]}"
                 )
 
+    lapse_final = None
+    if cfg.use_lapse_rate:
+        lapse_final = np.array(
+            [[float(lapse_team[m][0]), float(lapse_solo[m][0])]
+             for m in range(3)],
+            dtype=np.float64,
+        )
     return SequentialResult(
         players=players,
         questions=questions,
@@ -1112,5 +1320,6 @@ def run_sequential(
         team_size_anchor=team_size_anchor,
         delta_pos=delta_pos if cfg.use_pos_effect else None,
         pos_anchor=pos_anchor,
+        lapse=lapse_final,
         recenter_events=list(recenter_log) if recenter_log else None,
     )

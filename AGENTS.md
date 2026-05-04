@@ -39,8 +39,10 @@ Sequential model: computes player strength changes week by week, tournament by t
 - **Run**: `python -m rating --mode cached --cache_file data.npz`
 - **Important defaults**:
   - tuned `t6` mode handling — see `docs/async_mode_experiments.md`
-  - per-player calendar decay (`use_calendar_decay=True`,
-    `rho_calendar=1.0`) — see `docs/calendar_decay_experiments.md`
+  - per-player calendar decay (`rho_calendar=1.0` = disabled by
+    default) — see `docs/calendar_decay_experiments.md`. The legacy
+    global per-tournament decay (`rho`, `use_calendar_decay`,
+    `apply_decay`) was removed in 2026-05; see `docs/cleanup_2026-05.md`.
   - learned per-team-size effect (`use_team_size_effect=True`,
     anchor at 6) — see `docs/team_size_experiments.md`
   - learned per-position-in-tour effect (`use_pos_effect=True`,
@@ -51,29 +53,74 @@ Sequential model: computes player strength changes week by week, tournament by t
     weight, so prolific soloists in online quizzes (M-Лига etc.)
     don't get artefactually inflated θ via the noisy-OR
     identifiability shortcut. See `docs/solo_channel_experiments.md`.
-  - fixed cold-start prior (`cold_init_theta=-1.0`,
-    `cold_init_use_team_mean=False`) plus chess-Elo "rookie boost"
-    (`games_offset=0.25`, so first-game η = 2·η0) — breaks the
-    team-mean inheritance feedback loop that produced multi-year
-    population θ drift; rationale and the 12-cell sweep that picked
-    these defaults are in `scripts/exp_cold_start_grid.py` (and the
-    extra boundary sweep in `..._extra.py`).
- - Backtest logloss on the full DB: **0.488** (was 0.602 with the
- old per-tournament decay; 0.532 before adding team-size; 0.527
- before the position effect; ~1.3 % further improvement from the
- fixed cold-start prior; ~1.7 % more from the 2026-04 noisy-OR
- init + retune; ~5.9 % more from the θ̄-aware init + retune below).
-- **Hyperparameters**: `eta0`, `rho`, `rho_calendar`, `decay_period_days`,
- `cold_init_theta`, `cold_init_use_team_mean`, `cold_init_factor`,
- `games_offset`, `w_online`, `w_online_questions`, `w_online_log_a`,
- `w_offline`, `w_sync`, `eta_size`, `eta_pos`, `eta_teammate`,
- `reg_size`, `reg_pos`, `reg_theta`, `reg_b`, `reg_log_a`,
- `team_size_max`, `team_size_anchor`, `w_size_offline/sync/async`,
- `tour_len`, `pos_anchor`, `use_solo_channel`, `w_solo`,
- `w_solo_questions`, `w_solo_log_a`, `w_size_solo`, `w_pos_solo`,
- `recenter_period_days`, `recenter_target`, `recenter_min_games`,
- `recenter_active_days`, `noisy_or_init`, `theta_bar_init`,
- `theta_bar_min_games`. Full list in `Config` (`rating/engine.py`).
+  - fixed cold-start prior (`cold_init_theta=-1.0`) plus chess-Elo
+    "rookie boost" (`games_offset=0.25`, so first-game η = 2·η0) —
+    breaks the team-mean inheritance feedback loop that produced
+    multi-year population θ drift; rationale and the 12-cell sweep
+    that picked these defaults are in `scripts/exp_cold_start_grid.py`
+    (and the extra boundary sweep in `..._extra.py`). The legacy
+    "inherit team-mean" path (`cold_init_factor`,
+    `cold_init_use_team_mean`) was removed in 2026-05; see
+    `docs/cleanup_2026-05.md`.
+  - frozen question discrimination (`freeze_log_a=True`,
+    i.e. `a_i ≡ 1` for every question). Ablation under cell-holdout
+    (`results/exp_holdout_ablations.csv`) showed learning `a_i` did
+    not improve quality; freezing removes ~25 k learnable parameters.
+    Set `--no-freeze-log-a` to re-enable for ablation experiments.
+  - team-size effect learned up to size 12
+    (`team_size_max=12`, anchor at 6) — bumped from 8 in 2026-05
+    after honest calibration showed the previously-collapsed `[10+]`
+    bucket was under-predicted by ~3 p.p.; see
+    `results/exp_size_max.csv`.
+  - one extra SGD epoch by default (`n_extra_epochs=1`) — gives
+    overall logloss −0.0009 and async-only logloss −0.0024 under
+    cell-holdout vs single-pass; a second extra epoch plateaus,
+    indicating SGD reaches the local optimum after pass 2 and a
+    fancier optimizer (Adam / L-BFGS) is unlikely to help. See
+    `results/exp_multi_epoch_honest.csv`.
+  - per-(mode × is_solo) lapse rate (`use_lapse_rate=True`,
+    six learnable scalars `π_{m,s}`) capping the predicted
+    probability at `1 − π`. Fixes the +9.5 p.p. solo high-p
+    over-prediction (down to +1.5 p.p.) and +3.9 p.p. async
+    high-p (down to +2.1 p.p.).  Net **−0.0054 logloss** — the
+    largest single gain in the 2026-05 cycle. See
+    `docs/lapse_rate_2026-05.md`.
+  - re-tuned defaults: `eta0=0.22` (was 0.15), `w_online=1.0`
+    (was 0.5).  Both shifted upward after the lapse rate
+    absorbed format-specific noise that previously demanded
+    smaller online steps.  See `results/exp_eta0_sweep_honest*.csv`
+    and `results/exp_w_online_sweep_honest*.csv`.
+ - Backtest logloss on the full DB: **0.5007** (honest cell-holdout
+ with `--holdout 0.10 --holdout-seed 42`, the new CLI default; see
+ `docs/leakage_2026-05.md`). The legacy time-split number was 0.485
+ but it was leaky by ~+5 % overall and ~+16 % on offline tournaments —
+ do not compare honest numbers to historical leaky ones (use
+ `--holdout 0.0` for the legacy mode if you need a direct comparison).
+ The leaky number was 0.602 with the old per-tournament decay; 0.532
+ before adding team-size; 0.527 before the position effect; ~1.3 %
+ further improvement from the fixed cold-start prior; ~1.7 % more
+ from the 2026-04 noisy-OR init + retune; ~5.9 % more from the
+ θ̄-aware init + retune. Note: the last two gains touch the same
+ `b_init` channel that leaks, so part of those reported gains is
+ improvement in *the calibration of the leakage*; see the 2026-05
+ ablation re-validation in `results/exp_holdout_ablations.csv`.
+- **Hyperparameters**: `eta0`, `rho_calendar`, `decay_period_days`,
+ `cold_init_theta`, `games_offset`, `w_online`, `w_online_questions`,
+ `w_online_log_a`, `w_offline`, `w_sync`, `eta_size`, `eta_pos`,
+ `eta_teammate`, `reg_size`, `reg_pos`, `reg_theta`, `reg_b`,
+ `reg_log_a`, `team_size_max`, `team_size_anchor`,
+ `w_size_offline/sync/async`, `tour_len`, `pos_anchor`,
+ `use_solo_channel`, `w_solo`, `w_solo_questions`, `w_solo_log_a`,
+ `w_size_solo`, `w_pos_solo`, `recenter_period_days`,
+ `recenter_target`, `recenter_min_games`, `recenter_active_days`,
+ `noisy_or_init`, `theta_bar_init`, `theta_bar_min_games`,
+ `n_extra_epochs`, `extra_test_fraction`, `freeze_log_a`,
+ `use_lapse_rate`, `lapse_init_offline_team/solo`,
+ `lapse_init_sync_team/solo`, `lapse_init_async_team/solo`,
+ `eta_lapse`, `lapse_max`, `holdout_obs_fraction`, `holdout_seed`.
+ Full list in `Config` (`rating/engine.py`). Removed in 2026-05:
+ `rho`, `use_calendar_decay`, `cold_init_factor`,
+ `cold_init_use_team_mean` — see `docs/cleanup_2026-05.md`.
 - **Drift fix (yearly gauge re-centering)**: every
   `recenter_period_days` (365 by default) the median θ of "active
   veterans" (`games >= recenter_min_games=200`, seen within
@@ -332,7 +379,6 @@ pip install -r requirements.txt
 
 ## Docs
 
-- `docs/current_model_mechanics.md` — detailed model and filters
 - `docs/interpretation.md` — θ interpretation and tables
 - `docs/async_mode_experiments.md` — async/sync/offline mode effects, verified hypotheses, chosen `t6` defaults
 - `docs/calendar_decay_experiments.md` — calendar-based decay sweep, why per-tournament decay was wrong, current defaults
@@ -340,3 +386,13 @@ pip install -r requirements.txt
 - `docs/position_in_tour_experiments.md` — per-position-in-tour shift (δ_pos), empirical curve, anchor choice, backtest gains
 - `docs/noisy_or_init_experiments.md` — noisy-OR-aware question initialisation (`b_init = log(n) - log(-log(1-p))`), why the legacy init under-shot b on hard packs and why that leaked into θ via the noisy-OR gauge, plus the 27-trial coord-descent retune (Round 1)
 - `docs/theta_bar_init_experiments.md` — θ̄-aware extension (`b_init = log(n) + θ̄ - log(-log(1-p))`); Round 2 retune that pushed `eta0` from 0.04 → 0.15 and the diagnostic showing every Vyshka-Moscow team is now unbiased
+- `docs/leakage_2026-05.md`
+- `docs/cleanup_2026-05.md`
+- `docs/calibration_2026-05.md` — discovery of test-set leakage in the
+  legacy time-split backtest, the cell-holdout fix
+  (`Config.holdout_obs_fraction`, `--holdout` CLI), measured
+  magnitude of leakage (~+5 % logloss overall, +16 % on offline),
+  and consequences for past ablation results
+- `docs/lapse_rate_2026-05.md` — per-(mode × is_solo) lapse-rate
+  floor `p = (1 − π) · p_noisy_or` to fix solo / async high-p
+  over-prediction (−0.0054 logloss; solo high-p bias 9.5 → 1.5 p.p.)

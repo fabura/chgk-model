@@ -150,6 +150,3 @@ calling the same script with `StartCalendarInterval` set to `Hour=1`.
 
 - `docs/async_mode_experiments.md` — checked hypotheses, measured
   backtest results, chosen defaults, and future ideas for mode handling
-- `docs/current_model_mechanics.md` — historical note about the previous
-  offline/training pipeline; not the source of truth for the current
-  `rating/` package

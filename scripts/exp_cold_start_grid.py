@@ -62,7 +62,6 @@ def main() -> int:
             flush=True,
         )
         cfg = Config(
-            cold_init_use_team_mean=False,
             cold_init_theta=theta_p,
             games_offset=offset,
         )

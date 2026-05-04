@@ -1,29 +1,23 @@
 """
-Rating decay: slow multiplicative drift toward zero.
+Rating decay: per-player calendar-based decay.
 
-Two flavours are supported:
+``apply_calendar_decay(theta, last_seen_ordinal, current_ordinal,
+pids, rho_calendar, period_days)`` decays θ proportionally to the
+number of days since the player's last appearance.  This matches the
+intuition that θ is a *current strength* estimate and should decay
+only because of real-world time passing, not because the dataset
+happens to contain many parallel tournaments in the same week.
 
-* ``apply_decay(theta, rho)`` — global per-tournament decay.  Cheap,
-  but unfair: a player who is in many tournaments per week gets
-  punished as much as a long-inactive one.
-* ``apply_calendar_decay(theta, last_seen_ordinal, current_ordinal,
-  pids, rho_calendar, period_days)`` — per-player decay proportional to
-  the number of days since the player's last appearance.  This matches
-  the intuition that θ is a *current strength* estimate and should
-  decay only because of real-world time passing, not because the
-  dataset happens to contain many parallel tournaments in the same
-  week.
+The legacy global per-tournament decay (``apply_decay(theta, rho)``)
+was removed in 2026-05; see ``docs/cleanup_2026-05.md``.  In
+practice the production model has run with ``rho_calendar=1.0``
+(i.e. decay disabled entirely) since 2024-Q1.
 """
 from __future__ import annotations
 
 import math
 
 import numpy as np
-
-
-def apply_decay(theta: np.ndarray, rho: float) -> None:
-    """θ ← ρ · θ  (in-place)."""
-    theta *= rho
 
 
 def apply_calendar_decay(

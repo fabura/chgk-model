@@ -45,42 +45,20 @@ class PlayerState:
         return eta0 / math.sqrt(games_offset + self.games[player_idx])
 
     # ------------------------------------------------------------------
-    def initialize_new(
-        self,
-        player_idx: int,
-        teammate_indices: list[int],
-        cold_factor: float = 1.0,
-        prior: float = 0.0,
-        use_team_mean: bool = True,
-    ) -> None:
-        """Set θ for a first-time player.
+    def initialize_new(self, player_idx: int, prior: float = 0.0) -> None:
+        """Set θ for a first-time player to ``prior`` (idempotent).
 
-        Two cold-start regimes are supported:
+        Combined with a rookie boost (``games_offset`` < 1.0 in the
+        learning-rate formula), this gives every newcomer a fixed
+        conservative starting θ that the data then moves upward
+        quickly.  Breaks the cold-start positive-feedback loop where
+        weak rookies pull down team means and subsequent rookies
+        inherit ever-lower starting θ.
 
-        * ``use_team_mean=True`` (legacy): θ_new = cold_factor · mean(teammate θ)
-          + (1 − cold_factor) · prior.  With the previous defaults
-          (``cold_factor=1.0``, ``prior=0.0``) this reproduces the original
-          "inherit team average" behaviour.
-        * ``use_team_mean=False``: θ_new = ``prior`` regardless of teammates.
-          Combined with a rookie boost (``games_offset`` < 1.0 in the
-          learning-rate formula) this gives every newcomer a fixed
-          conservative starting θ, then lets the data move them upward
-          quickly.  Breaks the cold-start positive-feedback loop where
-          weak rookies pull down team means and subsequent rookies
-          inherit ever-lower starting θ.
-
-        If ``use_team_mean=True`` but no teammates have been seen yet,
-        we fall back to ``prior``.
+        The legacy team-mean cold-start path was removed in 2026-05;
+        see ``docs/cleanup_2026-05.md``.
         """
         if self.seen[player_idx]:
             return
-        if use_team_mean:
-            known = [i for i in teammate_indices if i != player_idx and self.seen[i]]
-            if known:
-                team_mean = float(np.mean(self.theta[known]))
-                self.theta[player_idx] = cold_factor * team_mean + (1.0 - cold_factor) * prior
-            else:
-                self.theta[player_idx] = prior
-        else:
-            self.theta[player_idx] = prior
+        self.theta[player_idx] = prior
         self.seen[player_idx] = True

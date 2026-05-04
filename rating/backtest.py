@@ -47,12 +47,25 @@ def backtest(
     test_fraction: float = 0.2,
     verbose: bool = True,
 ) -> dict:
-    """Run sequential training with time-based out-of-sample evaluation.
+    """Run sequential training with out-of-sample evaluation.
 
-    The last *test_fraction* of tournaments (by date) form the test set.
-    Predictions are recorded *before* the model updates on each
-    tournament, so test-set predictions are genuinely out-of-sample
-    with respect to player ratings.
+    Two evaluation modes are supported via ``Config``:
+
+    * **Time-split (default)**: ``cfg.holdout_obs_fraction == 0.0`` —
+      the last ``test_fraction`` of tournaments by date form the test
+      set.  Predictions are recorded *before* model updates on each
+      tournament, so test-set predictions are out-of-sample with
+      respect to player ratings, but the question difficulty ``b`` of
+      questions that first appear in a test tournament is initialised
+      from that tournament's empirical take rate — see
+      ``docs/leakage_2026-05.md``.  This biases the metric and is the
+      legacy behaviour kept for back-compatibility.
+
+    * **Per-cell hold-out**: ``cfg.holdout_obs_fraction > 0.0`` —
+      a random subset of (team, question) cells is excluded from
+      ``b_init`` / ``θ_init`` / SGD.  Metrics are computed on the
+      held-out subset only, giving a leakage-free estimate.  The
+      ``test_fraction`` time split is ignored in this mode.
 
     Returns a dict with logloss / brier / auc and supporting counts.
     """
@@ -78,29 +91,44 @@ def backtest(
     actual_y = result.predictions["actual_y"]
     pred_game = result.predictions["game_idx"]
     pred_thbar = result.predictions.get("team_theta_mean")
+    pred_holdout = result.predictions.get("is_holdout")
 
-    # --- determine test games (last test_fraction by date) ---
-    gdo = getattr(maps, "game_date_ordinal", None)
-    all_games = np.unique(pred_game)
+    holdout_mode = float(getattr(cfg, "holdout_obs_fraction", 0.0)) > 0.0
 
-    if gdo is not None:
-        known = all_games[
-            np.array([gdo[g] >= 0 for g in all_games], dtype=bool)
-        ]
+    if holdout_mode and pred_holdout is not None:
+        # --- evaluate on per-cell hold-out (leakage-free) ---
+        test_mask = pred_holdout.astype(bool)
+        all_games = np.unique(pred_game)
+        test_games = set(int(g) for g in np.unique(pred_game[test_mask]))
+        if verbose:
+            print(
+                f"[backtest] holdout mode: evaluating on "
+                f"{int(test_mask.sum())}/{len(pred_p)} obs across "
+                f"{len(test_games)} tournaments"
+            )
     else:
-        known = np.array([], dtype=np.int32)
+        # --- legacy time-split: last test_fraction of games by date ---
+        gdo = getattr(maps, "game_date_ordinal", None)
+        all_games = np.unique(pred_game)
 
-    if len(known) >= 2:
-        ordered = known[np.argsort(np.array([gdo[g] for g in known]))]
-    else:
-        ordered = np.sort(all_games)
+        if gdo is not None:
+            known = all_games[
+                np.array([gdo[g] >= 0 for g in all_games], dtype=bool)
+            ]
+        else:
+            known = np.array([], dtype=np.int32)
 
-    n_test = max(1, int(len(ordered) * test_fraction))
-    test_games = set(int(g) for g in ordered[-n_test:])
+        if len(known) >= 2:
+            ordered = known[np.argsort(np.array([gdo[g] for g in known]))]
+        else:
+            ordered = np.sort(all_games)
 
-    test_mask = np.array(
-        [int(g) in test_games for g in pred_game], dtype=bool
-    )
+        n_test = max(1, int(len(ordered) * test_fraction))
+        test_games = set(int(g) for g in ordered[-n_test:])
+
+        test_mask = np.array(
+            [int(g) in test_games for g in pred_game], dtype=bool
+        )
 
     if not test_mask.any():
         return {
@@ -118,6 +146,7 @@ def backtest(
     metrics["n_test_games"] = len(test_games)
     metrics["n_total_games"] = len(all_games)
     metrics["result"] = result
+    metrics["holdout_mode"] = holdout_mode
 
     # ---- per-tournament-type metrics on the test set ------------------
     # Useful diagnostic: see whether the global score moves because of
@@ -203,10 +232,16 @@ def backtest(
 
     if verbose:
         print(f"\n{'=' * 50}")
+        mode_label = (
+            f"per-cell hold-out, fraction={cfg.holdout_obs_fraction:.3f}, "
+            f"seed={cfg.holdout_seed}"
+            if holdout_mode
+            else f"time-split, last {test_fraction:.0%} of tournaments"
+        )
+        print(f"BACKTEST  [{mode_label}]")
         print(
-            f"BACKTEST  "
-            f"({len(test_games)} test tournaments, "
-            f"{test_mask.sum()} test obs)"
+            f"  {len(test_games)} test tournaments, "
+            f"{int(test_mask.sum())} test obs"
         )
         print(f"  Logloss : {metrics['logloss']:.4f}")
         print(f"  Brier   : {metrics['brier']:.4f}")

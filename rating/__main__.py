@@ -37,15 +37,12 @@ def main() -> int:
 
     hp = parser.add_argument_group("hyperparameters")
     hp.add_argument(
-        "--eta0", type=float, default=0.15, help="Base learning rate"
-    )
-    hp.add_argument(
-        "--rho", type=float, default=0.9995, help="Rating decay"
+        "--eta0", type=float, default=0.22, help="Base learning rate"
     )
     hp.add_argument(
         "--w_online",
         type=float,
-        default=0.5,
+        default=1.0,
         help="Async/online weight for player updates",
     )
     hp.add_argument(
@@ -79,14 +76,6 @@ def main() -> int:
         help="L2-style shrinkage for log_a (question discrimination)",
     )
     hp.add_argument(
-        "--use-calendar-decay",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Use per-player calendar-based decay (default: on). "
-        "Disable with --no-use-calendar-decay to fall back to the legacy "
-        "global per-tournament decay (rho).",
-    )
-    hp.add_argument(
         "--rho_calendar",
         type=float,
         default=1.0,
@@ -99,31 +88,19 @@ def main() -> int:
         help="Length of one decay period in days (default 7)",
     )
     hp.add_argument(
-        "--cold_init_factor",
-        type=float,
-        default=1.0,
-        help="Shrink team-mean θ when initialising a new player (1.0 = inherit fully, 0.5 = half)",
-    )
-    hp.add_argument(
         "--cold_init_theta",
         type=float,
-        default=0.0,
-        help="Prior θ for first-time players (used when team mean unavailable, "
-        "or always if --no-cold-init-team-mean).",
-    )
-    hp.add_argument(
-        "--cold-init-team-mean",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Inherit (blended) team-mean θ for new players. "
-        "Disable with --no-cold-init-team-mean to use cold_init_theta uniformly.",
+        default=-1.0,
+        help="Prior θ for first-time players. Combined with games_offset<1 "
+        "(rookie boost), produces the chess-Elo-like ramp-up.",
     )
     hp.add_argument(
         "--games_offset",
         type=float,
-        default=1.0,
+        default=0.25,
         help="Adaptive lr offset: η_k = η0/√(games_offset + games_k). "
-        "Values < 1 give a chess-Elo-style rookie boost (e.g. 0.25 → first-game lr is 2× η0).",
+        "Values < 1 give a chess-Elo-style rookie boost (default 0.25 "
+        "⇒ first-game lr is 2× η0).",
     )
     hp.add_argument(
         "--use-team-size-effect",
@@ -135,7 +112,7 @@ def main() -> int:
     hp.add_argument(
         "--team_size_max",
         type=int,
-        default=8,
+        default=12,
         help="Cap team size for the size-effect (sizes above are clipped to this).",
     )
     hp.add_argument(
@@ -244,10 +221,44 @@ def main() -> int:
         "(default: 3; rookies are excluded because their θ is dominated "
         "by cold_init_theta).",
     )
+    hp.add_argument(
+        "--freeze-log-a",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Freeze log_a (i.e. fix discrimination a_i = 1) across all "
+        "update channels.  Default since 2026-05 (the cell-holdout "
+        "ablation showed learning a_i did not improve quality).  "
+        "Disable with --no-freeze-log-a to re-enable for ablations.",
+    )
+    hp.add_argument(
+        "--use-lapse-rate",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Apply per-(mode × is_solo) lapse-rate floor on the "
+        "predicted probability: p = (1 − π_{mode, is_solo}) · p_noisy_or. "
+        "Default since 2026-05 — fixes the +9.5 p.p. solo high-p "
+        "calibration bias.  Use --no-use-lapse-rate to disable.",
+    )
 
     ev = parser.add_argument_group("evaluation")
     ev.add_argument(
-        "--backtest", action="store_true", help="Run time-based backtesting"
+        "--backtest", action="store_true", help="Run backtesting"
+    )
+    ev.add_argument(
+        "--holdout",
+        type=float,
+        default=0.10,
+        help="Per-observation hold-out fraction (default 0.10 = honest "
+        "leakage-free evaluation).  Randomly drops this fraction of obs "
+        "from init/SGD and evaluates only on them.  Set to 0.0 to fall "
+        "back to the legacy (leaky) time-split mode.",
+    )
+    ev.add_argument(
+        "--holdout-seed",
+        type=int,
+        default=42,
+        help="Random seed for the hold-out mask (kept stable across "
+        "ablation runs so they evaluate on the same cells).",
     )
     ev.add_argument(
         "--tune",
@@ -296,19 +307,15 @@ def main() -> int:
 
     cfg = Config(
         eta0=args.eta0,
-        rho=args.rho,
         w_online=args.w_online,
         w_online_questions=args.w_online_questions,
         w_online_log_a=args.w_online_log_a,
         reg_theta=args.reg_theta,
         reg_b=args.reg_b,
         reg_log_a=args.reg_log_a,
-        use_calendar_decay=args.use_calendar_decay,
         rho_calendar=args.rho_calendar,
         decay_period_days=args.decay_period_days,
-        cold_init_factor=args.cold_init_factor,
         cold_init_theta=args.cold_init_theta,
-        cold_init_use_team_mean=args.cold_init_team_mean,
         games_offset=args.games_offset,
         use_team_size_effect=args.use_team_size_effect,
         team_size_max=args.team_size_max,
@@ -328,6 +335,10 @@ def main() -> int:
         noisy_or_init=args.noisy_or_init,
         theta_bar_init=args.theta_bar_init,
         theta_bar_min_games=args.theta_bar_min_games,
+        freeze_log_a=args.freeze_log_a,
+        use_lapse_rate=args.use_lapse_rate,
+        holdout_obs_fraction=args.holdout,
+        holdout_seed=args.holdout_seed,
     )
 
     # --- load data ---
@@ -362,8 +373,8 @@ def main() -> int:
         print("BEST CONFIG (by logloss):")
         print(
             f"  eta0={best.config.eta0:.4f} "
-            f"rho={best.config.rho:.4f} "
-            f"w_online={best.config.w_online:.2f}"
+            f"w_online={best.config.w_online:.2f} "
+            f"w_sync={best.config.w_sync:.2f}"
         )
         print(
             f"  logloss={best.logloss:.4f} "
@@ -372,21 +383,22 @@ def main() -> int:
         )
         print(f"\nTo run with best config:")
         print(
-            f"  --eta0 {best.config.eta0:.4f} --rho {best.config.rho:.4f} "
-            f"--w_online {best.config.w_online:.2f}"
+            f"  --eta0 {best.config.eta0:.4f} "
+            f"--w_online {best.config.w_online:.2f} "
+            f"--w_sync {best.config.w_sync:.2f}"
         )
         if args.tune_output:
             os.makedirs(os.path.dirname(args.tune_output) or ".", exist_ok=True)
             with open(args.tune_output, "w", newline="", encoding="utf-8") as f:
                 w = csv.writer(f)
                 w.writerow(
-                    ["eta0", "rho", "w_online", "logloss", "brier", "auc"]
+                    ["eta0", "w_online", "w_sync", "logloss", "brier", "auc"]
                 )
                 for r in results:
                     w.writerow([
                         r.config.eta0,
-                        r.config.rho,
                         r.config.w_online,
+                        r.config.w_sync,
                         round(r.logloss, 6),
                         round(r.brier, 6),
                         round(r.auc, 6),
