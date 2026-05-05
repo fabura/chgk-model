@@ -405,6 +405,37 @@ class Config:
     # Hard clip to keep π in a sane range.
     lapse_max: float = 0.30
 
+    # ------------------------------------------------------------------
+    # Logit-affine recalibration per (mode × is_solo) — added 2026-05.
+    # The lapse rate (multiplicative cap) only fixes the very-top
+    # tail of the calibration curve; honest cell-holdout calibration
+    # showed a residual S-shaped bias (over-prediction by ~5 p.p. in
+    # the p ∈ [0.7, 0.9] mid-range, especially for solo).  Logit-
+    # affine recalibration is an additional 2-parameter rescale
+    # applied AFTER the lapse cap:
+    #
+    #     z = α + β · logit((1 − π) · p_noisy_or)
+    #     p = sigmoid(z)
+    #
+    # Identity at α=0, β=1.  β < 1 compresses the curve toward 0.5
+    # (lowers high p, raises low p); α shifts everything.  Together
+    # they can model the observed S-shape that lapse alone cannot.
+    # 12 learnable scalars total (3 modes × 2 is_solo × {α, β}).
+    use_recalibration: bool = True
+    recal_alpha_init: float = 0.0
+    recal_beta_init: float = 1.0
+    # SGD step size for α / β.  Larger than eta_lapse because the
+    # per-batch gradient on β (∝ logit(p)) can be small in magnitude
+    # for typical p ∈ [0.2, 0.8] and we want noticeable convergence
+    # over the ~18k batches of one full pass.  1e-2 gives β drift
+    # of ~0.01–0.05 per pass at typical mid-range bias signals.
+    eta_recal: float = 1e-2
+    # Hard clip on β to avoid pathological flips (β must stay > 0
+    # for the recalibration to remain monotonic).
+    recal_beta_min: float = 0.30
+    recal_beta_max: float = 2.00
+    recal_alpha_max: float = 3.00
+
 
 # ======================================================================
 # Result container
@@ -429,6 +460,10 @@ class SequentialResult:
     # rows are mode (0=offline, 1=sync, 2=async) and columns are
     # (team, solo).  ``None`` when ``use_lapse_rate=False``.
     lapse: Optional[np.ndarray] = None
+    # Final logit-affine recalibration parameters (α, β) per
+    # (mode, is_solo); shape (3, 2, 2) — last axis is [α, β].
+    # ``None`` when ``use_recalibration=False``.
+    recal: Optional[np.ndarray] = None
     # Yearly gauge re-centering events: list of (ord_day, median_before,
     # delta_applied, n_active_veterans).  Used by build_db.py to retroactively
     # bring all historical θ rows into a single (final) gauge so the displayed
@@ -669,6 +704,20 @@ def run_sequential(
     eta_lapse_eff = float(cfg.eta_lapse) if cfg.use_lapse_rate else 0.0
     lapse_max_eff = float(cfg.lapse_max)
 
+    # Logit-affine recalibration state: 6 channels, each a length-2
+    # array [α, β].  Identity init (α=0, β=1).
+    def _mk_recal() -> np.ndarray:
+        return np.array(
+            [float(cfg.recal_alpha_init), float(cfg.recal_beta_init)],
+            dtype=np.float64,
+        )
+    recal_team = [_mk_recal() for _ in range(3)]
+    recal_solo = [_mk_recal() for _ in range(3)]
+    eta_recal_eff = float(cfg.eta_recal) if cfg.use_recalibration else 0.0
+    recal_alpha_max_eff = float(cfg.recal_alpha_max)
+    recal_beta_min_eff = float(cfg.recal_beta_min)
+    recal_beta_max_eff = float(cfg.recal_beta_max)
+
     # Position-in-tour effect: vector of length tour_len, indexed by
     # raw_question_index_within_tournament % tour_len.  Anchored at
     # pos_anchor (delta_pos at that index stays zero).
@@ -819,6 +868,8 @@ def run_sequential(
             mode_idx_pred = _mode_idx(game_types[g])
             lapse_t_pred = float(lapse_team[mode_idx_pred][0])
             lapse_s_pred = float(lapse_solo[mode_idx_pred][0])
+            recal_t_pred = recal_team[mode_idx_pred]
+            recal_s_pred = recal_solo[mode_idx_pred]
             for i in obs_indices:
                 qi = _cqi(int(q_idx[i]))
                 s, e = int(offsets[i]), int(offsets[i + 1])
@@ -839,10 +890,14 @@ def run_sequential(
                     delta_g += float(delta_size[ts_idx])
                 if cfg.use_pos_effect and pos_idx_pred != pos_anchor:
                     delta_g += float(delta_pos[pos_idx_pred])
-                lapse_pred = lapse_s_pred if (e - s) == 1 else lapse_t_pred
+                is_solo_pred = (e - s) == 1
+                lapse_pred = lapse_s_pred if is_solo_pred else lapse_t_pred
+                recal_pred = recal_s_pred if is_solo_pred else recal_t_pred
                 p, _, _ = forward(
                     th, questions.b[qi], a_val,
                     delta=delta_g, lapse=lapse_pred,
+                    recal_alpha=float(recal_pred[0]),
+                    recal_beta=float(recal_pred[1]),
                 )
                 pred_p_list.append(p)
                 pred_y_list.append(int(taken[i]))
@@ -936,6 +991,11 @@ def run_sequential(
                 lapse_team[mode_idx_g],
                 eta_lapse_eff,
                 lapse_max_eff,
+                recal_team[mode_idx_g],
+                eta_recal_eff,
+                recal_alpha_max_eff,
+                recal_beta_min_eff,
+                recal_beta_max_eff,
             )
             total_obs_count += len(obs_order_team)
         if obs_order_solo:
@@ -977,6 +1037,11 @@ def run_sequential(
                 lapse_solo[mode_idx_g],
                 eta_lapse_eff,
                 lapse_max_eff,
+                recal_solo[mode_idx_g],
+                eta_recal_eff,
+                recal_alpha_max_eff,
+                recal_beta_min_eff,
+                recal_beta_max_eff,
             )
             total_obs_count += len(obs_order_solo)
 
@@ -1098,6 +1163,11 @@ def run_sequential(
                         lapse_team[mode_idx_e],
                         eta_lapse_eff,
                         lapse_max_eff,
+                        recal_team[mode_idx_e],
+                        eta_recal_eff,
+                        recal_alpha_max_eff,
+                        recal_beta_min_eff,
+                        recal_beta_max_eff,
                     )
                 if obs_order_solo_e:
                     sw_t, sw_b, sw_la, sw_s, sw_p = (
@@ -1122,6 +1192,11 @@ def run_sequential(
                         lapse_solo[mode_idx_e],
                         eta_lapse_eff,
                         lapse_max_eff,
+                        recal_solo[mode_idx_e],
+                        eta_recal_eff,
+                        recal_alpha_max_eff,
+                        recal_beta_min_eff,
+                        recal_beta_max_eff,
                     )
                 np.clip(players.theta, -10.0, 10.0, out=players.theta)
             if verbose:
@@ -1164,6 +1239,8 @@ def run_sequential(
                 )
                 lapse_t_post = float(lapse_team[mode_idx_post][0])
                 lapse_s_post = float(lapse_solo[mode_idx_post][0])
+                recal_t_post = recal_team[mode_idx_post]
+                recal_s_post = recal_solo[mode_idx_post]
                 for i in obs_indices:
                     qi = _cqi(int(q_idx[i]))
                     s, e = int(offsets[i]), int(offsets[i + 1])
@@ -1184,10 +1261,14 @@ def run_sequential(
                         delta_g += float(delta_size[ts_idx])
                     if cfg.use_pos_effect and pos_idx_pred != pos_anchor:
                         delta_g += float(delta_pos[pos_idx_pred])
-                    lapse_post = lapse_s_post if (e - s) == 1 else lapse_t_post
+                    is_solo_post = (e - s) == 1
+                    lapse_post = lapse_s_post if is_solo_post else lapse_t_post
+                    recal_post = recal_s_post if is_solo_post else recal_t_post
                     p, _, _ = forward(
                         th, questions.b[qi], a_val,
                         delta=delta_g, lapse=lapse_post,
+                        recal_alpha=float(recal_post[0]),
+                        recal_beta=float(recal_post[1]),
                     )
                     pred_p_list.append(p)
                     pred_y_list.append(int(taken[i]))
@@ -1283,6 +1364,14 @@ def run_sequential(
                     f"  {name:7s}: team={float(lapse_team[m][0]):.4f}  "
                     f"solo={float(lapse_solo[m][0]):.4f}"
                 )
+        if cfg.use_recalibration:
+            mode_names = ("offline", "sync", "async")
+            print("Recalibration (α + β·logit(p_lapse); identity = 0/1):")
+            for m, name in enumerate(mode_names):
+                print(
+                    f"  {name:7s}: team α={float(recal_team[m][0]):+.3f} β={float(recal_team[m][1]):.3f}  "
+                    f"solo α={float(recal_solo[m][0]):+.3f} β={float(recal_solo[m][1]):.3f}"
+                )
 
         experienced = players.games >= 30
         if experienced.any():
@@ -1308,6 +1397,14 @@ def run_sequential(
              for m in range(3)],
             dtype=np.float64,
         )
+    recal_final = None
+    if cfg.use_recalibration:
+        recal_final = np.array(
+            [[[float(recal_team[m][0]), float(recal_team[m][1])],
+              [float(recal_solo[m][0]), float(recal_solo[m][1])]]
+             for m in range(3)],
+            dtype=np.float64,
+        )
     return SequentialResult(
         players=players,
         questions=questions,
@@ -1321,5 +1418,6 @@ def run_sequential(
         delta_pos=delta_pos if cfg.use_pos_effect else None,
         pos_anchor=pos_anchor,
         lapse=lapse_final,
+        recal=recal_final,
         recenter_events=list(recenter_log) if recenter_log else None,
     )

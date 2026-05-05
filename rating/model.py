@@ -30,28 +30,51 @@ def forward(
     delta: float = 0.0,
     clamp: float = 20.0,
     lapse: float = 0.0,
+    recal_alpha: float = 0.0,
+    recal_beta: float = 1.0,
 ) -> tuple[float, float, np.ndarray]:
     """
     Compute team-answer probability for one (team, question) pair.
 
+    Forward chain:
+        S       = Σ exp(−(b + δ) + a · θ_k)
+        p_raw   = 1 − exp(−S)
+        p_lapse = (1 − π) · p_raw                      # lapse cap
+        p_final = sigmoid(α + β · logit(p_lapse))      # logit-affine recal
+
+    Identity recalibration: ``α = 0, β = 1``.
+
     Args:
-        theta: player strengths for the team  [team_size]
-        b:     question difficulty
-        a:     question discrimination  (> 0)
-        delta: tournament difficulty offset (positive = harder)
-        clamp: bounds on z_k to avoid exp overflow
-        lapse: lapse-rate floor π ∈ [0, 1).  ``p = (1 − π) · p_noisy_or``,
-            i.e. the predicted probability is capped at ``(1 − π)``.
+        theta:        player strengths for the team  [team_size]
+        b:            question difficulty
+        a:            question discrimination  (> 0)
+        delta:        tournament difficulty offset (positive = harder)
+        clamp:        bounds on z_k to avoid exp overflow
+        lapse:        π ∈ [0, 1).  Floor on the predicted probability.
+        recal_alpha:  α additive shift in logit space (default 0 = identity).
+        recal_beta:   β multiplicative scale in logit space (default 1).
 
     Returns:
         (p, S, lam)  where lam[k] = λ_k
     """
     eff_b = b + delta
-    z = np.clip(-eff_b + a * theta, -clamp, clamp)
-    lam = np.exp(z)
+    z_lin = np.clip(-eff_b + a * theta, -clamp, clamp)
+    lam = np.exp(z_lin)
     S = float(lam.sum())
     p_raw = float(-math.expm1(-S))
-    p = (1.0 - lapse) * p_raw
+    p_lapse = (1.0 - lapse) * p_raw
+    if recal_alpha == 0.0 and recal_beta == 1.0:
+        p = p_lapse
+    else:
+        p_lapse_c = max(min(p_lapse, 1.0 - 1e-15), 1e-15)
+        z = recal_alpha + recal_beta * math.log(
+            p_lapse_c / (1.0 - p_lapse_c)
+        )
+        if z >= 0:
+            p = 1.0 / (1.0 + math.exp(-z))
+        else:
+            ez = math.exp(z)
+            p = ez / (1.0 + ez)
     p = max(min(p, 1.0 - 1e-15), 1e-15)
     return p, S, lam
 
@@ -188,6 +211,11 @@ def process_batch_nb(
     lapse_arr: np.ndarray = np.zeros(1, dtype=np.float64),
     eta_lapse: float = 0.0,
     lapse_max: float = 0.30,
+    recal_arr: np.ndarray = np.array([0.0, 1.0], dtype=np.float64),
+    eta_recal: float = 0.0,
+    recal_alpha_max: float = 3.0,
+    recal_beta_min: float = 0.30,
+    recal_beta_max: float = 2.00,
 ) -> float:
     """
     Process a batch of observations.
@@ -229,8 +257,20 @@ def process_batch_nb(
     elif lapse > lapse_max:
         lapse = lapse_max
     one_minus_lapse = 1.0 - lapse
-    log_one_minus_lapse = math.log(one_minus_lapse) if one_minus_lapse > 1e-15 else math.log(1e-15)
+    recal_alpha = recal_arr[0]
+    recal_beta = recal_arr[1]
+    if recal_beta < recal_beta_min:
+        recal_beta = recal_beta_min
+    elif recal_beta > recal_beta_max:
+        recal_beta = recal_beta_max
+    if recal_alpha < -recal_alpha_max:
+        recal_alpha = -recal_alpha_max
+    elif recal_alpha > recal_alpha_max:
+        recal_alpha = recal_alpha_max
+    is_identity_recal = (recal_alpha == 0.0) and (recal_beta == 1.0)
     dlapse_acc = 0.0  # accumulated dL/dπ over the batch
+    drecal_alpha_acc = 0.0
+    drecal_beta_acc = 0.0
     for j in range(len(obs_indices)):
         i = obs_indices[j]
         s, e = int(offsets[i]), int(offsets[i + 1])
@@ -268,30 +308,67 @@ def process_batch_nb(
             pids[k] = player_flat[s + k]
             th[k] = theta[pids[k]]
         p_raw, S, lam = _forward_nb(th, b_val, a_val, delta_g, clamp)
-        if y == 1:
-            # log p = log(1-π) + log p_raw
-            ll_term = log_one_minus_lapse + math.log(p_raw)
-            total_ll += ll_term
-            # dL/dS unchanged from no-lapse case (constant shift in π)
-            grad_scale = 1.0
-            # dL/dπ = -1/(1-π)
-            dlapse_acc += -1.0 / max(one_minus_lapse, 1e-15)
+        # Forward chain: p_raw → p_lapse = (1-π)·p_raw → p_final = sigmoid(α + β·logit(p_lapse))
+        p_lapse = one_minus_lapse * p_raw
+        if p_lapse < 1e-15:
+            p_lapse = 1e-15
+        elif p_lapse > 1.0 - 1e-15:
+            p_lapse = 1.0 - 1e-15
+        one_minus_p_lapse = 1.0 - p_lapse
+        if is_identity_recal:
+            p_final = p_lapse
+            logit_p_lapse = 0.0  # unused
         else:
-            # 1 - p = 1 - (1-π) p_raw = π + (1-π) (1 - p_raw)
-            # exp(-S) = 1 - p_raw, so:
-            # 1 - p = π + (1-π) exp(-S)
-            exp_neg_S = math.exp(-S) if S < 500.0 else 0.0
-            q = lapse + one_minus_lapse * exp_neg_S
-            if q < 1e-15:
-                q = 1e-15
-            total_ll += math.log(q)
-            # dL/dS = -(1-π) exp(-S) / q  vs  old -1
-            # gradient scaling factor relative to the no-lapse case:
-            # old dL/dS = -1 ⇒ scale = (1-π) exp(-S) / q
-            grad_scale = one_minus_lapse * exp_neg_S / q
-            # dL/dπ = (1 - exp(-S)) / q
-            dlapse_acc += (1.0 - exp_neg_S) / q
+            logit_p_lapse = math.log(p_lapse / one_minus_p_lapse)
+            z_recal = recal_alpha + recal_beta * logit_p_lapse
+            if z_recal >= 0:
+                p_final = 1.0 / (1.0 + math.exp(-z_recal))
+            else:
+                ez = math.exp(z_recal)
+                p_final = ez / (1.0 + ez)
+            if p_final < 1e-15:
+                p_final = 1e-15
+            elif p_final > 1.0 - 1e-15:
+                p_final = 1.0 - 1e-15
+        # Log-likelihood + dL/dz_recal (= y - p_final), then unified
+        # dL/dS via chain through (logit-affine → lapse cap → noisy-OR).
+        if y == 1:
+            total_ll += math.log(p_final)
+            dL_dz = 1.0 - p_final
+        else:
+            total_ll += math.log(1.0 - p_final)
+            dL_dz = -p_final
+        # dL/dα = dL/dz · 1
+        # dL/dβ = dL/dz · logit(p_lapse)
+        if not is_identity_recal:
+            drecal_alpha_acc += dL_dz
+            drecal_beta_acc += dL_dz * logit_p_lapse
+        else:
+            # Even at identity (β=1, α=0) we still accumulate so that
+            # the params can move off identity if data prefers it.
+            drecal_alpha_acc += dL_dz
+            drecal_beta_acc += dL_dz * math.log(p_lapse / one_minus_p_lapse)
+        # dL/dπ via chain: dL/dπ = -dL/dz · β · p_raw / (p_lapse · (1-p_lapse))
+        dlapse_acc += -dL_dz * recal_beta * p_raw / (p_lapse * one_minus_p_lapse)
+        # Gradients on θ, b, log_a, δ go through dL/dS.  We compute them via
+        # _gradients_nb (which returns base gradients assuming dL/dS_base =
+        # 1/expm1(S) for y=1 or -1 for y=0), then multiply by grad_scale =
+        # new_dL_dS / dL_dS_base.
         dL_dth, dL_db, dL_dloga, dL_ddelta = _gradients_nb(S, lam, a_val, th, y)
+        # Unified grad_scale derivation:
+        # new_dL_dS = dL_dz · β · (1-π) · exp(-S) / [p_lapse · (1-p_lapse)]
+        # For y=1: base_dL_dS = exp(-S)/p_raw, so
+        #          scale = (1-p_final) · β / (1-p_lapse)
+        # For y=0: base_dL_dS = -1, so
+        #          scale = p_final · β · (1-π) · exp(-S) / [p_lapse·(1-p_lapse)]
+        if y == 1:
+            grad_scale = (1.0 - p_final) * recal_beta / one_minus_p_lapse
+        else:
+            exp_neg_S = math.exp(-S) if S < 500.0 else 0.0
+            grad_scale = (
+                p_final * recal_beta * one_minus_lapse * exp_neg_S
+                / (p_lapse * one_minus_p_lapse)
+            )
         if grad_scale != 1.0:
             for k in range(team_size):
                 dL_dth[k] *= grad_scale
@@ -348,12 +425,24 @@ def process_batch_nb(
                 dp_val = -10.0
             delta_pos[pos_idx] = dp_val
     if eta_lapse > 0.0 and len(obs_indices) > 0:
-        # Batch update: step in mean-gradient direction.  Gradient
-        # ascent (we accumulated dL/dπ, want to maximise log-lik).
         new_lapse = lapse + eta_lapse * (dlapse_acc / float(len(obs_indices)))
         if new_lapse < 0.0:
             new_lapse = 0.0
         elif new_lapse > lapse_max:
             new_lapse = lapse_max
         lapse_arr[0] = new_lapse
+    if eta_recal > 0.0 and len(obs_indices) > 0:
+        n = float(len(obs_indices))
+        new_alpha = recal_alpha + eta_recal * (drecal_alpha_acc / n)
+        new_beta = recal_beta + eta_recal * (drecal_beta_acc / n)
+        if new_alpha < -recal_alpha_max:
+            new_alpha = -recal_alpha_max
+        elif new_alpha > recal_alpha_max:
+            new_alpha = recal_alpha_max
+        if new_beta < recal_beta_min:
+            new_beta = recal_beta_min
+        elif new_beta > recal_beta_max:
+            new_beta = recal_beta_max
+        recal_arr[0] = new_alpha
+        recal_arr[1] = new_beta
     return total_ll

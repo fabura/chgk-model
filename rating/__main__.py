@@ -239,6 +239,17 @@ def main() -> int:
         "Default since 2026-05 — fixes the +9.5 p.p. solo high-p "
         "calibration bias.  Use --no-use-lapse-rate to disable.",
     )
+    hp.add_argument(
+        "--use-recalibration",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Apply per-(mode × is_solo) logit-affine recalibration "
+        "after the lapse cap: p = sigmoid(α + β · logit(p_lapse)). "
+        "Default since 2026-05 — fixes the residual S-shaped mid-range "
+        "calibration bias (5 → 1 p.p. for solo p∈[0.7, 0.8]).  "
+        "Use --no-use-recalibration to disable.  See "
+        "docs/recalibration_2026-05.md.",
+    )
 
     ev = parser.add_argument_group("evaluation")
     ev.add_argument(
@@ -337,6 +348,7 @@ def main() -> int:
         theta_bar_min_games=args.theta_bar_min_games,
         freeze_log_a=args.freeze_log_a,
         use_lapse_rate=args.use_lapse_rate,
+        use_recalibration=args.use_recalibration,
         holdout_obs_fraction=args.holdout,
         holdout_seed=args.holdout_seed,
     )

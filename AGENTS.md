@@ -90,7 +90,17 @@ Sequential model: computes player strength changes week by week, tournament by t
     absorbed format-specific noise that previously demanded
     smaller online steps.  See `results/exp_eta0_sweep_honest*.csv`
     and `results/exp_w_online_sweep_honest*.csv`.
- - Backtest logloss on the full DB: **0.5007** (honest cell-holdout
+  - `w_solo` 0.3 → 0.7 after the lapse rate took over part of the
+    noise-absorption role for solo obs; broad plateau 0.5–0.9 on
+    overall logloss.
+  - per-(mode × is_solo) logit-affine recalibration
+    (`use_recalibration=True`, 12 learnable scalars α, β) applied
+    after the lapse cap to fix the residual S-shaped mid-range
+    bias.  Net −0.0003 logloss but big structural fix:
+    over-predicted solo "expected takes" drop ~10 % (e.g.
+    player 32919 went from 442.8 → 407.8 expected solo takes).
+    See `docs/recalibration_2026-05.md`.
+ - Backtest logloss on the full DB: **0.5004** (honest cell-holdout
  with `--holdout 0.10 --holdout-seed 42`, the new CLI default; see
  `docs/leakage_2026-05.md`). The legacy time-split number was 0.485
  but it was leaky by ~+5 % overall and ~+16 % on offline tournaments —
@@ -117,7 +127,10 @@ Sequential model: computes player strength changes week by week, tournament by t
  `n_extra_epochs`, `extra_test_fraction`, `freeze_log_a`,
  `use_lapse_rate`, `lapse_init_offline_team/solo`,
  `lapse_init_sync_team/solo`, `lapse_init_async_team/solo`,
- `eta_lapse`, `lapse_max`, `holdout_obs_fraction`, `holdout_seed`.
+ `eta_lapse`, `lapse_max`, `use_recalibration`,
+ `recal_alpha_init`, `recal_beta_init`, `eta_recal`,
+ `recal_alpha_max`, `recal_beta_min`, `recal_beta_max`,
+ `holdout_obs_fraction`, `holdout_seed`.
  Full list in `Config` (`rating/engine.py`). Removed in 2026-05:
  `rho`, `use_calendar_decay`, `cold_init_factor`,
  `cold_init_use_team_mean` — see `docs/cleanup_2026-05.md`.
@@ -396,3 +409,6 @@ pip install -r requirements.txt
 - `docs/lapse_rate_2026-05.md` — per-(mode × is_solo) lapse-rate
   floor `p = (1 − π) · p_noisy_or` to fix solo / async high-p
   over-prediction (−0.0054 logloss; solo high-p bias 9.5 → 1.5 p.p.)
+- `docs/recalibration_2026-05.md` — logit-affine per-(mode × is_solo)
+  recalibration `p = sigmoid(α + β · logit(p_lapse))` to fix the
+  residual S-shaped mid-range bias (solo p∈[0.7, 0.8] bias 5.0 → 1.0 p.p.)
