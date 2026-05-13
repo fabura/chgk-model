@@ -12,30 +12,34 @@
     .num { font-variant-numeric: tabular-nums; }
   </style>
 </head>
-<body class="bg-slate-50 text-slate-900">
+<body class="bg-slate-50 text-slate-900 min-w-0">
   <header class="bg-white border-b border-slate-200">
-    <div class="max-w-7xl mx-auto px-4 py-3 flex items-center gap-6">
-      <a href="/" class="font-semibold text-lg hover:text-indigo-600">ChGK Model</a>
-      <nav class="flex gap-4 text-sm text-slate-600">
-        <a href="/" class="hover:text-indigo-600">Топ игроков</a>
-        <a href="/teams" class="hover:text-indigo-600">Команды</a>
-        <a href="/tournaments" class="hover:text-indigo-600">Турниры</a>
-        <a href="/compare" class="hover:text-indigo-600">Сравнение</a>
-        <a href="/methodology" class="hover:text-indigo-600">Модель</a>
-      </nav>
-      <form action="/search" method="get" class="ml-auto flex">
-        <input type="text" name="q" placeholder="Поиск игрока или турнира…"
-               class="border border-slate-300 rounded-l px-3 py-1 text-sm w-64 focus:outline-none focus:ring focus:ring-indigo-200">
-        <button type="submit" class="bg-indigo-600 text-white text-sm px-3 rounded-r hover:bg-indigo-700">Найти</button>
-      </form>
+    <div class="max-w-7xl mx-auto px-3 sm:px-4 py-3">
+      <div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:gap-6">
+        <div class="flex flex-wrap items-center gap-x-4 gap-y-2 min-w-0">
+          <a href="/" class="font-semibold text-lg hover:text-indigo-600 shrink-0">ChGK Model</a>
+          <nav class="flex flex-wrap gap-x-3 gap-y-1 text-sm text-slate-600">
+            <a href="/" class="hover:text-indigo-600 whitespace-nowrap">Топ игроков</a>
+            <a href="/teams" class="hover:text-indigo-600 whitespace-nowrap">Команды</a>
+            <a href="/tournaments" class="hover:text-indigo-600 whitespace-nowrap">Турниры</a>
+            <a href="/compare" class="hover:text-indigo-600 whitespace-nowrap">Сравнение</a>
+            <a href="/methodology" class="hover:text-indigo-600 whitespace-nowrap">Модель</a>
+          </nav>
+        </div>
+        <form action="/search" method="get" class="flex w-full min-w-0 lg:w-auto lg:max-w-md lg:ml-auto lg:flex-shrink-0">
+          <input type="text" name="q" placeholder="Поиск игрока или турнира…"
+                 class="border border-slate-300 rounded-l px-3 py-1.5 text-sm flex-1 min-w-0 sm:max-w-none lg:w-64 focus:outline-none focus:ring focus:ring-indigo-200">
+          <button type="submit" class="bg-indigo-600 text-white text-sm px-3 rounded-r hover:bg-indigo-700 shrink-0">Найти</button>
+        </form>
+      </div>
     </div>
   </header>
 
-  <main class="max-w-7xl mx-auto px-4 py-6">
+  <main class="max-w-7xl mx-auto px-3 sm:px-4 py-6 min-w-0">
     {% block content %}{% endblock %}
   </main>
 
-  <footer class="max-w-7xl mx-auto px-4 py-6 text-xs text-slate-500 space-y-2">
+  <footer class="max-w-7xl mx-auto px-3 sm:px-4 py-6 text-xs text-slate-500 space-y-2 min-w-0">
     <p>
       Модель: noisy-OR с θ игрока и (b, a) вопроса. Подробнее — на
       <a href="/methodology" class="text-indigo-600 hover:underline">странице модели</a>.

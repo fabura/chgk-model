@@ -7,9 +7,9 @@
 
 {% block content %}
 <div class="mb-6">
-  <h1 class="text-2xl font-semibold">{{ player|fullname }}</h1>
+  <h1 class="text-2xl font-semibold break-words">{{ player|fullname }}</h1>
   {% set decay_diff = player.theta - (player.theta_display if player.theta_display is not none else player.theta) %}
-  <div class="text-sm text-slate-600 mt-1">
+  <div class="text-sm text-slate-600 mt-1 break-words">
     {% if decay_diff > 0.001 %}
       θ (текущ.) = <span class="font-medium num">{{ "%.3f"|format(player.theta_display) }}</span>
       <span class="text-slate-400">(модель: {{ "%.3f"|format(player.theta) }}, снижено на {{ "%.3f"|format(decay_diff) }} из-за неактивности)</span>
@@ -45,7 +45,7 @@
 
 <section class="bg-white border border-slate-200 rounded shadow-sm mb-6">
   <h2 class="px-4 py-2 text-sm font-medium text-slate-600 border-b border-slate-100">θ во времени</h2>
-  <div id="theta-chart" style="height: 320px;"></div>
+  <div id="theta-chart" class="w-full min-w-0" style="height: 320px;"></div>
   {% if player.games is not none and player.games < 15 %}
   <p class="px-4 py-2 text-xs text-amber-700 bg-amber-50 border-t border-amber-200">
     У игрока пока {{ player.games }} {{ 'игра' if player.games == 1 else ('игры' if player.games < 5 else 'игр') }} —
@@ -56,21 +56,21 @@
 </section>
 
 <section class="bg-white border border-slate-200 rounded shadow-sm mb-6">
-  <div class="flex items-baseline justify-between px-4 py-2 border-b border-slate-100">
+  <div class="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between px-4 py-2 border-b border-slate-100">
     <h2 class="text-sm font-medium text-slate-600">Место в общем рейтинге во времени</h2>
     <span class="text-xs text-slate-500">среди активных игроков (играл в последние 365 дней)</span>
   </div>
-  <div id="rank-chart" style="height: 320px;"></div>
+  <div id="rank-chart" class="w-full min-w-0" style="height: 320px;"></div>
 </section>
 
 {% if yearly %}
 <section class="bg-white border border-slate-200 rounded shadow-sm mb-6">
-  <div class="flex items-baseline justify-between px-4 py-2 border-b border-slate-100">
+  <div class="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between px-4 py-2 border-b border-slate-100">
     <h2 class="text-sm font-medium text-slate-600">Относительная позиция по годам</h2>
     <span class="text-xs text-slate-500">θ на конец года, относительно активных (≥10 игр/год)</span>
   </div>
   <div class="overflow-x-auto">
-    <table class="w-full text-sm">
+    <table class="w-full text-sm min-w-[44rem]">
       <thead class="bg-slate-100 text-slate-600 uppercase text-xs">
         <tr>
           <th class="px-3 py-2 text-left">Год</th>
@@ -113,9 +113,9 @@
 {% endif %}
 
 <section class="bg-white border border-slate-200 rounded shadow-sm mb-6">
-  <div class="flex items-baseline justify-between px-4 py-2 border-b border-slate-100">
+  <div class="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between px-4 py-2 border-b border-slate-100">
     <h2 class="text-sm font-medium text-slate-600">Турниры ({{ games|length }})</h2>
-    <div class="text-xs text-slate-500">
+    <div class="text-xs text-slate-500 shrink-0">
       {% set total_actual = games|sum(attribute='score_actual') %}
       {% set total_expected = games|sum(attribute='expected_takes') %}
       {% if games and total_expected > 0 %}
@@ -126,7 +126,7 @@
     </div>
   </div>
   <div class="overflow-x-auto">
-    <table class="w-full text-sm">
+    <table class="w-full text-sm min-w-[52rem]">
       <thead class="bg-slate-100 text-slate-600 uppercase text-xs">
         <tr>
           <th class="px-3 py-2 text-left">Дата</th>
@@ -169,7 +169,8 @@
 {% if teammates %}
 <section class="bg-white border border-slate-200 rounded shadow-sm mb-6">
   <h2 class="px-4 py-2 text-sm font-medium text-slate-600 border-b border-slate-100">Топ сокомандников (по числу совместных игр)</h2>
-  <table class="w-full text-sm">
+  <div class="overflow-x-auto">
+  <table class="w-full text-sm min-w-[20rem]">
     <thead class="bg-slate-100 text-slate-600 uppercase text-xs">
       <tr>
         <th class="px-3 py-2 text-left">Игрок</th>
@@ -187,6 +188,7 @@
       {% endfor %}
     </tbody>
   </table>
+  </div>
 </section>
 {% endif %}
 

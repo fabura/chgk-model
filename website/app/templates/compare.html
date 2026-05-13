@@ -14,7 +14,7 @@
 {% block content %}
 <div class="mb-6">
   <h1 class="text-2xl font-semibold">Сравнение</h1>
-  <p class="text-sm text-slate-600 mt-1">
+  <p class="text-sm text-slate-600 mt-1 break-words">
     До {{ max_players }} игроков и до {{ max_tournaments }} турниров на одной странице.
     Игроки: оверлей θ, места, годовые перцентили, общие турниры.
     Турниры: карта вопросов (b, a) с цветом по турниру и средней точкой каждого.
@@ -43,11 +43,11 @@
   {% endif %}
 
   {% if players|length < max_players %}
-  <form action="/compare" method="get" class="flex gap-2 items-center">
+  <form action="/compare" method="get" class="flex flex-col gap-2 sm:flex-row sm:items-center sm:flex-wrap">
     <input type="hidden" name="ids" value="{{ ids_csv }}">
     {% if tids_csv %}<input type="hidden" name="tids" value="{{ tids_csv }}">{% endif %}
     <input type="text" name="add" value="{{ add_query }}" placeholder="Фамилия / имя / ID игрока"
-           class="border border-slate-300 rounded px-3 py-1 text-sm w-72 focus:outline-none focus:ring focus:ring-indigo-200">
+           class="border border-slate-300 rounded px-3 py-1 text-sm w-full min-w-0 sm:w-72 focus:outline-none focus:ring focus:ring-indigo-200">
     <button type="submit" class="bg-indigo-600 text-white text-sm px-3 py-1 rounded hover:bg-indigo-700">Найти игрока</button>
     {% if add_query %}
     <a href="/compare?{{ href_with_extra('ids=' ~ ids_csv, 'tids', tids_csv) }}" class="text-xs text-slate-500 hover:text-slate-700">сбросить поиск</a>
@@ -58,11 +58,11 @@
     {% if suggestions %}
     <ul class="mt-3 bg-slate-50 border border-slate-200 rounded divide-y divide-slate-100">
       {% for s in suggestions %}
-      <li class="px-3 py-2 flex justify-between items-center text-sm">
-        <span>
+      <li class="px-3 py-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between text-sm">
+        <span class="min-w-0">
           <a href="/player/{{ s.player_id }}" class="text-indigo-700 hover:underline">{{ s|fullname }}</a>
-          <span class="text-slate-500 num ml-2">θ {{ "%.2f"|format(s.theta) }} · {{ s.games }} игр</span>
-          <span class="text-slate-400 text-xs ml-2">id {{ s.player_id }}</span>
+          <span class="text-slate-500 num ml-0 sm:ml-2 block sm:inline">θ {{ "%.2f"|format(s.theta) }} · {{ s.games }} игр</span>
+          <span class="text-slate-400 text-xs ml-0 sm:ml-2 block sm:inline">id {{ s.player_id }}</span>
         </span>
         <a href="/compare?{{ href_with_extra('ids=' ~ add_url[s.player_id], 'tids', tids_csv) }}"
            class="text-xs bg-emerald-600 text-white px-2 py-1 rounded hover:bg-emerald-700">+ добавить</a>
@@ -102,11 +102,11 @@
   {% endif %}
 
   {% if tournaments|length < max_tournaments %}
-  <form action="/compare" method="get" class="flex gap-2 items-center">
+  <form action="/compare" method="get" class="flex flex-col gap-2 sm:flex-row sm:items-center sm:flex-wrap">
     <input type="hidden" name="tids" value="{{ tids_csv }}">
     {% if ids_csv %}<input type="hidden" name="ids" value="{{ ids_csv }}">{% endif %}
     <input type="text" name="add_t" value="{{ add_tournament_query }}" placeholder="Название или ID турнира"
-           class="border border-slate-300 rounded px-3 py-1 text-sm w-72 focus:outline-none focus:ring focus:ring-amber-200">
+           class="border border-slate-300 rounded px-3 py-1 text-sm w-full min-w-0 sm:w-72 focus:outline-none focus:ring focus:ring-amber-200">
     <button type="submit" class="bg-amber-600 text-white text-sm px-3 py-1 rounded hover:bg-amber-700">Найти турнир</button>
     {% if add_tournament_query %}
     <a href="/compare?{{ href_with_extra('tids=' ~ tids_csv, 'ids', ids_csv) }}" class="text-xs text-slate-500 hover:text-slate-700">сбросить поиск</a>
@@ -117,11 +117,11 @@
     {% if tournament_suggestions %}
     <ul class="mt-3 bg-slate-50 border border-slate-200 rounded divide-y divide-slate-100">
       {% for s in tournament_suggestions %}
-      <li class="px-3 py-2 flex justify-between items-center text-sm">
-        <span>
+      <li class="px-3 py-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between text-sm">
+        <span class="min-w-0">
           <a href="/tournament/{{ s.tournament_id }}" class="text-amber-800 hover:underline">{{ s.title }}</a>
-          <span class="text-slate-500 ml-2">{{ s.type }}{% if s.start_date %} · {{ s.start_date.isoformat() }}{% endif %} · вопросов: {{ s.n_questions }} · команд: {{ s.n_teams }}</span>
-          <span class="text-slate-400 text-xs ml-2">id {{ s.tournament_id }}</span>
+          <span class="text-slate-500 ml-0 sm:ml-2 block sm:inline break-words text-xs sm:text-sm">{{ s.type }}{% if s.start_date %} · {{ s.start_date.isoformat() }}{% endif %} · вопросов: {{ s.n_questions }} · команд: {{ s.n_teams }}</span>
+          <span class="text-slate-400 text-xs ml-0 sm:ml-2 block sm:inline">id {{ s.tournament_id }}</span>
         </span>
         <a href="/compare?{{ href_with_extra('tids=' ~ tournament_add_url[s.tournament_id], 'ids', ids_csv) }}"
            class="text-xs bg-emerald-600 text-white px-2 py-1 rounded hover:bg-emerald-700">+ добавить</a>
@@ -141,11 +141,7 @@
 <section class="bg-white border border-slate-200 rounded shadow-sm mb-6">
   <h2 class="px-4 py-2 text-sm font-medium text-slate-600 border-b border-slate-100">Сводка</h2>
   <div class="overflow-x-auto">
-    <table class="w-full text-sm">
-      <thead class="bg-slate-100 text-slate-600 uppercase text-xs">
-        <tr>
-          <th class="px-3 py-2 text-left">Игрок</th>
-          <th class="px-3 py-2 text-right">θ (текущ.)</th>
+    <table class="w-full text-sm min-w-[36rem]">
           <th class="px-3 py-2 text-right">θ модели</th>
           <th class="px-3 py-2 text-right">Игр</th>
           <th class="px-3 py-2 text-left">Последняя игра</th>
@@ -173,26 +169,26 @@
 {% if players|length >= 1 %}
 <section class="bg-white border border-slate-200 rounded shadow-sm mb-6">
   <h2 class="px-4 py-2 text-sm font-medium text-slate-600 border-b border-slate-100">θ во времени</h2>
-  <div id="theta-chart" style="height: 360px;"></div>
+  <div id="theta-chart" class="w-full min-w-0" style="height: 360px;"></div>
 </section>
 
 <section class="bg-white border border-slate-200 rounded shadow-sm mb-6">
-  <div class="flex items-baseline justify-between px-4 py-2 border-b border-slate-100">
+  <div class="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between px-4 py-2 border-b border-slate-100">
     <h2 class="text-sm font-medium text-slate-600">Место в общем рейтинге во времени</h2>
     <span class="text-xs text-slate-500">среди активных игроков (≥30 игр, играл в последние 365 дней)</span>
   </div>
-  <div id="rank-chart" style="height: 360px;"></div>
+  <div id="rank-chart" class="w-full min-w-0" style="height: 360px;"></div>
 </section>
 {% endif %}
 
 {% if yearly_by_year and players|length >= 1 %}
 <section class="bg-white border border-slate-200 rounded shadow-sm mb-6">
-  <div class="flex items-baseline justify-between px-4 py-2 border-b border-slate-100">
+  <div class="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between px-4 py-2 border-b border-slate-100">
     <h2 class="text-sm font-medium text-slate-600">Относительная позиция по годам</h2>
     <span class="text-xs text-slate-500">θ на конец года (среди активных, ≥10 игр в году)</span>
   </div>
   <div class="overflow-x-auto">
-    <table class="w-full text-sm">
+    <table class="w-full text-sm min-w-max">
       <thead class="bg-slate-100 text-slate-600 uppercase text-xs">
         <tr>
           <th class="px-3 py-2 text-left">Год</th>
@@ -239,13 +235,13 @@
 
 {% if players|length >= 2 %}
 <section class="bg-white border border-slate-200 rounded shadow-sm mb-6">
-  <div class="flex items-baseline justify-between px-4 py-2 border-b border-slate-100">
+  <div class="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between px-4 py-2 border-b border-slate-100">
     <h2 class="text-sm font-medium text-slate-600">Общие турниры ({{ common_tournaments|length }})</h2>
     <span class="text-xs text-slate-500">где играли минимум двое из выбранных</span>
   </div>
   {% if common_tournaments %}
   <div class="overflow-x-auto">
-    <table class="w-full text-sm">
+    <table class="w-full text-sm min-w-max">
       <thead class="bg-slate-100 text-slate-600 uppercase text-xs">
         <tr>
           <th class="px-3 py-2 text-left">Дата</th>
@@ -305,11 +301,11 @@
 
 {% if tournaments %}
 <section class="bg-white border border-slate-200 rounded shadow-sm mb-6">
-  <div class="flex items-baseline justify-between px-4 py-2 border-b border-slate-100">
+  <div class="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between px-4 py-2 border-b border-slate-100">
     <h2 class="text-sm font-medium text-slate-600">Карта вопросов: b (сложность) × a (дискриминация)</h2>
     <span class="text-xs text-slate-500">точка — вопрос; крупный «◆» — среднее b̄, ā турнира; гробы исключены</span>
   </div>
-  <div id="bq-compare-chart" style="height: 460px;"></div>
+  <div id="bq-compare-chart" class="w-full min-w-0" style="height: 460px;"></div>
 </section>
 {% endif %}
 

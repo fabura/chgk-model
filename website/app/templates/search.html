@@ -2,7 +2,7 @@
 {% block title %}Поиск: {{ q }} — ChGK Model{% endblock %}
 
 {% block content %}
-<h1 class="text-2xl font-semibold mb-4">Поиск: «{{ q }}»</h1>
+  <h1 class="text-2xl font-semibold break-words mb-4">Поиск: «{{ q }}»</h1>
 
 {% if not q %}
 <p class="text-slate-600">Введите фамилию или имя, имя и фамилию через пробел, часть названия турнира или числовой ID игрока/турнира.</p>
@@ -12,9 +12,9 @@
     {% if players %}
     <ul class="bg-white border border-slate-200 rounded shadow-sm divide-y divide-slate-100">
       {% for p in players %}
-      <li class="px-3 py-2 flex justify-between text-sm">
-        <a href="/player/{{ p.player_id }}" class="text-indigo-700 hover:underline">{{ p|fullname }}<span class="text-slate-600 font-normal"> (id {{ p.player_id }})</span></a>
-        <span class="text-slate-500 num">θ {{ "%.3f"|format(p.theta) }} · {{ p.games }} игр</span>
+      <li class="px-3 py-2 flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between sm:gap-4 text-sm">
+        <a href="/player/{{ p.player_id }}" class="text-indigo-700 hover:underline break-words min-w-0">{{ p|fullname }}<span class="text-slate-600 font-normal"> (id {{ p.player_id }})</span></a>
+        <span class="text-slate-500 num shrink-0 sm:text-right">θ {{ "%.3f"|format(p.theta) }} · {{ p.games }} игр</span>
       </li>
       {% endfor %}
     </ul>
@@ -29,8 +29,8 @@
     <ul class="bg-white border border-slate-200 rounded shadow-sm divide-y divide-slate-100">
       {% for t in tournaments %}
       <li class="px-3 py-2 text-sm">
-        <a href="/tournament/{{ t.tournament_id }}" class="text-indigo-700 hover:underline">{{ t.title }}<span class="text-slate-600 font-normal"> (id {{ t.tournament_id }})</span></a>
-        <span class="text-slate-500 ml-2">{{ t.type }} · {{ t.start_date.isoformat() if t.start_date else "" }} · {{ t.n_questions }} вопр., {{ t.n_teams }} команд</span>
+        <a href="/tournament/{{ t.tournament_id }}" class="text-indigo-700 hover:underline break-words">{{ t.title }}<span class="text-slate-600 font-normal"> (id {{ t.tournament_id }})</span></a>
+        <div class="text-slate-500 mt-1 text-xs sm:text-sm break-words">{{ t.type }} · {{ t.start_date.isoformat() if t.start_date else "" }} · {{ t.n_questions }} вопр., {{ t.n_teams }} команд</div>
       </li>
       {% endfor %}
     </ul>

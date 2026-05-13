@@ -9,7 +9,7 @@
 {% block content %}
 <div class="flex items-baseline justify-between mb-4 flex-wrap gap-y-2">
   <h1 class="text-2xl font-semibold">Турниры</h1>
-  <form method="get" class="flex items-center gap-2 text-sm text-slate-600">
+  <form method="get" class="flex flex-wrap items-center gap-2 text-sm text-slate-600">
     <label for="type">формат:</label>
     <select id="type" name="type"
             class="border border-slate-300 rounded px-2 py-0.5 bg-white">
@@ -37,8 +37,9 @@
   {% endif %}
 </p>
 
-<div class="bg-white rounded shadow border border-slate-200 overflow-hidden">
-  <table class="w-full text-sm">
+<div class="bg-white rounded shadow border border-slate-200">
+  <div class="overflow-x-auto">
+  <table class="w-full text-sm min-w-[28rem]">
     <thead class="bg-slate-100 text-slate-600 uppercase text-xs">
       <tr>
         <th class="px-3 py-2 text-left">Дата</th>
@@ -80,6 +81,7 @@
       {% endif %}
     </tbody>
   </table>
+  </div>
 </div>
 
 {% if total_pages > 1 %}
