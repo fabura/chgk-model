@@ -1088,6 +1088,14 @@ def run_sequential(
 
     # === Multi-epoch warm-start refit (optional) =======================
     n_extra = max(0, int(getattr(cfg, "n_extra_epochs", 0)))
+    # Snapshot θ at end of first pass — used after multi-epoch to keep
+    # `history` consistent with final `players.theta` (otherwise the
+    # website's per-player chart drifts from the displayed rank by the
+    # cumulative multi-epoch shift; was ~0.5 nats on the tail for ~6%
+    # of players ≥ 30 games).
+    theta_after_first_pass = (
+        players.theta.copy() if (history is not None and n_extra > 0) else None
+    )
     if n_extra > 0:
         # Identify train/test split chronologically (matching the
         # backtest()'s slicing rule).
@@ -1278,6 +1286,27 @@ def run_sequential(
                     )
                     pred_obs_list.append(int(i))
                     pred_holdout_list.append(1 if is_holdout[i] else 0)
+
+    # === Rebase history into post-multi-epoch gauge ====================
+    # Multi-epoch updates `players.theta` but does not touch `history`,
+    # so the snapshot of θ at every past tournament drifts away from the
+    # final θ.  We treat the per-player cumulative shift as a gauge
+    # transform applied to ALL of that player's snapshots (preserves
+    # graph shape; the last point lands exactly on `players.theta`).
+    # Without this, the per-player chart on the website disagrees with
+    # the displayed rank — by up to ±1 nat for some players.
+    if theta_after_first_pass is not None and history:
+        shift_per_pidx = players.theta - theta_after_first_pass
+        pid_to_pidx = {
+            int(pid): i
+            for i, pid in enumerate(maps.idx_to_player_id)
+        }
+        for k in range(len(history)):
+            pid, gid, theta = history[k]
+            pidx = pid_to_pidx.get(int(pid))
+            if pidx is None:
+                continue
+            history[k] = (pid, gid, theta + float(shift_per_pidx[pidx]))
 
     # === Assemble predictions ==========================================
     predictions = None

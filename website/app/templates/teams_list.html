@@ -8,7 +8,7 @@
 
 {% block content %}
 <div class="flex items-baseline justify-between mb-4 flex-wrap gap-y-2">
-  <h1 class="text-2xl font-semibold">Команды по силе текущего состава</h1>
+  <h1 class="text-2xl font-semibold break-words">Команды по силе текущего состава</h1>
   <form method="get" class="flex items-center gap-2 text-sm text-slate-600 flex-wrap">
     <label for="window">окно (дн.):</label>
     <input id="window" type="number" name="window" value="{{ window }}" min="30" max="3650"
@@ -50,8 +50,9 @@
   {% endif %}
 </p>
 
-<div class="bg-white rounded shadow border border-slate-200 overflow-hidden">
-  <table class="w-full text-sm">
+<div class="bg-white rounded shadow border border-slate-200">
+  <div class="overflow-x-auto">
+  <table class="w-full text-sm min-w-[32rem]">
     <thead class="bg-slate-100 text-slate-600 uppercase text-xs">
       <tr>
         <th class="px-3 py-2 text-right">#</th>
@@ -84,6 +85,7 @@
       {% endif %}
     </tbody>
   </table>
+  </div>
 </div>
 
 {% if total_pages > 1 %}

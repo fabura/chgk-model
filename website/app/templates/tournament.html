@@ -7,8 +7,8 @@
 
 {% block content %}
 <div class="mb-6">
-  <h1 class="text-2xl font-semibold">{{ tournament.title }}</h1>
-  <div class="text-sm text-slate-600 mt-1">
+  <h1 class="text-2xl font-semibold break-words">{{ tournament.title }}</h1>
+  <div class="text-sm text-slate-600 mt-1 break-words">
     {{ tournament.type }}
     {% if tournament.start_date %}· {{ tournament.start_date.isoformat() }}{% endif %}
     {% if tournament.end_date and tournament.end_date != tournament.start_date %} – {{ tournament.end_date.isoformat() }}{% endif %}
@@ -19,7 +19,7 @@
     {% endif %}
   </div>
   {% if summary_stats %}
-  <div class="text-sm text-slate-600 mt-1">
+  <div class="text-sm text-slate-600 mt-1 break-words">
     средние по вопросам (без гробов):
     <span class="num">b̄ = {{ "%+.2f"|format(summary_stats.mean_b) }}</span>
     · <span class="num">ā = {{ "%.2f"|format(summary_stats.mean_a) }}</span>
@@ -29,13 +29,13 @@
   </div>
   {% endif %}
   {% if editors %}
-  <div class="text-sm text-slate-600 mt-1">Редакторы пака: {{ editors|join(", ") }}</div>
+  <div class="text-sm text-slate-600 mt-1 break-words">Редакторы пака: {{ editors|join(", ") }}</div>
   {% endif %}
 </div>
 
 <section class="bg-white border border-slate-200 rounded shadow-sm mb-6">
   <h2 class="px-4 py-2 text-sm font-medium text-slate-600 border-b border-slate-100">Вопросы — карта (b: сложность, a: дискриминация)</h2>
-  <div id="bq-chart" style="height: 400px;"></div>
+  <div id="bq-chart" class="w-full min-w-0" style="height: 400px;"></div>
   <p class="px-4 pb-1 text-xs text-slate-500">
     Каждая точка — вопрос; размер пропорционален эмпирической доле взятых,
     цвет — есть ли текст (синий = есть, серый = нет).
@@ -56,19 +56,19 @@
 
 {% if sister_chart %}
 <section class="bg-white border border-slate-200 rounded shadow-sm mb-6">
-  <div class="flex items-baseline justify-between px-4 py-2 border-b border-slate-100">
+  <div class="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between px-4 py-2 border-b border-slate-100">
     <h2 class="text-sm font-medium text-slate-600">
       Парный пакет: доля взятых здесь vs у
       <a href="/tournament/{{ sister_chart.sister_id }}" class="text-indigo-700 hover:underline">{{ sister_chart.sister_title }}</a>
       <span class="text-slate-400 text-xs">({{ sister_chart.sister_type }})</span>
     </h2>
-    <span class="text-xs text-slate-500">
+    <span class="text-xs text-slate-500 shrink-0">
       общих вопросов: {{ sister_chart.n_pairs }}{% if sister_chart.n_other_sisters %}
       · ещё сёстер: {{ sister_chart.n_other_sisters }}
       {% endif %}
     </span>
   </div>
-  <div id="sister-chart" style="height: 380px;"></div>
+  <div id="sister-chart" class="w-full min-w-0" style="height: 380px;"></div>
   <p class="px-4 pb-3 text-xs text-slate-500">
     Один и тот же канонический вопрос. По оси X — доля взятых на этом турнире
     ({{ sister_chart.self_type }}), по оси Y — на парном ({{ sister_chart.sister_type }}).
@@ -84,11 +84,7 @@
     <h2 class="text-sm font-medium text-slate-600">Команды ({{ teams|length }})</h2>
   </div>
   <div class="overflow-x-auto">
-    <table class="w-full text-sm">
-      <thead class="bg-slate-100 text-slate-600 uppercase text-xs">
-        <tr>
-          <th class="px-3 py-2 text-right">Место</th>
-          <th class="px-3 py-2 text-left">Команда</th>
+    <table class="w-full text-sm min-w-[48rem]">
           <th class="px-3 py-2 text-right">N игроков</th>
           <th class="px-3 py-2 text-right">Взято</th>
           <th class="px-3 py-2 text-right">Ожидание</th>
@@ -125,11 +121,7 @@
 <section class="bg-white border border-slate-200 rounded shadow-sm mb-6">
   <h2 class="px-4 py-2 text-sm font-medium text-slate-600 border-b border-slate-100">Вопросы ({{ questions|length }})</h2>
   <div class="overflow-x-auto">
-    <table class="w-full text-sm">
-      <thead class="bg-slate-100 text-slate-600 uppercase text-xs">
-        <tr>
-          <th class="px-3 py-2 text-right">#</th>
-          <th class="px-3 py-2 text-right">Взято</th>
+    <table class="w-full text-sm min-w-[42rem]">
           <th class="px-3 py-2 text-right">b</th>
           <th class="px-3 py-2 text-right">a</th>
           <th class="px-3 py-2 text-left">Текст</th>
@@ -143,8 +135,8 @@
           <td class="px-3 py-2 text-right num">{{ "%.0f"|format(q.take_rate * 100) if q.take_rate is not none else "–" }}%</td>
           <td class="px-3 py-2 text-right num">{{ "%.2f"|format(q.b) }}</td>
           <td class="px-3 py-2 text-right num">{{ "%.2f"|format(q.a) }}</td>
-          <td class="px-3 py-2 max-w-xl text-slate-700">{{ q.text or "" }}</td>
-          <td class="px-3 py-2 max-w-xs text-slate-500">{{ q.answer or "" }}</td>
+          <td class="px-3 py-2 max-w-[min(24rem,90vw)] sm:max-w-xl break-words text-slate-700">{{ q.text or "" }}</td>
+          <td class="px-3 py-2 max-w-[min(12rem,40vw)] sm:max-w-xs break-words text-slate-500">{{ q.answer or "" }}</td>
         </tr>
         {% endfor %}
       </tbody>

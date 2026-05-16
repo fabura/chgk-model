@@ -26,11 +26,20 @@ class AsyncUpdateTests(unittest.TestCase):
         )
         cfg = Config(
             eta0=0.1,
-            rho=1.0,
             w_online=0.25,
             w_online_questions=1.0,
             w_online_log_a=1.0,
             eta_teammate=0.0,
+            # Strip 2026-cycle add-ons that would otherwise dominate the
+            # per-mode weight signal this test is supposed to isolate:
+            # lapse / recalibration shrink the gradient, the solo
+            # channel routes single-player obs through w_solo (not
+            # w_online), noisy-OR init shifts b away from -log(p_take).
+            use_lapse_rate=False,
+            use_recalibration=False,
+            use_solo_channel=False,
+            noisy_or_init=False,
+            theta_bar_init=False,
         )
         return run_sequential(arrays, maps, cfg, verbose=False)
 

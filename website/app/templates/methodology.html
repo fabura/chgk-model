@@ -17,9 +17,9 @@
 {% endblock %}
 
 {% block content %}
-<div class="lg:flex lg:gap-8 max-w-6xl">
+<div class="lg:flex lg:gap-8 max-w-6xl w-full min-w-0">
   {# ---------- Sidebar TOC ---------- #}
-  <aside class="lg:w-64 lg:shrink-0 lg:order-2 mb-6 lg:mb-0">
+  <aside class="lg:w-64 lg:shrink-0 lg:order-2 mb-6 lg:mb-0 min-w-0">
     <nav class="lg:sticky lg:top-4 bg-slate-50 border border-slate-200 rounded p-4 text-sm">
       <div class="font-medium text-slate-700 mb-2 text-xs uppercase tracking-wide">Содержание</div>
       <ol class="space-y-1.5 text-slate-600">
@@ -85,7 +85,7 @@
   </aside>
 
   {# ---------- Main content ---------- #}
-  <article class="prose max-w-3xl lg:order-1 lg:flex-1">
+  <article class="prose max-w-3xl lg:order-1 lg:flex-1 min-w-0 overflow-x-auto">
     <h1 class="text-2xl font-semibold mb-4">Как устроена модель</h1>
 
     {# ===== 1. Intro ===== #}
@@ -797,7 +797,7 @@
     </p>
     <ul class="list-disc pl-6 text-sm">
       <li>
-        <b>logloss ≈ 0.488</b>
+        <b>logloss ≈ 0.490</b>
         <span class="text-slate-500">
           (<a href="https://en.wikipedia.org/wiki/Cross-entropy"
               class="text-indigo-700 hover:underline" target="_blank"
