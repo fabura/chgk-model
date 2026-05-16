@@ -1341,6 +1341,7 @@ def write_duckdb(
     tg_place: list[Optional[float]] = []
     pg_template: dict[int, dict[int, tuple[int, int, float]]] = {}
     # pg_template: player_id -> {tournament_id: (team_id, n_takes_team, expected_takes_team)}
+    n_skipped_phantom = 0
     for (tid, team_id), pids in rosters.items():
         active_pids = [p for p in pids if p in pid_to_theta]
         if not active_pids:
@@ -1354,6 +1355,17 @@ def write_duckdb(
         else:
             score_actual = 0
             place = None
+        # Hide "phantom roster" rows: teams that registered but did not
+        # play (DSQ → position IS NULL, or 0/N on an async tournament).
+        # The training loader in data.py already drops these from the
+        # gradient (see "phantom-roster filter"); mirror it here so the
+        # UI doesn't show a 0-vs-31 expected_takes row that drove the
+        # original "огромный минус у сильного состава" complaint.
+        # Offline/sync zeros are kept (newbie teams can really score 0).
+        ttype_meta = tournament_meta.get(tid, {}).get("type")
+        if place is None or (ttype_meta == "async" and score_actual == 0):
+            n_skipped_phantom += 1
+            continue
         exp = expected.get((tid, team_id), 0.0)
         ti = theta_implied.get((tid, team_id))
         tg_tid.append(int(tid))
@@ -1370,6 +1382,11 @@ def write_duckdb(
                 int(score_actual),
                 float(exp),
             )
+    if n_skipped_phantom:
+        _log(
+            f"  hidden phantom rosters: {n_skipped_phantom:,} "
+            f"(DSQ or async-zero, matches training-time filter)"
+        )
     _bulk_insert(
         con,
         "team_games",
@@ -1415,7 +1432,9 @@ def write_duckdb(
             pg_tid.append(tid)
             pg_team.append(team_id)
             pg_g.append(g_idx)
-            pg_theta.append(per_g.get(g_idx))
+            # history is keyed by tournament_id (see engine.py:1090 where
+            # gid := maps.idx_to_game_id[g]), not by internal game_idx.
+            pg_theta.append(per_g.get(tid))
             pg_takes.append(n_takes_team)
             pg_exp.append(exp_team)
     _bulk_insert(

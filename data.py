@@ -794,13 +794,69 @@ def load_from_db(
     for key, pids in roster_map_filtered.items():
         roster_map[key] = [player_id_to_idx[p] for p in pids]
 
-    # Results: tournament_id, team_id, points_mask (only for teams we kept)
+    # Tournament metadata used by weighting/reporting AND by the
+    # "phantom roster" filter below.  Pulled before tournament_results
+    # so we can normalise tournament type into the filter.
+    cur.execute(
+        """
+        SELECT id, COALESCE(LOWER(type), ''), start_datetime::date
+        FROM public.tournaments
+        WHERE id = ANY(%s)
+        """,
+        (tournament_ids,),
+    )
+    tmeta = {int(r[0]): ((r[1] or "").strip(), r[2]) for r in cur.fetchall()}
+    tid_to_game_idx = {tid: i for i, tid in enumerate(tournament_ids)}
+
+    def _normalize_type(raw: str) -> str:
+        if "асинхрон" in raw or "async" in raw:
+            return "async"
+        if "синхрон" in raw or "sync" in raw:
+            return "sync"
+        return "offline"
+
+    tid_to_type_norm = {
+        tid: _normalize_type(tmeta.get(tid, ("", None))[0] or "")
+        for tid in tournament_ids
+    }
+
+    # Results: tournament_id, team_id, points_mask, position (only for teams we kept)
     cur.execute("""
-        SELECT tournament_id, team_id, points_mask
+        SELECT tournament_id, team_id, points_mask, position
         FROM public.tournament_results
         WHERE tournament_id = ANY(%s) AND team_id IS NOT NULL AND points_mask IS NOT NULL
     """, (tournament_ids,))
-    result_rows = [r for r in cur.fetchall() if (r[0], r[1]) in roster_map]
+    raw_result_rows = [r for r in cur.fetchall() if (r[0], r[1]) in roster_map]
+
+    # "Phantom roster" filter: drop registered-but-did-not-play teams
+    # before they corrupt both team ranking and the gradient.  Two
+    # signals from the rating DB:
+    #   (a) position IS NULL  → DSQ / did-not-finish, e.g. "Ночной
+    #       ларёк" (Mikhlin/Bogomolov/Didbaridze) on т. 11922 Драже-14:
+    #       0/36 with place=NaN;
+    #   (b) score == 0 AND async  → registered for an asynchronous
+    #       tournament but never played (т. 11743 / 11744 same team
+    #       with 0/30+, position recorded).  Offline/sync zeros are
+    #       kept because they can be real (newbies, blow-out packs).
+    result_rows: list[tuple[int, int, str]] = []
+    n_skipped_dsq = 0
+    n_skipped_async_zero = 0
+    for tid, team_id, points_mask, position in raw_result_rows:
+        mask = points_mask.strip()
+        if position is None:
+            n_skipped_dsq += 1
+            continue
+        if tid_to_type_norm.get(tid) == "async" and "1" not in mask:
+            n_skipped_async_zero += 1
+            continue
+        result_rows.append((tid, team_id, mask))
+    if show_progress and (n_skipped_dsq or n_skipped_async_zero):
+        print(
+            f"[load_from_db] phantom-roster filter: "
+            f"dropped {n_skipped_dsq} DSQ + "
+            f"{n_skipped_async_zero} async-zero rosters "
+            f"(out of {len(raw_result_rows)} total)"
+        )
 
     # Team strength from tournament place: score = sum(taken), rank by score desc, strength = (n - rank + 1) / n
     team_scores: list[tuple[int, int, int]] = []
@@ -827,18 +883,6 @@ def load_from_db(
     except ImportError:
         tqdm = None  # type: ignore
     iterator = tqdm(result_rows, desc="Building samples", unit=" teams") if (show_progress and tqdm) else result_rows
-
-    # Tournament metadata used by weighting/reporting.
-    cur.execute(
-        """
-        SELECT id, COALESCE(LOWER(type), ''), start_datetime::date
-        FROM public.tournaments
-        WHERE id = ANY(%s)
-        """,
-        (tournament_ids,),
-    )
-    tmeta = {int(r[0]): ((r[1] or "").strip(), r[2]) for r in cur.fetchall()}
-    tid_to_game_idx = {tid: i for i, tid in enumerate(tournament_ids)}
 
     samples: list[Sample] = []
     for tid, team_id, points_mask in iterator:
