@@ -29,6 +29,10 @@ class RatingResults:
     # Position-in-tour effect, indexed by (q_in_tournament % len(delta_pos)).
     delta_pos: Optional[np.ndarray] = None
     pos_anchor: Optional[int] = None
+    # Final prediction calibration used by the training objective.
+    # lapse shape: (mode, is_solo); recal shape: (mode, is_solo, [alpha, beta]).
+    lapse: Optional[np.ndarray] = None
+    recal: Optional[np.ndarray] = None
     # Yearly gauge re-centering events (ord_day, delta_applied).  Used to
     # retroactively shift historical θ rows into a single (final) gauge.
     recenter_ord: Optional[np.ndarray] = None
@@ -69,6 +73,8 @@ def load_results_npz(path: str | Path) -> RatingResults:
         team_size_anchor=_scalar("team_size_anchor"),
         delta_pos=_get("delta_pos"),
         pos_anchor=_scalar("pos_anchor"),
+        lapse=_get("lapse"),
+        recal=_get("recal"),
         recenter_ord=_get("recenter_ord"),
         recenter_delta=_get("recenter_delta"),
     )

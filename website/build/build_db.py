@@ -167,6 +167,11 @@ def load_model(cache_path: Path, results_path: Path):
         f"{len(res.b):,} canonical questions, "
         f"history rows: {0 if res.history_player_id is None else len(res.history_player_id):,}"
     )
+    if res.lapse is None or res.recal is None:
+        _log(
+            "  warning: results file has no lapse/recalibration params; "
+            "expected_takes will use identity calibration"
+        )
     return arrays, maps, res
 
 
@@ -520,6 +525,46 @@ def _solve_implied_theta(
     return 0.5 * (lo + hi)
 
 
+def _mode_idx_from_type(ttype: Optional[str]) -> int:
+    """Return the model's mode index: 0=offline, 1=sync, 2=async."""
+    if ttype == "async":
+        return 2
+    if ttype == "sync":
+        return 1
+    return 0
+
+
+def _coerce_lapse(lapse: Optional[np.ndarray]) -> Optional[np.ndarray]:
+    if lapse is None:
+        return None
+    arr = np.asarray(lapse, dtype=np.float64)
+    return arr if arr.shape == (3, 2) else None
+
+
+def _coerce_recal(recal: Optional[np.ndarray]) -> Optional[np.ndarray]:
+    if recal is None:
+        return None
+    arr = np.asarray(recal, dtype=np.float64)
+    return arr if arr.shape == (3, 2, 2) else None
+
+
+def _apply_probability_calibration(
+    p_raw: np.ndarray,
+    *,
+    lapse: float,
+    recal_alpha: float,
+    recal_beta: float,
+) -> np.ndarray:
+    """Apply the same lapse cap and logit-affine recalibration as rating.model."""
+    p = (1.0 - lapse) * p_raw
+    if recal_alpha == 0.0 and recal_beta == 1.0:
+        return p
+
+    p_c = np.clip(p, 1e-15, 1.0 - 1e-15)
+    z = recal_alpha + recal_beta * np.log(p_c / (1.0 - p_c))
+    return 1.0 / (1.0 + np.exp(-z))
+
+
 def compute_expected_takes(
     rosters_by_tid: dict[int, list[tuple[int, list[int]]]],
     questions_by_tid: dict[int, list[tuple[int, float, float, int]]],
@@ -532,13 +577,17 @@ def compute_expected_takes(
     pos_anchor: Optional[int],
     theta_before: Optional[dict[tuple[int, int], float]] = None,
     score_by_team: Optional[dict[tuple[int, int], int]] = None,
+    tournament_type_by_tid: Optional[dict[int, str]] = None,
+    lapse: Optional[np.ndarray] = None,
+    recal: Optional[np.ndarray] = None,
 ):
     """
     For each (tournament, team) compute the model's expected number of takes:
 
         z_kq  = −(b_q + δ_size + δ_pos[q]) + a_q · θ_k(at_t)
         λ_kq  = exp(z_kq)
-        p_q   = 1 − exp(− Σ_{k∈team} λ_kq)
+        p_raw = 1 − exp(− Σ_{k∈team} λ_kq)
+        p_q   = sigmoid(α + β · logit((1 − π) · p_raw))
         E[T]  = Σ_q p_q
 
     No per-tournament shift (the model no longer has μ_type or ε_t —
@@ -565,6 +614,8 @@ def compute_expected_takes(
     has_pos = delta_pos is not None and pos_anchor is not None
     size_max = (len(delta_size) - 1) if has_size else 0
     tour_len = len(delta_pos) if has_pos else 0
+    lapse_arr = _coerce_lapse(lapse)
+    recal_arr = _coerce_recal(recal)
 
     for tid, teams in rosters_by_tid.items():
         qs = questions_by_tid.get(tid, [])
@@ -613,6 +664,26 @@ def compute_expected_takes(
             lam = np.exp(z)
             S = lam.sum(axis=0)
             p = -np.expm1(-S)
+            mode_idx = _mode_idx_from_type(
+                tournament_type_by_tid.get(tid) if tournament_type_by_tid else None
+            )
+            solo_idx = 1 if n == 1 else 0
+            lapse_val = (
+                float(lapse_arr[mode_idx, solo_idx])
+                if lapse_arr is not None else 0.0
+            )
+            if recal_arr is not None:
+                recal_alpha = float(recal_arr[mode_idx, solo_idx, 0])
+                recal_beta = float(recal_arr[mode_idx, solo_idx, 1])
+            else:
+                recal_alpha = 0.0
+                recal_beta = 1.0
+            p = _apply_probability_calibration(
+                p,
+                lapse=lapse_val,
+                recal_alpha=recal_alpha,
+                recal_beta=recal_beta,
+            )
             expected[(tid, team_id)] = float(p.sum())
 
             if score_by_team is not None:
@@ -1323,6 +1394,12 @@ def write_duckdb(
         pos_anchor=res.pos_anchor,
         theta_before=theta_before_map or None,
         score_by_team=score_by_team,
+        tournament_type_by_tid={
+            int(tid): str(meta.get("type", "offline"))
+            for tid, meta in tournament_meta.items()
+        },
+        lapse=res.lapse,
+        recal=res.recal,
     )
     _log(
         f"  computed expected_takes for {len(expected):,} teams "

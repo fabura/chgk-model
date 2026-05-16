@@ -524,6 +524,12 @@ def _export_results_npz(path: str, result, maps) -> None:
         kw["delta_pos"] = np.asarray(result.delta_pos, dtype=np.float32)
         kw["pos_anchor"] = np.array([int(result.pos_anchor)], dtype=np.int32)
 
+    if result.lapse is not None:
+        kw["lapse"] = np.asarray(result.lapse, dtype=np.float32)
+
+    if result.recal is not None:
+        kw["recal"] = np.asarray(result.recal, dtype=np.float32)
+
     if result.history:
         h = result.history
         kw["history_player_id"] = np.array([x[0] for x in h], dtype=np.int64)
