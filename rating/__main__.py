@@ -90,7 +90,7 @@ def main() -> int:
     hp.add_argument(
         "--cold_init_theta",
         type=float,
-        default=-1.0,
+        default=-1.5,
         help="Prior θ for first-time players. Combined with games_offset<1 "
         "(rookie boost), produces the chess-Elo-like ramp-up.",
     )

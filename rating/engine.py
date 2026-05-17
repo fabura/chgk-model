@@ -135,7 +135,14 @@ class Config:
     # The legacy "inherit team average" cold-start (``cold_init_factor``
     # and ``cold_init_use_team_mean``) was removed in 2026-05; see
     # ``docs/cleanup_2026-05.md``.
-    cold_init_theta: float = -1.0
+    #
+    # 2026-05 (post-jalob): re-tuned -1.0 → -1.5 after the 18-cell
+    # (min_games × cold_init_theta × games_offset) sweep showed the
+    # change cuts logloss 0.5020 → 0.5014 AND cuts the team-level
+    # over-prediction bias on rosters with ≥3 newbies by ~24%
+    # (per-question bias −0.054 → −0.041).  Diagnosed in
+    # ``results/exp_min_games_cold_grid.json``.
+    cold_init_theta: float = -1.5
 
     # Adaptive learning-rate offset.  η_k = η0 / √(games_offset + games_k).
     # Default 0.25 gives a chess-Elo-style "rookie boost": at games=0 the

@@ -1,0 +1,562 @@
+{
+  "rows": [
+    {
+      "min_games": 0,
+      "cold_init_theta": -2.0,
+      "games_offset": 0.25,
+      "logloss": 0.5040712372335826,
+      "brier": 0.16500364467887105,
+      "auc": 0.8343960359768211,
+      "n_test_obs": 2846553,
+      "bias_by_n_new": {
+        "0": {
+          "n_teams": 427879,
+          "mean_bias_per_q": 0.011850043671426553,
+          "median_bias_per_q": 0.013326047451334411
+        },
+        "1": {
+          "n_teams": 96983,
+          "mean_bias_per_q": 0.012836554086095265,
+          "median_bias_per_q": -2.243605627267337e-05
+        },
+        "2": {
+          "n_teams": 47518,
+          "mean_bias_per_q": 0.00352894649005289,
+          "median_bias_per_q": -0.019550382686168044
+        },
+        "3+": {
+          "n_teams": 130300,
+          "mean_bias_per_q": -0.04892915723051457,
+          "median_bias_per_q": -0.07574541430061363
+        }
+      }
+    },
+    {
+      "min_games": 0,
+      "cold_init_theta": -2.0,
+      "games_offset": 0.5,
+      "logloss": 0.5043311876637866,
+      "brier": 0.165095983690555,
+      "auc": 0.8342821773255621,
+      "n_test_obs": 2846553,
+      "bias_by_n_new": {
+        "0": {
+          "n_teams": 427879,
+          "mean_bias_per_q": 0.01262054493051063,
+          "median_bias_per_q": 0.01412296149960742
+        },
+        "1": {
+          "n_teams": 96983,
+          "mean_bias_per_q": 0.013900340767653481,
+          "median_bias_per_q": 0.0006053065012341374
+        },
+        "2": {
+          "n_teams": 47518,
+          "mean_bias_per_q": 0.004050597924554387,
+          "median_bias_per_q": -0.01856614223471226
+        },
+        "3+": {
+          "n_teams": 130300,
+          "mean_bias_per_q": -0.04851920729652797,
+          "median_bias_per_q": -0.07588436182374915
+        }
+      }
+    },
+    {
+      "min_games": 0,
+      "cold_init_theta": -1.5,
+      "games_offset": 0.25,
+      "logloss": 0.5063848903569186,
+      "brier": 0.16596764138268333,
+      "auc": 0.8320244263134052,
+      "n_test_obs": 2846553,
+      "bias_by_n_new": {
+        "0": {
+          "n_teams": 427879,
+          "mean_bias_per_q": 0.013383503009008953,
+          "median_bias_per_q": 0.014983033170160504
+        },
+        "1": {
+          "n_teams": 96983,
+          "mean_bias_per_q": 0.006204608594742774,
+          "median_bias_per_q": -0.0062568641319669105
+        },
+        "2": {
+          "n_teams": 47518,
+          "mean_bias_per_q": -0.00964354875767743,
+          "median_bias_per_q": -0.03105314280629938
+        },
+        "3+": {
+          "n_teams": 130300,
+          "mean_bias_per_q": -0.07299864810827705,
+          "median_bias_per_q": -0.09447386520454286
+        }
+      }
+    },
+    {
+      "min_games": 0,
+      "cold_init_theta": -1.5,
+      "games_offset": 0.5,
+      "logloss": 0.5067323064000967,
+      "brier": 0.16609973125556748,
+      "auc": 0.8317763487551555,
+      "n_test_obs": 2846553,
+      "bias_by_n_new": {
+        "0": {
+          "n_teams": 427879,
+          "mean_bias_per_q": 0.014344068474998679,
+          "median_bias_per_q": 0.01589722216870886
+        },
+        "1": {
+          "n_teams": 96983,
+          "mean_bias_per_q": 0.007234537610350088,
+          "median_bias_per_q": -0.005081887746723179
+        },
+        "2": {
+          "n_teams": 47518,
+          "mean_bias_per_q": -0.009373438891270352,
+          "median_bias_per_q": -0.03051682485936684
+        },
+        "3+": {
+          "n_teams": 130300,
+          "mean_bias_per_q": -0.07284378392728168,
+          "median_bias_per_q": -0.09509190992201266
+        }
+      }
+    },
+    {
+      "min_games": 0,
+      "cold_init_theta": -1.0,
+      "games_offset": 0.25,
+      "logloss": 0.5122510750999296,
+      "brier": 0.1683134380001653,
+      "auc": 0.8271406940593052,
+      "n_test_obs": 2846553,
+      "bias_by_n_new": {
+        "0": {
+          "n_teams": 427879,
+          "mean_bias_per_q": 0.017274273772473554,
+          "median_bias_per_q": 0.018834716969002317
+        },
+        "1": {
+          "n_teams": 96983,
+          "mean_bias_per_q": 0.00025821164498607415,
+          "median_bias_per_q": -0.011972080672983693
+        },
+        "2": {
+          "n_teams": 47518,
+          "mean_bias_per_q": -0.0238354958498693,
+          "median_bias_per_q": -0.04273591950598389
+        },
+        "3+": {
+          "n_teams": 130300,
+          "mean_bias_per_q": -0.09955919812568156,
+          "median_bias_per_q": -0.11445261395730982
+        }
+      }
+    },
+    {
+      "min_games": 0,
+      "cold_init_theta": -1.0,
+      "games_offset": 0.5,
+      "logloss": 0.5128202415529205,
+      "brier": 0.16854879777481227,
+      "auc": 0.8266255428338138,
+      "n_test_obs": 2846553,
+      "bias_by_n_new": {
+        "0": {
+          "n_teams": 427879,
+          "mean_bias_per_q": 0.018627084834016604,
+          "median_bias_per_q": 0.020171389738926314
+        },
+        "1": {
+          "n_teams": 96983,
+          "mean_bias_per_q": 0.001113942506563867,
+          "median_bias_per_q": -0.010993917588062896
+        },
+        "2": {
+          "n_teams": 47518,
+          "mean_bias_per_q": -0.02409301323542621,
+          "median_bias_per_q": -0.042569309677556164
+        },
+        "3+": {
+          "n_teams": 130300,
+          "mean_bias_per_q": -0.09963059075252552,
+          "median_bias_per_q": -0.11564576513799907
+        }
+      }
+    },
+    {
+      "min_games": 5,
+      "cold_init_theta": -2.0,
+      "games_offset": 0.25,
+      "logloss": 0.5023660518029732,
+      "brier": 0.1643566522140659,
+      "auc": 0.8363536592247159,
+      "n_test_obs": 2780874,
+      "bias_by_n_new": {
+        "0": {
+          "n_teams": 444695,
+          "mean_bias_per_q": 0.01068122860721157,
+          "median_bias_per_q": 0.011273923916260994
+        },
+        "1": {
+          "n_teams": 104163,
+          "mean_bias_per_q": 0.011009881783498954,
+          "median_bias_per_q": -0.004855587760440594
+        },
+        "2": {
+          "n_teams": 50535,
+          "mean_bias_per_q": 0.000668700468994916,
+          "median_bias_per_q": -0.023783424534440867
+        },
+        "3+": {
+          "n_teams": 86851,
+          "mean_bias_per_q": -0.03871598488453463,
+          "median_bias_per_q": -0.06309281058941946
+        }
+      }
+    },
+    {
+      "min_games": 5,
+      "cold_init_theta": -2.0,
+      "games_offset": 0.5,
+      "logloss": 0.5025648998801868,
+      "brier": 0.16442155061243072,
+      "auc": 0.836299529674996,
+      "n_test_obs": 2780874,
+      "bias_by_n_new": {
+        "0": {
+          "n_teams": 444695,
+          "mean_bias_per_q": 0.011411545563298027,
+          "median_bias_per_q": 0.01200315975668742
+        },
+        "1": {
+          "n_teams": 104163,
+          "mean_bias_per_q": 0.011781247268881152,
+          "median_bias_per_q": -0.004151152078135804
+        },
+        "2": {
+          "n_teams": 50535,
+          "mean_bias_per_q": 0.000773923418079535,
+          "median_bias_per_q": -0.023543863190598646
+        },
+        "3+": {
+          "n_teams": 86851,
+          "mean_bias_per_q": -0.039730018853942436,
+          "median_bias_per_q": -0.06438584710838817
+        }
+      }
+    },
+    {
+      "min_games": 5,
+      "cold_init_theta": -1.5,
+      "games_offset": 0.25,
+      "logloss": 0.5023146992418474,
+      "brier": 0.16431565827657438,
+      "auc": 0.8360643842288762,
+      "n_test_obs": 2780874,
+      "bias_by_n_new": {
+        "0": {
+          "n_teams": 444695,
+          "mean_bias_per_q": 0.011440546525313504,
+          "median_bias_per_q": 0.012038594597978403
+        },
+        "1": {
+          "n_teams": 104163,
+          "mean_bias_per_q": 0.0036008847476100498,
+          "median_bias_per_q": -0.012020895548307356
+        },
+        "2": {
+          "n_teams": 50535,
+          "mean_bias_per_q": -0.011151911056607011,
+          "median_bias_per_q": -0.034022384598259944
+        },
+        "3+": {
+          "n_teams": 86851,
+          "mean_bias_per_q": -0.05459353264390203,
+          "median_bias_per_q": -0.07564542452888427
+        }
+      }
+    },
+    {
+      "min_games": 5,
+      "cold_init_theta": -1.5,
+      "games_offset": 0.5,
+      "logloss": 0.5025953281152523,
+      "brier": 0.16441826099792056,
+      "auc": 0.8358926610732684,
+      "n_test_obs": 2780874,
+      "bias_by_n_new": {
+        "0": {
+          "n_teams": 444695,
+          "mean_bias_per_q": 0.012309987823071952,
+          "median_bias_per_q": 0.012904864913510394
+        },
+        "1": {
+          "n_teams": 104163,
+          "mean_bias_per_q": 0.004279256889472429,
+          "median_bias_per_q": -0.011231251563977817
+        },
+        "2": {
+          "n_teams": 50535,
+          "mean_bias_per_q": -0.011411290765235954,
+          "median_bias_per_q": -0.034302811107677966
+        },
+        "3+": {
+          "n_teams": 86851,
+          "mean_bias_per_q": -0.056221226179601305,
+          "median_bias_per_q": -0.07769310459751001
+        }
+      }
+    },
+    {
+      "min_games": 5,
+      "cold_init_theta": -1.0,
+      "games_offset": 0.25,
+      "logloss": 0.5043473315098183,
+      "brier": 0.1651023699669539,
+      "auc": 0.8342493545531205,
+      "n_test_obs": 2780874,
+      "bias_by_n_new": {
+        "0": {
+          "n_teams": 444695,
+          "mean_bias_per_q": 0.013524952564019171,
+          "median_bias_per_q": 0.014249943651247321
+        },
+        "1": {
+          "n_teams": 104163,
+          "mean_bias_per_q": -0.0036538293209813157,
+          "median_bias_per_q": -0.01822851375841757
+        },
+        "2": {
+          "n_teams": 50535,
+          "mean_bias_per_q": -0.02342708162044322,
+          "median_bias_per_q": -0.043862162184582276
+        },
+        "3+": {
+          "n_teams": 86851,
+          "mean_bias_per_q": -0.07118900211615668,
+          "median_bias_per_q": -0.08825599616615726
+        }
+      }
+    },
+    {
+      "min_games": 5,
+      "cold_init_theta": -1.0,
+      "games_offset": 0.5,
+      "logloss": 0.5048646021992701,
+      "brier": 0.16531159137907292,
+      "auc": 0.8338189048629767,
+      "n_test_obs": 2780874,
+      "bias_by_n_new": {
+        "0": {
+          "n_teams": 444695,
+          "mean_bias_per_q": 0.014683706432527083,
+          "median_bias_per_q": 0.015293559043358643
+        },
+        "1": {
+          "n_teams": 104163,
+          "mean_bias_per_q": -0.0031996685450835206,
+          "median_bias_per_q": -0.017757359477047634
+        },
+        "2": {
+          "n_teams": 50535,
+          "mean_bias_per_q": -0.024273058883068327,
+          "median_bias_per_q": -0.04442298599959871
+        },
+        "3+": {
+          "n_teams": 86851,
+          "mean_bias_per_q": -0.07364996182788171,
+          "median_bias_per_q": -0.09086164101329186
+        }
+      }
+    },
+    {
+      "min_games": 10,
+      "cold_init_theta": -2.0,
+      "games_offset": 0.25,
+      "logloss": 0.5024463616375363,
+      "brier": 0.164413171848302,
+      "auc": 0.8367702143589713,
+      "n_test_obs": 2707891,
+      "bias_by_n_new": {
+        "0": {
+          "n_teams": 462895,
+          "mean_bias_per_q": 0.010136391714327477,
+          "median_bias_per_q": 0.009953876021682451
+        },
+        "1": {
+          "n_teams": 105337,
+          "mean_bias_per_q": 0.009666643812482131,
+          "median_bias_per_q": -0.006433652151983311
+        },
+        "2": {
+          "n_teams": 46955,
+          "mean_bias_per_q": -0.0011861791724145103,
+          "median_bias_per_q": -0.02310043742169423
+        },
+        "3+": {
+          "n_teams": 52302,
+          "mean_bias_per_q": -0.029069114801999765,
+          "median_bias_per_q": -0.05063785438188377
+        }
+      }
+    },
+    {
+      "min_games": 10,
+      "cold_init_theta": -2.0,
+      "games_offset": 0.5,
+      "logloss": 0.5025301872959884,
+      "brier": 0.1644287586293301,
+      "auc": 0.8368298100971484,
+      "n_test_obs": 2707891,
+      "bias_by_n_new": {
+        "0": {
+          "n_teams": 462895,
+          "mean_bias_per_q": 0.010925161938864005,
+          "median_bias_per_q": 0.010766367070411866
+        },
+        "1": {
+          "n_teams": 105337,
+          "mean_bias_per_q": 0.010129504898705347,
+          "median_bias_per_q": -0.0057510490330650475
+        },
+        "2": {
+          "n_teams": 46955,
+          "mean_bias_per_q": -0.0017359006824416334,
+          "median_bias_per_q": -0.023272212034448403
+        },
+        "3+": {
+          "n_teams": 52302,
+          "mean_bias_per_q": -0.03156632090865457,
+          "median_bias_per_q": -0.05294737836559167
+        }
+      }
+    },
+    {
+      "min_games": 10,
+      "cold_init_theta": -1.5,
+      "games_offset": 0.25,
+      "logloss": 0.5014385021010149,
+      "brier": 0.16397216855146526,
+      "auc": 0.8373244826981744,
+      "n_test_obs": 2707891,
+      "bias_by_n_new": {
+        "0": {
+          "n_teams": 462895,
+          "mean_bias_per_q": 0.010012298985462367,
+          "median_bias_per_q": 0.00981338842381474
+        },
+        "1": {
+          "n_teams": 105337,
+          "mean_bias_per_q": 0.00205324881374979,
+          "median_bias_per_q": -0.013308686816394997
+        },
+        "2": {
+          "n_teams": 46955,
+          "mean_bias_per_q": -0.011858711345267446,
+          "median_bias_per_q": -0.03157698165679149
+        },
+        "3+": {
+          "n_teams": 52302,
+          "mean_bias_per_q": -0.041312004178377895,
+          "median_bias_per_q": -0.06049527927113911
+        }
+      }
+    },
+    {
+      "min_games": 10,
+      "cold_init_theta": -1.5,
+      "games_offset": 0.5,
+      "logloss": 0.5015473068320482,
+      "brier": 0.16400272284526277,
+      "auc": 0.8373133332264575,
+      "n_test_obs": 2707891,
+      "bias_by_n_new": {
+        "0": {
+          "n_teams": 462895,
+          "mean_bias_per_q": 0.010866697490763995,
+          "median_bias_per_q": 0.010682670732467337
+        },
+        "1": {
+          "n_teams": 105337,
+          "mean_bias_per_q": 0.002298206781498298,
+          "median_bias_per_q": -0.013211571458751292
+        },
+        "2": {
+          "n_teams": 46955,
+          "mean_bias_per_q": -0.012867503309291076,
+          "median_bias_per_q": -0.032678447875404616
+        },
+        "3+": {
+          "n_teams": 52302,
+          "mean_bias_per_q": -0.04457229614544811,
+          "median_bias_per_q": -0.06365531266563862
+        }
+      }
+    },
+    {
+      "min_games": 10,
+      "cold_init_theta": -1.0,
+      "games_offset": 0.25,
+      "logloss": 0.5020311588071437,
+      "brier": 0.1641669653887851,
+      "auc": 0.8367086138970905,
+      "n_test_obs": 2707891,
+      "bias_by_n_new": {
+        "0": {
+          "n_teams": 462895,
+          "mean_bias_per_q": 0.010813648309992372,
+          "median_bias_per_q": 0.010677430616457428
+        },
+        "1": {
+          "n_teams": 105337,
+          "mean_bias_per_q": -0.005289742197360917,
+          "median_bias_per_q": -0.0197804627719258
+        },
+        "2": {
+          "n_teams": 46955,
+          "mean_bias_per_q": -0.02258271531991321,
+          "median_bias_per_q": -0.04075136691722981
+        },
+        "3+": {
+          "n_teams": 52302,
+          "mean_bias_per_q": -0.05364816391974354,
+          "median_bias_per_q": -0.06963581244790937
+        }
+      }
+    },
+    {
+      "min_games": 10,
+      "cold_init_theta": -1.0,
+      "games_offset": 0.5,
+      "logloss": 0.5022861836987689,
+      "brier": 0.16426593131486603,
+      "auc": 0.8365215348533939,
+      "n_test_obs": 2707891,
+      "bias_by_n_new": {
+        "0": {
+          "n_teams": 462895,
+          "mean_bias_per_q": 0.011811648224475486,
+          "median_bias_per_q": 0.011695538076326173
+        },
+        "1": {
+          "n_teams": 105337,
+          "mean_bias_per_q": -0.00538274713315752,
+          "median_bias_per_q": -0.019640897192371654
+        },
+        "2": {
+          "n_teams": 46955,
+          "mean_bias_per_q": -0.024200894896300618,
+          "median_bias_per_q": -0.042491429930996395
+        },
+        "3+": {
+          "n_teams": 52302,
+          "mean_bias_per_q": -0.057765667780899414,
+          "median_bias_per_q": -0.0734646077975545
+        }
+      }
+    }
+  ]
+}

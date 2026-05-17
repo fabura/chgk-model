@@ -53,15 +53,20 @@ Sequential model: computes player strength changes week by week, tournament by t
     weight, so prolific soloists in online quizzes (M-Лига etc.)
     don't get artefactually inflated θ via the noisy-OR
     identifiability shortcut. See `docs/solo_channel_experiments.md`.
-  - fixed cold-start prior (`cold_init_theta=-1.0`) plus chess-Elo
+  - fixed cold-start prior (`cold_init_theta=-1.5`) plus chess-Elo
     "rookie boost" (`games_offset=0.25`, so first-game η = 2·η0) —
     breaks the team-mean inheritance feedback loop that produced
-    multi-year population θ drift; rationale and the 12-cell sweep
-    that picked these defaults are in `scripts/exp_cold_start_grid.py`
-    (and the extra boundary sweep in `..._extra.py`). The legacy
-    "inherit team-mean" path (`cold_init_factor`,
-    `cold_init_use_team_mean`) was removed in 2026-05; see
-    `docs/cleanup_2026-05.md`.
+    multi-year population θ drift; rationale and the original 12-cell
+    sweep that picked these defaults are in
+    `scripts/exp_cold_start_grid.py` (and the extra boundary sweep in
+    `..._extra.py`). 2026-05 re-tuned `-1.0 → -1.5` after the
+    18-cell (`min_games × cold_init_theta × games_offset`) sweep in
+    `scripts/exp_min_games_cold_grid.py` showed it cuts logloss
+    `0.5020 → 0.5014` AND the per-question over-prediction bias on
+    rosters with ≥3 newbies by ~24% (`−0.054 → −0.041`); see
+    `results/exp_min_games_cold_grid.json`. The legacy "inherit
+    team-mean" path (`cold_init_factor`, `cold_init_use_team_mean`)
+    was removed in 2026-05; see `docs/cleanup_2026-05.md`.
   - frozen question discrimination (`freeze_log_a=True`,
     i.e. `a_i ≡ 1` for every question). Ablation under cell-holdout
     (`results/exp_holdout_ablations.csv`) showed learning `a_i` did
