@@ -535,6 +535,147 @@ def forecast_for_event(
     return sim
 
 
+def forecast_custom_team(
+    *,
+    player_ids: list[int],
+    pack_kind: str = "synth",
+    pack_id: Optional[int] = None,
+    profile: Optional[str] = "medium",
+    n_questions: int = 36,
+    mode: str = "offline",
+    n_mc_samples: int = _DEFAULT_N_SAMPLES,
+    rng_seed: int = 20260524,
+) -> dict:
+    """One-team forecast for the /forecast/team-builder page.
+
+    The resulting context has the same ``teams`` shape as the multi-team
+    pages so the template can reuse the same MC columns.  Single-team
+    place distribution is degenerate (always 1) so we omit it and
+    surface the score distribution instead.  Per-question p_q is also
+    included so the user can see which questions the team is likely to
+    take or fail.
+    """
+    pack = resolve_pack(
+        pack_kind=pack_kind, pack_id=pack_id, profile=profile,
+        fallback_n_questions=n_questions,
+    )
+    if pack is None:
+        return {
+            "teams": [],
+            "warnings": ["Выбранный пакет не найден в нашей БД."],
+            "pack": None,
+            "players": [],
+            "n_mc_samples": 0,
+            "model_params_missing": False,
+            "p_q": [],
+        }
+
+    cleaned: list[int] = []
+    for pid in player_ids:
+        try:
+            v = int(pid)
+        except (TypeError, ValueError):
+            continue
+        if v > 0 and v not in cleaned:
+            cleaned.append(v)
+    if not cleaned:
+        return {
+            "teams": [],
+            "warnings": [],
+            "pack": pack,
+            "players": [],
+            "n_mc_samples": 0,
+            "model_params_missing": False,
+            "p_q": [],
+        }
+
+    rows = db.query(
+        "SELECT player_id, theta, games, last_name, first_name "
+        "FROM players WHERE player_id IN ("
+        + ",".join("?" * len(cleaned)) + ")",
+        cleaned,
+    )
+    by_pid = {int(r["player_id"]): r for r in rows}
+    players_resolved: list[dict] = []
+    thetas: list[float] = []
+    games: list[int] = []
+    missing: list[int] = []
+    for pid in cleaned:
+        row = by_pid.get(pid)
+        if row is None:
+            missing.append(pid)
+            players_resolved.append({
+                "player_id": pid, "name": f"#{pid} (не найден)",
+                "theta": None, "games": 0, "missing": True,
+            })
+        else:
+            players_resolved.append({
+                "player_id": pid,
+                "name": f"{row['last_name'] or ''} {row['first_name'] or ''}".strip()
+                        or f"#{pid}",
+                "theta": float(row["theta"] or 0.0),
+                "games": int(row["games"] or 0),
+                "missing": False,
+            })
+            thetas.append(float(row["theta"] or 0.0))
+            games.append(int(row["games"] or 0))
+
+    warnings: list[str] = []
+    if missing:
+        warnings.append(
+            f"Игроков не найдено в нашей базе: {len(missing)}"
+            f" (id: {', '.join(str(m) for m in missing)}). Они "
+            "пропущены — добавьте корректные ID."
+        )
+
+    if not thetas:
+        return {
+            "teams": [],
+            "warnings": warnings or ["Не задано ни одного известного игрока."],
+            "pack": pack,
+            "players": players_resolved,
+            "n_mc_samples": 0,
+            "model_params_missing": False,
+            "p_q": [],
+        }
+
+    sim = simulate_field(
+        rosters=[{
+            "team_id": 0,
+            "team_name": "Ваша команда",
+            "thetas": thetas,
+            "games": games,
+        }],
+        b_arr=pack["b"],
+        a_arr=pack["a"],
+        q_in_tour=pack["q_in_tour"],
+        mode=mode,
+        n_mc_samples=n_mc_samples,
+        rng_seed=rng_seed,
+    )
+    sim["warnings"] = sim.get("warnings", []) + warnings
+    sim["pack"] = pack
+    sim["players"] = players_resolved
+    # Per-question p_q for the team — re-run the deterministic kernel
+    # (the simulate_field discards intermediate p_q).  Cheap.
+    mp = db.get_model_params()
+    p_q = simulate_roster_on_pack(
+        thetas=np.asarray(thetas, dtype=np.float64),
+        b=pack["b"],
+        a=pack["a"],
+        q_in_tour=pack["q_in_tour"],
+        delta_size=mp["delta_size"],
+        team_size_anchor=mp["team_size_anchor"],
+        delta_pos=mp["delta_pos"],
+        pos_anchor=mp["pos_anchor"],
+        mode=mode,
+        lapse_arr=mp["lapse"],
+        recal_arr=mp["recal"],
+    )
+    sim["p_q"] = [float(x) for x in p_q]
+    return sim
+
+
 def list_upcoming_tournaments(
     *, after_iso: str, before_iso: Optional[str] = None
 ) -> list[dict]:

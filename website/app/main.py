@@ -1039,6 +1039,39 @@ def forecast_upcoming(
     )
 
 
+@app.get("/forecast/team-builder", response_class=HTMLResponse)
+def forecast_team_builder(
+    request: Request,
+    players: str = "",
+    pack_kind: str = "synth",
+    pack_id: Optional[int] = None,
+    profile: Optional[str] = "medium",
+    n: int = 36,
+    mode: str = "offline",
+):
+    """Custom-team forecast: paste a list of player IDs and pick a pack."""
+    pids: list[int] = []
+    for chunk in (players or "").replace(";", ",").replace(" ", ",").split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        try:
+            pids.append(int(chunk))
+        except ValueError:
+            continue
+    ctx = forecast_module.forecast_custom_team(
+        player_ids=pids,
+        pack_kind=pack_kind,
+        pack_id=pack_id,
+        profile=profile,
+        n_questions=int(max(1, min(n, 200))),
+        mode=mode,
+    )
+    ctx["raw_players_input"] = players or ""
+    ctx["selected_mode"] = mode
+    return templates.TemplateResponse(request, "forecast_team_builder.html", ctx)
+
+
 @app.get("/forecast/event/{api_tid}", response_class=HTMLResponse)
 def forecast_for_event(
     request: Request,
