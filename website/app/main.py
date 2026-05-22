@@ -13,7 +13,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import db
+from . import db, forecast as forecast_module
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -982,6 +982,19 @@ def team_page(
 @app.get("/methodology", response_class=HTMLResponse)
 def methodology(request: Request):
     return templates.TemplateResponse(request, "methodology.html", {})
+
+
+# ---------------------------------------------------------------------------
+# Forecast — Stage 1: re-simulate a past tournament with current θ values.
+# ---------------------------------------------------------------------------
+
+
+@app.get("/forecast/tournament/{tournament_id}", response_class=HTMLResponse)
+def forecast_past_tournament(request: Request, tournament_id: int):
+    ctx = forecast_module.forecast_past_tournament(tournament_id)
+    if ctx is None:
+        raise HTTPException(status_code=404, detail="tournament not found")
+    return templates.TemplateResponse(request, "forecast_tournament.html", ctx)
 
 
 # ---------------------------------------------------------------------------

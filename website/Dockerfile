@@ -18,9 +18,16 @@ RUN pip install --no-cache-dir \
       "fastapi>=0.110" \
       "uvicorn[standard]>=0.27" \
       "jinja2>=3.1" \
-      "duckdb>=1.0"
+      "duckdb>=1.0" \
+      "numpy>=1.26"
 
 COPY website/app /app/app
+# Forecast pages rely on the same noisy-OR + lapse + recal kernel used at
+# training time.  ``rating/__init__.py`` is lazy (PEP 562) so importing
+# ``rating.simulate`` does not pull in the heavy training deps (numba,
+# sklearn, psycopg2) — only numpy is required.
+COPY rating/__init__.py /app/rating/__init__.py
+COPY rating/simulate.py /app/rating/simulate.py
 
 # Mount point for the DuckDB file; expected to be bind-mounted read-only.
 RUN mkdir -p /app/data

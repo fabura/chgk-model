@@ -1,12 +1,14 @@
 """Read-only DuckDB connection helpers for the website."""
 from __future__ import annotations
 
+import json
 import os
 import threading
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Optional
 
 import duckdb
+import numpy as np
 
 
 _DB_PATH_ENV = "CHGK_DB_PATH"
@@ -54,7 +56,7 @@ def reload_conn() -> dict:
     dict with the new file size and mtime so the caller can confirm
     the swap happened.
     """
-    global _conn
+    global _conn, _model_params_cache
     with _lock:
         if _conn is not None:
             try:
@@ -66,6 +68,7 @@ def reload_conn() -> dict:
         if not path.exists():
             raise FileNotFoundError(f"chgk.duckdb not found at {path}.")
         _conn = duckdb.connect(str(path), read_only=True)
+        _model_params_cache = None
         st = path.stat()
         return {
             "path": str(path),
@@ -88,6 +91,54 @@ def query(sql: str, params: Iterable[Any] | None = None) -> list[dict]:
 def query_one(sql: str, params: Iterable[Any] | None = None) -> dict | None:
     rows = query(sql, params)
     return rows[0] if rows else None
+
+
+_model_params_cache: Optional[dict] = None
+
+
+def get_model_params() -> dict:
+    """
+    Return model auxiliary parameters needed to predict probabilities at
+    runtime (``delta_size``, ``team_size_anchor``, ``delta_pos``,
+    ``pos_anchor``, ``lapse``, ``recal``) as numpy arrays / Python ints.
+
+    Loaded once and cached for the lifetime of the connection; cleared
+    whenever ``reload_conn()`` is called so a hot DB swap picks up new
+    values.  Missing arrays come back as ``None`` (identity calibration
+    is then used by the simulation kernel).
+    """
+    global _model_params_cache
+    if _model_params_cache is not None:
+        return _model_params_cache
+    try:
+        row = query_one("SELECT params FROM model_params LIMIT 1")
+    except Exception:
+        row = None
+    raw = (row or {}).get("params")
+    if raw is None:
+        _model_params_cache = {
+            "delta_size": None,
+            "team_size_anchor": None,
+            "delta_pos": None,
+            "pos_anchor": None,
+            "lapse": None,
+            "recal": None,
+        }
+        return _model_params_cache
+    if isinstance(raw, (bytes, bytearray)):
+        raw = raw.decode("utf-8")
+    payload = json.loads(raw) if isinstance(raw, str) else raw
+    def _arr(x):
+        return None if x is None else np.asarray(x, dtype=np.float64)
+    _model_params_cache = {
+        "delta_size": _arr(payload.get("delta_size")),
+        "team_size_anchor": payload.get("team_size_anchor"),
+        "delta_pos": _arr(payload.get("delta_pos")),
+        "pos_anchor": payload.get("pos_anchor"),
+        "lapse": _arr(payload.get("lapse")),
+        "recal": _arr(payload.get("recal")),
+    }
+    return _model_params_cache
 
 
 def get_site_meta() -> dict | None:

@@ -824,6 +824,21 @@ CREATE TABLE site_meta (
     model_built_at TIMESTAMP -- when DuckDB was baked (naive UTC; pytz-free read)
 );
 
+-- Single-row JSON dump of the model's auxiliary parameters needed to
+-- *predict* probabilities at runtime (the /forecast pages).  Kept as
+-- one JSON blob to avoid carving out per-array tables for a tiny,
+-- always-loaded payload.  Fields:
+--   delta_size         : list[float]  per-team-size shift table
+--   team_size_anchor   : int          size whose shift is structurally 0
+--   delta_pos          : list[float]  per-position-in-tour shift table
+--   pos_anchor         : int          position whose shift is structurally 0
+--   lapse              : list[list[float]]  shape (3, 2)  [mode, is_solo]
+--   recal              : list[list[list[float]]]  shape (3, 2, 2)
+--                        [mode, is_solo, [alpha, beta]]
+CREATE TABLE model_params (
+    params JSON
+);
+
 CREATE INDEX idx_player_games_player ON player_games(player_id);
 CREATE INDEX idx_player_games_tournament ON player_games(tournament_id);
 CREATE INDEX idx_team_games_tournament ON team_games(tournament_id);
@@ -1225,6 +1240,36 @@ def write_duckdb(
     _log(
         f"site_meta: data_as_of={data_as_of_max}, "
         f"model_built_at={built_at_utc.isoformat()}Z"
+    )
+
+    # ---- model_params (single JSON row) ----
+    # Required at runtime by the /forecast pages so the same noisy-OR +
+    # lapse + recal formula is used as during training.
+    def _arr_or_none(x):
+        return None if x is None else np.asarray(x).tolist()
+
+    model_params_payload = {
+        "delta_size": _arr_or_none(res.delta_size),
+        "team_size_anchor": (
+            None if res.team_size_anchor is None else int(res.team_size_anchor)
+        ),
+        "delta_pos": _arr_or_none(res.delta_pos),
+        "pos_anchor": (
+            None if res.pos_anchor is None else int(res.pos_anchor)
+        ),
+        "lapse": _arr_or_none(res.lapse),
+        "recal": _arr_or_none(res.recal),
+    }
+    con.execute(
+        "INSERT INTO model_params (params) VALUES (?)",
+        [json.dumps(model_params_payload, ensure_ascii=False)],
+    )
+    _log(
+        "model_params: "
+        f"delta_size={'set' if res.delta_size is not None else 'none'}, "
+        f"delta_pos={'set' if res.delta_pos is not None else 'none'}, "
+        f"lapse={'set' if res.lapse is not None else 'none'}, "
+        f"recal={'set' if res.recal is not None else 'none'}"
     )
 
     # ---- pack_editors ----

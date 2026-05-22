@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}Прогноз: {{ tournament.title }} — ChGK Model{% endblock %}
+
+{% block content %}
+<div class="mb-6">
+  <div class="text-xs text-slate-500 mb-1">
+    <a href="/tournament/{{ tournament.tournament_id }}" class="text-indigo-600 hover:underline">← к странице турнира</a>
+  </div>
+  <h1 class="text-2xl font-semibold break-words">Прогноз — {{ tournament.title }}</h1>
+  <div class="text-sm text-slate-600 mt-1 break-words">
+    {{ tournament.type | type_label }}
+    {% if tournament.start_date %} · {{ tournament.start_date.isoformat() }}{% endif %}
+    · вопросов: {{ tournament.n_questions }}
+    · команд: {{ teams|length }}
+  </div>
+  <p class="text-sm text-slate-600 mt-2 max-w-3xl">
+    Для каждой команды берётся её состав на этом турнире, но θ игроков —
+    <strong>текущие</strong> (как сейчас в рейтинге, не «на момент турнира»).
+    Затем считается ожидаемый счёт <span class="num">E[T] = Σ p<sub>q</sub></span>
+    по той же формуле, что и при обучении (noisy-OR + lapse + калибровка).
+  </p>
+</div>
+
+{% for w in warnings %}
+<div class="mb-4 px-4 py-2 text-sm rounded border border-amber-300 bg-amber-50 text-amber-800">{{ w }}</div>
+{% endfor %}
+
+{% if teams %}
+<section class="bg-white border border-slate-200 rounded shadow-sm overflow-hidden">
+  <div class="overflow-x-auto">
+    <table class="min-w-full text-sm">
+      <thead class="bg-slate-100 text-slate-600 text-xs uppercase tracking-wide">
+        <tr>
+          <th class="px-3 py-2 text-right">#</th>
+          <th class="px-3 py-2 text-left">Команда</th>
+          <th class="px-3 py-2 text-right num">Прогноз E[T]</th>
+          <th class="px-3 py-2 text-right num">Игроков с θ</th>
+          <th class="px-3 py-2 text-right num">Факт. счёт</th>
+          <th class="px-3 py-2 text-right num">Факт. место</th>
+          <th class="px-3 py-2 text-right num">Δ места</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in teams %}
+        <tr class="border-t border-slate-100 hover:bg-slate-50">
+          <td class="px-3 py-1.5 text-right num text-slate-500">{{ r.rank_predicted }}</td>
+          <td class="px-3 py-1.5 text-left">
+            <a href="/team/{{ r.team_id }}" class="text-indigo-700 hover:underline">{{ r.team_name }}</a>
+          </td>
+          <td class="px-3 py-1.5 text-right num">{{ "%.1f" | format(r.expected_takes) }}</td>
+          <td class="px-3 py-1.5 text-right num text-slate-500">
+            {{ r.n_players }}{% if r.n_players_active and r.n_players_active != r.n_players %} / {{ r.n_players_active }}{% endif %}
+          </td>
+          <td class="px-3 py-1.5 text-right num">{{ r.score_actual if r.score_actual is not none else "—" }}</td>
+          <td class="px-3 py-1.5 text-right num">
+            {% if r.place_actual is not none %}{{ "%.1f"|format(r.place_actual) }}{% else %}—{% endif %}
+          </td>
+          <td class="px-3 py-1.5 text-right num">
+            {% if r.place_delta is none %}—
+            {% elif r.place_delta == 0 %}<span class="text-slate-500">0</span>
+            {% elif r.place_delta > 0 %}<span class="text-emerald-700">+{{ r.place_delta }}</span>
+            {% else %}<span class="text-rose-700">{{ r.place_delta }}</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+<p class="text-xs text-slate-500 mt-3">
+  Δ места &gt; 0 значит «команда сыграла лучше, чем предсказывала бы
+  модель сейчас» (фактическое место выше прогнозного), &lt; 0 — наоборот.
+</p>
+{% else %}
+<div class="text-slate-500">В этом турнире нет данных для прогноза.</div>
+{% endif %}
+{% endblock %}
