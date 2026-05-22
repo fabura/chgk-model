@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import math
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -995,6 +995,67 @@ def forecast_past_tournament(request: Request, tournament_id: int):
     if ctx is None:
         raise HTTPException(status_code=404, detail="tournament not found")
     return templates.TemplateResponse(request, "forecast_tournament.html", ctx)
+
+
+@app.get("/forecast/upcoming", response_class=HTMLResponse)
+def forecast_upcoming(
+    request: Request,
+    days_ahead: int = 30,
+    type: Optional[str] = None,
+):
+    """List upcoming tournaments fetched from rating.chgk.info.
+
+    ``type`` filters the list by API type name (``Обычный``, ``Синхрон`` …).
+    The list is small (≤50 per page from the API) and cached for 10 min.
+    """
+    today = datetime.now(timezone.utc).date()
+    after = today.isoformat() + "T00:00:00+00:00"
+    before_d = today + timedelta(days=int(max(1, min(days_ahead, 180))))
+    before = before_d.isoformat() + "T23:59:59+00:00"
+    try:
+        tournaments = forecast_module.list_upcoming_tournaments(
+            after_iso=after, before_iso=before
+        )
+        fetch_error = None
+    except Exception as exc:
+        tournaments = []
+        fetch_error = str(exc)
+    if type:
+        tournaments = [
+            t for t in tournaments
+            if (t.get("type") or {}).get("name") == type
+        ]
+    return templates.TemplateResponse(
+        request,
+        "forecast_upcoming.html",
+        {
+            "tournaments": tournaments,
+            "fetch_error": fetch_error,
+            "days_ahead": int(days_ahead),
+            "selected_type": type,
+            "today_iso": today.isoformat(),
+            "until_iso": before_d.isoformat(),
+        },
+    )
+
+
+@app.get("/forecast/event/{api_tid}", response_class=HTMLResponse)
+def forecast_for_event(
+    request: Request,
+    api_tid: int,
+    pack_kind: str = "synth",
+    pack_id: Optional[int] = None,
+    profile: Optional[str] = "medium",
+):
+    ctx = forecast_module.forecast_for_event(
+        api_tid,
+        pack_kind=pack_kind,
+        pack_id=pack_id,
+        profile=profile,
+    )
+    if ctx is None:
+        raise HTTPException(status_code=404, detail="event not found")
+    return templates.TemplateResponse(request, "forecast_event.html", ctx)
 
 
 # ---------------------------------------------------------------------------

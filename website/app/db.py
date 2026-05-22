@@ -69,6 +69,14 @@ def reload_conn() -> dict:
             raise FileNotFoundError(f"chgk.duckdb not found at {path}.")
         _conn = duckdb.connect(str(path), read_only=True)
         _model_params_cache = None
+        # Drop the API cache too; the model_params and tournament/player
+        # tables can shift between builds, and stale rosters during a
+        # build swap would mismatch the now-current θ values.
+        try:
+            from . import forecast_api as _fa
+            _fa.clear_cache()
+        except Exception:
+            pass
         st = path.stat()
         return {
             "path": str(path),

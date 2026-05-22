@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block title %}Прогноз: {{ tournament.name if tournament else "событие" }} — ChGK Model{% endblock %}
+
+{% block content %}
+<div class="mb-6">
+  <div class="text-xs text-slate-500 mb-1">
+    <a href="/forecast/upcoming" class="text-indigo-600 hover:underline">← к списку ближайших</a>
+  </div>
+  {% if tournament %}
+  <h1 class="text-2xl font-semibold break-words">{{ tournament.name }}</h1>
+  <div class="text-sm text-slate-600 mt-1 break-words">
+    {% set tt = tournament.type or {} %}
+    {{ tt.name or "—" }}
+    {% if tournament.dateStart %} · {{ tournament.dateStart[:10] }}{% endif %}
+    {% set q = tournament.questionQty %}
+    {% if q %} · вопросов: {{ q.values() | sum }}{% endif %}
+    · команд (по API): {{ teams|length if teams else 0 }}
+    · <a href="https://rating.chgk.info/tournament/{{ api_tid }}" rel="noopener" class="text-indigo-600 hover:underline">страница на rating.chgk.info →</a>
+  </div>
+  {% endif %}
+</div>
+
+{% if fetch_error %}
+<div class="mb-4 px-4 py-2 text-sm rounded border border-rose-300 bg-rose-50 text-rose-800">
+  {{ fetch_error }}
+</div>
+{% endif %}
+
+{% for w in warnings %}
+<div class="mb-4 px-4 py-2 text-sm rounded border border-amber-300 bg-amber-50 text-amber-800">{{ w }}</div>
+{% endfor %}
+
+{% if pack %}
+<section class="bg-white border border-slate-200 rounded shadow-sm mb-6 p-4">
+  <h2 class="text-sm font-medium text-slate-600 mb-2">На каком пакете считать прогноз</h2>
+  <form method="get" class="flex flex-wrap gap-3 items-end text-sm">
+    <label>
+      <span class="block text-slate-600 mb-1">Источник пакета</span>
+      <select name="pack_kind" class="border border-slate-300 rounded px-2 py-1">
+        <option value="synth" {% if pack.kind == 'synth' %}selected{% endif %}>синтетический профиль</option>
+        <option value="past" {% if pack.kind == 'past' %}selected{% endif %}>прошедший турнир</option>
+      </select>
+    </label>
+    <label>
+      <span class="block text-slate-600 mb-1">Профиль</span>
+      <select name="profile" class="border border-slate-300 rounded px-2 py-1">
+        <option value="easy" {% if pack.profile == 'easy' %}selected{% endif %}>лёгкий (школьный)</option>
+        <option value="medium" {% if pack.profile == 'medium' or not pack.profile %}selected{% endif %}>средний синхрон</option>
+        <option value="hard" {% if pack.profile == 'hard' %}selected{% endif %}>топовый очный</option>
+      </select>
+    </label>
+    <label>
+      <span class="block text-slate-600 mb-1">ID прошедшего турнира</span>
+      <input type="number" name="pack_id" placeholder="например, 13533"
+             value="{% if pack.kind == 'past' %}{{ pack.tournament_id }}{% endif %}"
+             class="border border-slate-300 rounded px-2 py-1 w-32">
+    </label>
+    <button type="submit" class="bg-indigo-600 text-white px-3 py-1.5 rounded hover:bg-indigo-700">
+      Пересчитать
+    </button>
+  </form>
+  <div class="mt-2 text-xs text-slate-500">
+    Сейчас: {% if pack.kind == 'past' %}<a href="/tournament/{{ pack.tournament_id }}" class="text-indigo-600 hover:underline">{{ pack.title }}</a>
+    {% else %}{{ pack.title }} (профиль: {{ pack.profile }}){% endif %},
+    {{ pack.n_questions }} вопросов.
+  </div>
+</section>
+{% endif %}
+
+{% if teams %}
+<section class="bg-white border border-slate-200 rounded shadow-sm overflow-hidden">
+  <div class="overflow-x-auto">
+    <table class="min-w-full text-sm">
+      <thead class="bg-slate-100 text-slate-600 text-xs uppercase tracking-wide">
+        <tr>
+          <th class="px-3 py-2 text-right">#</th>
+          <th class="px-3 py-2 text-left">Команда</th>
+          <th class="px-3 py-2 text-right num">E[T]</th>
+          {% if n_mc_samples %}
+          <th class="px-3 py-2 text-right num">счёт 5–95%</th>
+          <th class="px-3 py-2 text-right num">место 5–95%</th>
+          {% endif %}
+          <th class="px-3 py-2 text-right num">Игроков</th>
+          <th class="px-3 py-2 text-right num" title="игроков, которых нет в нашей БД (cold-start θ)">из них новых</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in teams %}
+        <tr class="border-t border-slate-100 hover:bg-slate-50">
+          <td class="px-3 py-1.5 text-right num text-slate-500">{{ r.rank_predicted }}</td>
+          <td class="px-3 py-1.5 text-left">
+            <a href="/team/{{ r.team_id }}" class="text-indigo-700 hover:underline">{{ r.team_name }}</a>
+          </td>
+          <td class="px-3 py-1.5 text-right num">{{ "%.1f" | format(r.expected_takes) }}</td>
+          {% if n_mc_samples %}
+          <td class="px-3 py-1.5 text-right num text-slate-600">{{ r.score_q05 | int }}–{{ r.score_q95 | int }}</td>
+          <td class="px-3 py-1.5 text-right num text-slate-600">{{ "%.0f"|format(r.place_q05) }}–{{ "%.0f"|format(r.place_q95) }}</td>
+          {% endif %}
+          <td class="px-3 py-1.5 text-right num text-slate-500">{{ r.n_players }}</td>
+          <td class="px-3 py-1.5 text-right num text-slate-500">
+            {% if r.n_unknown_players %}<span class="text-amber-700">{{ r.n_unknown_players }}</span>{% else %}0{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% else %}
+<div class="text-slate-500 mb-4">
+  Составов на этот турнир в API пока нет. Возможно, организаторы их ещё не выложили.
+</div>
+{% endif %}
+{% endblock %}

@@ -32,7 +32,7 @@ import numpy as np
 
 from rating.simulate import simulate_roster_on_pack
 
-from . import db
+from . import db, forecast_api
 
 
 def _type_to_mode(ttype: Optional[str]) -> str:
@@ -73,24 +73,135 @@ def _theta_sigmas(games: np.ndarray) -> np.ndarray:
     return np.clip(s, _THETA_SIGMA_FLOOR, _THETA_SIGMA_CAP)
 
 
+def simulate_field(
+    *,
+    rosters: list[dict],
+    b_arr: np.ndarray,
+    a_arr: np.ndarray,
+    q_in_tour: np.ndarray,
+    mode: str,
+    n_mc_samples: int = _DEFAULT_N_SAMPLES,
+    rng_seed: int = 20260524,
+) -> dict:
+    """Run the full forecast pipeline (E[T] + MC place distribution).
+
+    Generic over the data source — the page-level helpers (past
+    tournament, upcoming tournament, user team) prepare ``rosters`` and
+    the pack arrays, then defer ranking and Monte-Carlo to here so the
+    formula stays in exactly one place.
+
+    Each roster dict is expected to contain at least:
+      * ``team_id``, ``team_name``
+      * ``thetas`` (sequence of floats)
+      * ``games`` (sequence of ints, same length as ``thetas``)
+
+    Optional fields are forwarded into the result rows verbatim:
+    ``score_actual``, ``place_actual``, ``n_players_active``,
+    ``n_unknown_players`` (for warnings on /forecast/event/{api_tid}).
+
+    Returns a dict with ``teams`` (sorted by E[T] desc, with MC quantiles
+    populated when ``n_mc_samples > 0``), ``warnings``,
+    ``model_params_missing``, and ``n_mc_samples``.
+    """
+    mp = db.get_model_params()
+    warnings: list[str] = []
+    if mp["delta_size"] is None or mp["lapse"] is None or mp["recal"] is None:
+        warnings.append(
+            "Параметры калибровки модели не найдены в DuckDB; прогноз "
+            "будет показан без поправок размера команды, позиции в туре "
+            "и калибровки. Пересоберите DuckDB через build_db."
+        )
+
+    # ---- Pass 1: deterministic p_q + E[T] per team ----------------------
+    paired: list[tuple[dict, np.ndarray, dict]] = []
+    for src in rosters:
+        thetas = np.asarray(src.get("thetas", []), dtype=np.float64)
+        if thetas.size == 0:
+            # No θ data for any roster member — skip rather than invent
+            # zeros (zeros would imply a population-average team and
+            # silently rank the team mid-table).
+            continue
+        games = np.asarray(
+            src.get("games") or np.zeros_like(thetas), dtype=np.int64
+        )
+        p_q = simulate_roster_on_pack(
+            thetas=thetas,
+            b=b_arr,
+            a=a_arr,
+            q_in_tour=q_in_tour,
+            delta_size=mp["delta_size"],
+            team_size_anchor=mp["team_size_anchor"],
+            delta_pos=mp["delta_pos"],
+            pos_anchor=mp["pos_anchor"],
+            mode=mode,
+            lapse_arr=mp["lapse"],
+            recal_arr=mp["recal"],
+        )
+        row = {
+            "team_id": src.get("team_id"),
+            "team_name": src.get("team_name") or f"#{src.get('team_id')}",
+            "expected_takes": float(p_q.sum()),
+            "score_actual": src.get("score_actual"),
+            "place_actual": src.get("place_actual"),
+            "n_players": int(thetas.size),
+            "n_players_active": src.get("n_players_active"),
+            "n_unknown_players": src.get("n_unknown_players", 0),
+        }
+        paired.append((row, p_q, {"thetas": thetas, "games": games}))
+
+    paired.sort(key=lambda t: (-t[0]["expected_takes"], t[0]["team_name"] or ""))
+    forecast_rows = [t[0] for t in paired]
+    ordered_boot = [t[2] for t in paired]
+
+    for i, r in enumerate(forecast_rows, start=1):
+        r["rank_predicted"] = i
+        if r["place_actual"] is not None:
+            try:
+                r["place_delta"] = int(round(float(r["place_actual"]))) - i
+            except (TypeError, ValueError):
+                r["place_delta"] = None
+        else:
+            r["place_delta"] = None
+
+    # ---- Pass 2: Monte-Carlo over (θ-bootstrap, Bernoulli takes) -------
+    if forecast_rows and n_mc_samples > 0:
+        rng = np.random.default_rng(rng_seed)
+        scores = _monte_carlo_scores(
+            boot_inputs=ordered_boot,
+            b_arr=b_arr,
+            a_arr=a_arr,
+            q_in_tour=q_in_tour,
+            mp=mp,
+            mode=mode,
+            n_samples=int(n_mc_samples),
+            rng=rng,
+        )
+        ranks = _rank_descending_avg(scores)
+        place_q = np.quantile(ranks, [0.05, 0.5, 0.95], axis=0)
+        score_q = np.quantile(scores, [0.05, 0.5, 0.95], axis=0)
+        for i, r in enumerate(forecast_rows):
+            r["score_q05"] = float(score_q[0, i])
+            r["score_q50"] = float(score_q[1, i])
+            r["score_q95"] = float(score_q[2, i])
+            r["place_q05"] = float(place_q[0, i])
+            r["place_q50"] = float(place_q[1, i])
+            r["place_q95"] = float(place_q[2, i])
+
+    return {
+        "teams": forecast_rows,
+        "warnings": warnings,
+        "model_params_missing": mp["delta_size"] is None,
+        "n_mc_samples": int(n_mc_samples),
+    }
+
+
 def forecast_past_tournament(
     tournament_id: int,
     *,
     n_mc_samples: int = _DEFAULT_N_SAMPLES,
     rng_seed: int = 20260524,
 ) -> Optional[dict]:
-    """Build the context for the /forecast/tournament/{tid} page.
-
-    Returns ``None`` when the tournament is not in the DB.  Otherwise
-    returns a dict with the tournament metadata, the ranked forecast
-    table (deterministic E[T] + Monte-Carlo place distribution),
-    calibration warnings, and a model-params status flag.
-
-    The Monte-Carlo loop draws ``n_mc_samples`` joint samples of
-    ``(θ-bootstrap, Bernoulli takes)`` and ranks teams within each
-    sample, so the reported place quantiles already capture both
-    sources of uncertainty.  ``rng_seed`` makes the page deterministic.
-    """
+    """Build the context for the /forecast/tournament/{tid} page."""
     tournament = db.query_one(
         "SELECT tournament_id, title, type, start_date, n_questions "
         "FROM tournaments WHERE tournament_id = ?",
@@ -118,6 +229,7 @@ def forecast_past_tournament(
             "teams": [],
             "warnings": ["В базе нет вопросов для этого турнира."],
             "model_params_missing": False,
+            "n_mc_samples": 0,
         }
 
     b_arr = np.array([q["b"] for q in questions], dtype=np.float64)
@@ -126,9 +238,6 @@ def forecast_past_tournament(
         [q["q_in_tournament"] for q in questions], dtype=np.int64
     )
 
-    # Rosters for this tournament + each player's current θ.  One batched
-    # query, grouped in Python by team_id.  We grab actual score/place
-    # from team_games so we can show the comparison column.
     rows = db.query(
         """
         SELECT
@@ -138,7 +247,6 @@ def forecast_past_tournament(
             p.games,
             tg.team_name,
             tg.score_actual,
-            tg.expected_takes,
             tg.place,
             tg.n_players_active
         FROM player_games pg
@@ -159,113 +267,288 @@ def forecast_past_tournament(
                 "team_id": tid,
                 "team_name": r["team_name"] or f"#{tid}",
                 "score_actual": r["score_actual"],
-                "expected_takes_baked": r["expected_takes"],
                 "place_actual": r["place"],
                 "n_players_active": r["n_players_active"],
                 "thetas": [],
                 "games": [],
-                "player_ids": [],
             },
         )
         if r["theta"] is not None:
             slot["thetas"].append(float(r["theta"]))
             slot["games"].append(int(r["games"] or 0))
-            slot["player_ids"].append(int(r["player_id"]))
 
-    mp = db.get_model_params()
-    mode = _type_to_mode(tournament["type"])
-    warnings: list[str] = []
-    if mp["delta_size"] is None or mp["lapse"] is None or mp["recal"] is None:
-        warnings.append(
-            "Параметры калибровки модели не найдены в DuckDB; прогноз "
-            "будет показан без поправок размера команды, позиции в туре "
-            "и калибровки. Пересоберите DuckDB через build_db."
-        )
+    sim = simulate_field(
+        rosters=list(teams.values()),
+        b_arr=b_arr,
+        a_arr=a_arr,
+        q_in_tour=q_in_tour,
+        mode=_type_to_mode(tournament["type"]),
+        n_mc_samples=n_mc_samples,
+        rng_seed=rng_seed,
+    )
+    sim["tournament"] = tournament
+    return sim
 
-    # ---- Pass 1: deterministic p_q + E[T] per team ----------------------
-    # Build a paired list ``(row, p_q, boot)`` so we can sort by E[T]
-    # without losing the alignment to per-team simulation state.
-    paired: list[tuple[dict, np.ndarray, dict]] = []
-    for slot in teams.values():
-        thetas = np.asarray(slot["thetas"], dtype=np.float64)
-        if thetas.size == 0:
-            # No θ data for any roster member — skip the team rather than
-            # invent zeros (zeros would imply a population-average team and
-            # silently rank the team mid-table).
-            continue
-        games = np.asarray(slot["games"], dtype=np.int64)
-        p_q = simulate_roster_on_pack(
-            thetas=thetas,
-            b=b_arr,
-            a=a_arr,
-            q_in_tour=q_in_tour,
-            delta_size=mp["delta_size"],
-            team_size_anchor=mp["team_size_anchor"],
-            delta_pos=mp["delta_pos"],
-            pos_anchor=mp["pos_anchor"],
-            mode=mode,
-            lapse_arr=mp["lapse"],
-            recal_arr=mp["recal"],
-        )
-        row = {
-            "team_id": slot["team_id"],
-            "team_name": slot["team_name"],
-            "expected_takes": float(p_q.sum()),
-            "score_actual": slot["score_actual"],
-            "place_actual": slot["place_actual"],
-            "n_players": int(thetas.size),
-            "n_players_active": slot["n_players_active"],
-        }
-        paired.append((row, p_q, {"thetas": thetas, "games": games}))
 
-    paired.sort(key=lambda t: (-t[0]["expected_takes"], t[0]["team_name"] or ""))
-    forecast_rows = [t[0] for t in paired]
-    ordered_p = [t[1] for t in paired]
-    ordered_boot = [t[2] for t in paired]
+# ---------------------------------------------------------------------------
+# Pack sources for forecasts of *future* tournaments
+# ---------------------------------------------------------------------------
 
-    for i, r in enumerate(forecast_rows, start=1):
-        r["rank_predicted"] = i
-        if r["place_actual"] is not None:
-            try:
-                r["place_delta"] = int(round(float(r["place_actual"]))) - i
-            except (TypeError, ValueError):
-                r["place_delta"] = None
-        else:
-            r["place_delta"] = None
 
-    # ---- Pass 2: Monte-Carlo over (θ-bootstrap, Bernoulli takes) -------
-    if forecast_rows and n_mc_samples > 0:
-        rng = np.random.default_rng(rng_seed)
-        scores = _monte_carlo_scores(
-            boot_inputs=ordered_boot,
-            b_arr=b_arr,
-            a_arr=a_arr,
-            q_in_tour=q_in_tour,
-            mp=mp,
-            mode=mode,
-            n_samples=int(n_mc_samples),
-            rng=rng,
-        )  # (n_samples, n_teams)
-        # Rank within each sample (1 = best score).  Ties get the average
-        # rank, which is what the actual ChGK rule applies in tournaments.
-        ranks = _rank_descending_avg(scores)
-        place_q = np.quantile(ranks, [0.05, 0.5, 0.95], axis=0)
-        score_q = np.quantile(scores, [0.05, 0.5, 0.95], axis=0)
-        for i, r in enumerate(forecast_rows):
-            r["score_q05"] = float(score_q[0, i])
-            r["score_q50"] = float(score_q[1, i])
-            r["score_q95"] = float(score_q[2, i])
-            r["place_q05"] = float(place_q[0, i])
-            r["place_q50"] = float(place_q[1, i])
-            r["place_q95"] = float(place_q[2, i])
+_SYNTH_PROFILES: dict[str, dict] = {
+    # Loosely matches what the data shows for these formats.  The ``a``
+    # value mirrors the model: ``log_a`` is frozen to 0 → ``a = 1``.
+    "easy": {
+        "label": "Школьный / лёгкий пакет",
+        "b_mean": -0.7, "b_std": 0.5, "a": 1.0,
+    },
+    "medium": {
+        "label": "Средний синхрон",
+        "b_mean": 0.0, "b_std": 0.7, "a": 1.0,
+    },
+    "hard": {
+        "label": "Топовый очный / сильный пак",
+        "b_mean": 0.7, "b_std": 0.7, "a": 1.0,
+    },
+}
 
+
+def _pack_from_past(tournament_id: int) -> Optional[dict]:
+    """Pull (b, a, q_in_tour) for a past pack from DuckDB."""
+    rows = db.query(
+        """
+        SELECT qa.q_in_tournament, q.b, q.a
+        FROM question_aliases qa
+        JOIN questions q ON q.canonical_idx = qa.canonical_idx
+        WHERE qa.tournament_id = ?
+        ORDER BY qa.q_in_tournament
+        """,
+        [int(tournament_id)],
+    )
+    if not rows:
+        return None
+    meta = db.query_one(
+        "SELECT title, type, n_questions FROM tournaments WHERE tournament_id = ?",
+        [int(tournament_id)],
+    )
     return {
-        "tournament": tournament,
-        "teams": forecast_rows,
-        "warnings": warnings,
-        "model_params_missing": mp["delta_size"] is None,
-        "n_mc_samples": int(n_mc_samples),
+        "kind": "past",
+        "tournament_id": int(tournament_id),
+        "title": (meta or {}).get("title") or f"турнир {tournament_id}",
+        "type": (meta or {}).get("type"),
+        "b": np.array([r["b"] for r in rows], dtype=np.float64),
+        "a": np.array([r["a"] for r in rows], dtype=np.float64),
+        "q_in_tour": np.array(
+            [r["q_in_tournament"] for r in rows], dtype=np.int64
+        ),
+        "n_questions": len(rows),
     }
+
+
+def _pack_synthetic(profile: str, n_questions: int) -> dict:
+    """Generate a deterministic synthetic pack for the given profile."""
+    spec = _SYNTH_PROFILES.get(profile, _SYNTH_PROFILES["medium"])
+    n = max(1, int(n_questions))
+    rng = np.random.default_rng(hash((profile, n)) & 0xFFFFFFFF)
+    b = rng.normal(spec["b_mean"], spec["b_std"], size=n)
+    a = np.full(n, spec["a"], dtype=np.float64)
+    return {
+        "kind": "synth",
+        "profile": profile,
+        "title": spec["label"],
+        "b": b.astype(np.float64),
+        "a": a,
+        "q_in_tour": np.arange(n, dtype=np.int64),
+        "n_questions": n,
+    }
+
+
+def resolve_pack(
+    *,
+    pack_kind: str,
+    pack_id: Optional[int],
+    profile: Optional[str],
+    fallback_n_questions: int,
+) -> Optional[dict]:
+    """Translate the URL ``pack_*`` query params into a pack dict.
+
+    ``pack_kind == "past"`` looks the tournament up in DuckDB; missing
+    data returns ``None``.  ``pack_kind == "synth"`` always succeeds
+    (unknown profile silently falls back to ``"medium"``).  Anything
+    else is treated as a request for the default synthetic pack.
+    """
+    kind = (pack_kind or "synth").strip().lower()
+    if kind == "past" and pack_id is not None:
+        return _pack_from_past(int(pack_id))
+    profile = (profile or "medium").strip().lower()
+    if profile not in _SYNTH_PROFILES:
+        profile = "medium"
+    return _pack_synthetic(profile, fallback_n_questions)
+
+
+# ---------------------------------------------------------------------------
+# Forecast for an *upcoming* (or just-now) tournament from rating.chgk.info
+# ---------------------------------------------------------------------------
+
+
+def forecast_for_event(
+    api_tid: int,
+    *,
+    pack_kind: str = "synth",
+    pack_id: Optional[int] = None,
+    profile: Optional[str] = "medium",
+    n_mc_samples: int = _DEFAULT_N_SAMPLES,
+    rng_seed: int = 20260524,
+) -> Optional[dict]:
+    """Build the context for /forecast/event/{api_tid}.
+
+    Pulls metadata + rosters from ``api.rating.chgk.info``, looks up
+    each player's current θ in our DuckDB (unknown players are flagged
+    so the page can warn), resolves the pack via ``resolve_pack``, and
+    runs the same simulation pipeline as past tournaments.
+    """
+    try:
+        meta = forecast_api.get_tournament(int(api_tid))
+    except Exception as exc:
+        return {
+            "tournament": None,
+            "api_tid": int(api_tid),
+            "fetch_error": f"Не удалось получить турнир из API: {exc}",
+            "teams": [],
+            "warnings": [],
+            "pack": None,
+            "n_mc_samples": 0,
+            "model_params_missing": False,
+        }
+    if not isinstance(meta, dict) or "id" not in meta:
+        return None
+
+    n_q_total = sum(int(v) for v in (meta.get("questionQty") or {}).values()) or 36
+    pack = resolve_pack(
+        pack_kind=pack_kind,
+        pack_id=pack_id,
+        profile=profile,
+        fallback_n_questions=n_q_total,
+    )
+    if pack is None:
+        return {
+            "tournament": meta,
+            "api_tid": int(api_tid),
+            "teams": [],
+            "warnings": ["Выбранный пакет не найден в нашей БД."],
+            "pack": None,
+            "n_mc_samples": 0,
+            "model_params_missing": False,
+        }
+
+    try:
+        roster_payload = forecast_api.get_rosters(int(api_tid))
+    except Exception as exc:
+        return {
+            "tournament": meta,
+            "api_tid": int(api_tid),
+            "fetch_error": f"Не удалось получить составы из API: {exc}",
+            "teams": [],
+            "warnings": [],
+            "pack": pack,
+            "n_mc_samples": 0,
+            "model_params_missing": False,
+        }
+
+    # Collect every (api) player_id we need θ / games for.
+    pid_set: set[int] = set()
+    for team_row in roster_payload:
+        for tm in team_row.get("teamMembers") or []:
+            pl = tm.get("player") or {}
+            pid = pl.get("id")
+            if isinstance(pid, int):
+                pid_set.add(int(pid))
+    theta_by_pid: dict[int, dict] = {}
+    if pid_set:
+        rows = db.query(
+            "SELECT player_id, theta, games, last_name, first_name "
+            "FROM players WHERE player_id IN ("
+            + ",".join("?" * len(pid_set)) + ")",
+            sorted(pid_set),
+        )
+        theta_by_pid = {int(r["player_id"]): r for r in rows}
+
+    rosters: list[dict] = []
+    n_unknown_total = 0
+    for team_row in roster_payload:
+        team = team_row.get("team") or {}
+        team_id = team.get("id")
+        if team_id is None:
+            continue
+        members = team_row.get("teamMembers") or []
+        thetas: list[float] = []
+        games: list[int] = []
+        n_unknown = 0
+        for tm in members:
+            pl = tm.get("player") or {}
+            pid = pl.get("id")
+            if not isinstance(pid, int):
+                continue
+            db_row = theta_by_pid.get(int(pid))
+            if db_row is None:
+                # Player is in the tournament but not in our DB — likely
+                # a brand-new debutant.  Use the population prior (θ = -1.5,
+                # matching ``Config.cold_init_theta``) and treat them as
+                # having zero games for the bootstrap (max σ).
+                thetas.append(-1.5)
+                games.append(0)
+                n_unknown += 1
+            else:
+                thetas.append(float(db_row["theta"] or 0.0))
+                games.append(int(db_row["games"] or 0))
+        if not thetas:
+            continue
+        n_unknown_total += n_unknown
+        rosters.append(
+            {
+                "team_id": int(team_id),
+                "team_name": team.get("name") or f"#{team_id}",
+                "thetas": thetas,
+                "games": games,
+                "n_unknown_players": n_unknown,
+                "n_players_active": len(thetas),
+            }
+        )
+
+    sim = simulate_field(
+        rosters=rosters,
+        b_arr=pack["b"],
+        a_arr=pack["a"],
+        q_in_tour=pack["q_in_tour"],
+        mode=forecast_api.api_type_to_mode(meta.get("type")),
+        n_mc_samples=n_mc_samples,
+        rng_seed=rng_seed,
+    )
+    if n_unknown_total:
+        sim["warnings"].append(
+            f"Игроков не из нашей базы: {n_unknown_total} — для них θ "
+            "взят как cold-start (-1.5) с максимальной неопределённостью."
+        )
+    sim["tournament"] = meta
+    sim["api_tid"] = int(api_tid)
+    sim["pack"] = pack
+    return sim
+
+
+def list_upcoming_tournaments(
+    *, after_iso: str, before_iso: Optional[str] = None
+) -> list[dict]:
+    """Return upcoming tournaments enriched with ``has_rosters`` flag.
+
+    The ``has_rosters`` flag is *cheap* (the API embeds the team count
+    only when ``includeTeamMembers=1``); we don't fetch full rosters per
+    item — that would be a separate request per row.  Instead we use the
+    presence of ``synchData.dateRequestsAllowedTo`` as a heuristic ('the
+    org has set a registration deadline → registrations exist').
+    """
+    return forecast_api.list_upcoming(
+        after_iso=after_iso, before_iso=before_iso, items_per_page=50
+    )
 
 
 def _monte_carlo_scores(
