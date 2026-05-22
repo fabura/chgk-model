@@ -18,6 +18,12 @@
     <strong>текущие</strong> (как сейчас в рейтинге, не «на момент турнира»).
     Затем считается ожидаемый счёт <span class="num">E[T] = Σ p<sub>q</sub></span>
     по той же формуле, что и при обучении (noisy-OR + lapse + калибровка).
+    {% if n_mc_samples %}
+    Колонки <strong>5%–95%</strong> — границы доверительного интервала
+    из {{ n_mc_samples }} симуляций Монте-Карло; в каждой θ игрока
+    подсэмплируется из ≈Normal(θ̂, σ²(games)), а затем для каждого
+    вопроса бросается монетка с вероятностью <span class="num">p<sub>q</sub></span>.
+    {% endif %}
   </p>
 </div>
 
@@ -33,8 +39,12 @@
         <tr>
           <th class="px-3 py-2 text-right">#</th>
           <th class="px-3 py-2 text-left">Команда</th>
-          <th class="px-3 py-2 text-right num">Прогноз E[T]</th>
-          <th class="px-3 py-2 text-right num">Игроков с θ</th>
+          <th class="px-3 py-2 text-right num">E[T]</th>
+          {% if n_mc_samples %}
+          <th class="px-3 py-2 text-right num" title="5–95 % интервал счёта по MC">счёт 5–95%</th>
+          <th class="px-3 py-2 text-right num" title="5–95 % интервал места по MC">место 5–95%</th>
+          {% endif %}
+          <th class="px-3 py-2 text-right num">Игроков</th>
           <th class="px-3 py-2 text-right num">Факт. счёт</th>
           <th class="px-3 py-2 text-right num">Факт. место</th>
           <th class="px-3 py-2 text-right num">Δ места</th>
@@ -48,6 +58,14 @@
             <a href="/team/{{ r.team_id }}" class="text-indigo-700 hover:underline">{{ r.team_name }}</a>
           </td>
           <td class="px-3 py-1.5 text-right num">{{ "%.1f" | format(r.expected_takes) }}</td>
+          {% if n_mc_samples %}
+          <td class="px-3 py-1.5 text-right num text-slate-600">
+            {{ r.score_q05 | int }}–{{ r.score_q95 | int }}
+          </td>
+          <td class="px-3 py-1.5 text-right num text-slate-600">
+            {{ "%.0f"|format(r.place_q05) }}–{{ "%.0f"|format(r.place_q95) }}
+          </td>
+          {% endif %}
           <td class="px-3 py-1.5 text-right num text-slate-500">
             {{ r.n_players }}{% if r.n_players_active and r.n_players_active != r.n_players %} / {{ r.n_players_active }}{% endif %}
           </td>
