@@ -989,6 +989,19 @@ def methodology(request: Request):
 # ---------------------------------------------------------------------------
 
 
+def _query_int_or_none(value: Optional[str]) -> Optional[int]:
+    """Query params from HTML forms may be ``pack_id=`` (empty string)."""
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    try:
+        return int(s)
+    except ValueError:
+        return None
+
+
 @app.get("/api/forecast/tournaments")
 def api_forecast_tournaments(q: str = Query("", max_length=100)):
     """JSON autocomplete: past tournaments in DuckDB (for pack / forecast pick)."""
@@ -1158,12 +1171,13 @@ def forecast_team_builder(
     request: Request,
     players: str = "",
     pack_kind: str = "synth",
-    pack_id: Optional[int] = None,
+    pack_id: Optional[str] = None,
     profile: Optional[str] = "medium",
     n: int = 36,
     mode: str = "offline",
 ):
     """Custom-team forecast: paste a list of player IDs and pick a pack."""
+    pack_id = _query_int_or_none(pack_id)
     pids: list[int] = []
     for chunk in (players or "").replace(";", ",").replace(" ", ",").split(","):
         chunk = chunk.strip()
@@ -1196,13 +1210,13 @@ def forecast_for_event(
     request: Request,
     api_tid: int,
     pack_kind: str = "synth",
-    pack_id: Optional[int] = None,
+    pack_id: Optional[str] = None,
     profile: Optional[str] = "medium",
 ):
     ctx = forecast_module.forecast_for_event(
         api_tid,
         pack_kind=pack_kind,
-        pack_id=pack_id,
+        pack_id=_query_int_or_none(pack_id),
         profile=profile,
     )
     if ctx is None:
