@@ -1,19 +1,37 @@
 {% extends "base.html" %}
 {% block title %}Прогноз ближайших турниров — ChGK Model{% endblock %}
 
+{% block head_extra %}
+<script src="/static/forecast.js" defer></script>
+{% endblock %}
+
 {% block content %}
 <div class="mb-6">
-  <h1 class="text-2xl font-semibold">Ближайшие турниры</h1>
+  <h1 class="text-2xl font-semibold">Прогноз</h1>
   <div class="text-sm text-slate-600 mt-1">
-    Источник: <code>api.rating.chgk.info</code>.
-    С {{ today_iso }} по {{ until_iso }} ({{ days_ahead }} дней вперёд).
+    Ближайшие события — <code>api.rating.chgk.info</code>, с {{ today_iso }} по {{ until_iso }}.
   </div>
-  <div class="mt-3">
-    <a href="/forecast/team-builder" class="inline-flex items-center gap-1 text-sm px-3 py-1.5 rounded border border-indigo-300 bg-indigo-50 text-indigo-700 hover:bg-indigo-100">
-      Прогноз для своей команды →
+  <div class="mt-3 flex flex-wrap gap-2">
+    <a href="/forecast/team-builder" class="inline-flex items-center text-sm px-3 py-1.5 rounded border border-indigo-300 bg-indigo-50 text-indigo-700 hover:bg-indigo-100">
+      Своя команда →
     </a>
   </div>
 </div>
+
+<section class="bg-white border border-slate-200 rounded shadow-sm p-4 mb-6">
+  <h2 class="text-sm font-medium text-slate-700 mb-2">Прогноз на прошедшем турнире</h2>
+  <p class="text-xs text-slate-500 mb-3">
+    Найдите турнир из нашей базы — откроется пересчёт таблицы с <strong>текущими</strong> θ
+    (составы и пакет с того турнира).
+  </p>
+  <div class="relative max-w-xl" data-tournament-picker="link">
+    <input type="text" data-tournament-search autocomplete="off"
+           placeholder="Название или ID турнира…"
+           class="w-full border border-slate-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring focus:ring-indigo-200">
+    <ul data-tournament-results
+        class="hidden absolute z-20 left-0 right-0 mt-1 max-h-56 overflow-y-auto bg-white border border-slate-200 rounded shadow-lg"></ul>
+  </div>
+</section>
 
 {% if fetch_error %}
 <div class="mb-4 px-4 py-2 text-sm rounded border border-rose-300 bg-rose-50 text-rose-800">
@@ -21,9 +39,17 @@
 </div>
 {% endif %}
 
+<h2 class="text-lg font-medium text-slate-800 mb-3">Ближайшие турниры</h2>
+
 <form method="get" class="mb-4 flex flex-wrap gap-3 items-end">
+  <label class="text-sm flex-1 min-w-[12rem]">
+    <span class="block text-slate-600 mb-1">Поиск в списке</span>
+    <input type="text" data-upcoming-filter autocomplete="off"
+           placeholder="Фильтр по названию…"
+           class="w-full border border-slate-300 rounded px-2 py-1.5 text-sm">
+  </label>
   <label class="text-sm">
-    <span class="block text-slate-600 mb-1">Тип</span>
+    <span class="block text-slate-600 mb-1">Тип (API)</span>
     <select name="type" class="border border-slate-300 rounded px-2 py-1 text-sm">
       <option value="" {% if not selected_type %}selected{% endif %}>любой</option>
       <option value="Обычный" {% if selected_type == 'Обычный' %}selected{% endif %}>Очный</option>
@@ -38,7 +64,7 @@
            class="border border-slate-300 rounded px-2 py-1 text-sm w-20">
   </label>
   <button type="submit" class="bg-indigo-600 text-white text-sm px-3 py-1.5 rounded hover:bg-indigo-700">
-    Применить
+    Обновить список
   </button>
 </form>
 
@@ -55,19 +81,15 @@
           <th class="px-3 py-2 text-right">Прогноз</th>
         </tr>
       </thead>
-      <tbody>
+      <tbody data-upcoming-tbody>
         {% for t in tournaments %}
-        <tr class="border-t border-slate-100 hover:bg-slate-50">
+        <tr class="border-t border-slate-100 hover:bg-slate-50"
+            data-search-text="{{ t.name }} {{ (t.type or {}).get('name', '') }}">
           <td class="px-3 py-1.5 num text-slate-600">{{ t.dateStart[:10] if t.dateStart else "—" }}</td>
           <td class="px-3 py-1.5 text-slate-600">
             {{ (t.type or {}).get("name") or "—" }}
           </td>
-          <td class="px-3 py-1.5">
-            <span class="text-slate-900">{{ t.name }}</span>
-            {% set q = t.questionQty %}
-            {% if q %}
-            {% endif %}
-          </td>
+          <td class="px-3 py-1.5 text-slate-900">{{ t.name }}</td>
           <td class="px-3 py-1.5 text-right num text-slate-500">
             {% set q = t.questionQty %}
             {% if q %}{{ q.values() | sum }}{% else %}—{% endif %}
@@ -82,9 +104,8 @@
   </div>
 </section>
 <p class="text-xs text-slate-500 mt-3">
-  Показаны до 50 турниров за выбранное окно (это лимит API на одну страницу).
-  Список кэшируется на 10 минут.  Состав есть не у всех турниров — увидим
-  это уже на странице конкретного события.
+  До 50 турниров за окно (лимит API). Кэш 10 минут. Составы есть не у всех —
+  на странице события будет видно.
 </p>
 {% else %}
 <div class="text-slate-500">В выбранном окне турниров не найдено.</div>

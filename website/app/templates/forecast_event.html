@@ -1,6 +1,10 @@
 {% extends "base.html" %}
 {% block title %}Прогноз: {{ tournament.name if tournament else "событие" }} — ChGK Model{% endblock %}
 
+{% block head_extra %}
+<script src="/static/forecast.js" defer></script>
+{% endblock %}
+
 {% block content %}
 <div class="mb-6">
   <div class="text-xs text-slate-500 mb-1">
@@ -15,7 +19,7 @@
     {% set q = tournament.questionQty %}
     {% if q %} · вопросов: {{ q.values() | sum }}{% endif %}
     · команд (по API): {{ teams|length if teams else 0 }}
-    · <a href="https://rating.chgk.info/tournament/{{ api_tid }}" rel="noopener" class="text-indigo-600 hover:underline">страница на rating.chgk.info →</a>
+    · <a href="https://rating.chgk.info/tournament/{{ api_tid }}" rel="noopener" class="text-indigo-600 hover:underline">rating.chgk.info →</a>
   </div>
   {% endif %}
 </div>
@@ -33,31 +37,28 @@
 {% if pack %}
 <section class="bg-white border border-slate-200 rounded shadow-sm mb-6 p-4">
   <h2 class="text-sm font-medium text-slate-600 mb-2">На каком пакете считать прогноз</h2>
-  <form method="get" class="flex flex-wrap gap-3 items-end text-sm">
+  <form method="get" class="grid grid-cols-1 sm:grid-cols-2 gap-3 items-end text-sm">
     <label>
       <span class="block text-slate-600 mb-1">Источник пакета</span>
-      <select name="pack_kind" class="border border-slate-300 rounded px-2 py-1">
+      <select name="pack_kind" class="w-full border border-slate-300 rounded px-2 py-1.5">
         <option value="synth" {% if pack.kind == 'synth' %}selected{% endif %}>синтетический профиль</option>
         <option value="past" {% if pack.kind == 'past' %}selected{% endif %}>прошедший турнир</option>
       </select>
     </label>
     <label>
-      <span class="block text-slate-600 mb-1">Профиль</span>
-      <select name="profile" class="border border-slate-300 rounded px-2 py-1">
+      <span class="block text-slate-600 mb-1">Профиль (если synth)</span>
+      <select name="profile" class="w-full border border-slate-300 rounded px-2 py-1.5">
         <option value="easy" {% if pack.profile == 'easy' %}selected{% endif %}>лёгкий (школьный)</option>
         <option value="medium" {% if pack.profile == 'medium' or not pack.profile %}selected{% endif %}>средний синхрон</option>
         <option value="hard" {% if pack.profile == 'hard' %}selected{% endif %}>топовый очный</option>
       </select>
     </label>
-    <label>
-      <span class="block text-slate-600 mb-1">ID прошедшего турнира</span>
-      <input type="number" name="pack_id" placeholder="например, 13533"
-             value="{% if pack.kind == 'past' %}{{ pack.tournament_id }}{% endif %}"
-             class="border border-slate-300 rounded px-2 py-1 w-32">
-    </label>
-    <button type="submit" class="bg-indigo-600 text-white px-3 py-1.5 rounded hover:bg-indigo-700">
-      Пересчитать
-    </button>
+    {% include "_forecast_pack_picker.html" %}
+    <div class="sm:col-span-2">
+      <button type="submit" class="bg-indigo-600 text-white px-3 py-1.5 rounded hover:bg-indigo-700">
+        Пересчитать
+      </button>
+    </div>
   </form>
   <div class="mt-2 text-xs text-slate-500">
     Сейчас: {% if pack.kind == 'past' %}<a href="/tournament/{{ pack.tournament_id }}" class="text-indigo-600 hover:underline">{{ pack.title }}</a>
@@ -68,6 +69,8 @@
 {% endif %}
 
 {% if teams %}
+{% set variant = "event" %}
+{% include "_forecast_help.html" %}
 <section class="bg-white border border-slate-200 rounded shadow-sm overflow-hidden">
   <div class="overflow-x-auto">
     <table class="min-w-full text-sm">
@@ -81,7 +84,7 @@
           <th class="px-3 py-2 text-right num">место 5–95%</th>
           {% endif %}
           <th class="px-3 py-2 text-right num">Игроков</th>
-          <th class="px-3 py-2 text-right num" title="игроков, которых нет в нашей БД (cold-start θ)">из них новых</th>
+          <th class="px-3 py-2 text-right num">из них новых</th>
         </tr>
       </thead>
       <tbody>

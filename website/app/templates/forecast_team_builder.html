@@ -1,25 +1,25 @@
 {% extends "base.html" %}
 {% block title %}Прогноз для своей команды — ChGK Model{% endblock %}
 
+{% block head_extra %}
+<script src="/static/forecast.js" defer></script>
+{% endblock %}
+
 {% block content %}
 <div class="mb-6">
+  <div class="text-xs text-slate-500 mb-1">
+    <a href="/forecast/upcoming" class="text-indigo-600 hover:underline">← прогноз</a>
+  </div>
   <h1 class="text-2xl font-semibold">Прогноз для своей команды</h1>
   <p class="text-sm text-slate-600 mt-2 max-w-3xl">
-    Введите ID игроков (через запятую) и выберите пакет — модель посчитает
-    ожидаемый счёт и распределение исходов с учётом неопределённости θ
-    (для новичков она шире). ID игрока виден в адресной строке его
-    профиля: <code>/player/<strong>123456</strong></code>.
+    Соберите состав через поиск по имени, выберите пакет вопросов — модель
+    покажет ожидаемый счёт и разброс исходов.
   </p>
 </div>
 
 <section class="bg-white border border-slate-200 rounded shadow-sm p-4 mb-6">
   <form method="get" class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
-    <label class="sm:col-span-2">
-      <span class="block text-slate-600 mb-1">Игроки (ID, через запятую или пробел)</span>
-      <input type="text" name="players" value="{{ raw_players_input or '' }}"
-             placeholder="например: 12345, 67890, 98765"
-             class="w-full border border-slate-300 rounded px-3 py-1.5 focus:outline-none focus:ring focus:ring-indigo-200">
-    </label>
+    {% include "_forecast_player_picker.html" %}
     <label>
       <span class="block text-slate-600 mb-1">Источник пакета</span>
       <select name="pack_kind" class="w-full border border-slate-300 rounded px-2 py-1.5">
@@ -43,13 +43,7 @@
         <option value="hard" {% if pack and pack.profile == 'hard' %}selected{% endif %}>топовый очный</option>
       </select>
     </label>
-    <label>
-      <span class="block text-slate-600 mb-1">ID прошедшего турнира</span>
-      <input type="number" name="pack_id"
-             value="{% if pack and pack.kind == 'past' %}{{ pack.tournament_id }}{% endif %}"
-             placeholder="например, 13533"
-             class="w-full border border-slate-300 rounded px-2 py-1.5">
-    </label>
+    {% include "_forecast_pack_picker.html" %}
     <label>
       <span class="block text-slate-600 mb-1">Вопросов (если synth)</span>
       <input type="number" name="n" min="1" max="200"
@@ -102,25 +96,25 @@
 
 {% if teams and pack %}
 {% set r = teams[0] %}
+{% set variant = "team" %}
+{% include "_forecast_help.html" %}
 <section class="bg-white border border-slate-200 rounded shadow-sm p-4 mb-6">
   <h2 class="text-sm font-medium text-slate-600 mb-3">Прогноз — пакет «{{ pack.title }}», {{ pack.n_questions }} вопросов</h2>
   <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 text-sm">
     <div>
-      <div class="text-xs uppercase text-slate-500">Ожидаемый счёт</div>
+      <div class="text-xs uppercase text-slate-500">Ожидаемый счёт E[T]</div>
       <div class="text-2xl font-semibold num">{{ "%.1f"|format(r.expected_takes) }}</div>
       <div class="text-xs text-slate-500">из {{ pack.n_questions }}</div>
     </div>
     {% if n_mc_samples %}
     <div>
-      <div class="text-xs uppercase text-slate-500">Счёт 5–95% по {{ n_mc_samples }} симуляциям</div>
+      <div class="text-xs uppercase text-slate-500">Счёт 5–95%</div>
       <div class="text-2xl font-semibold num">{{ r.score_q05 | int }}–{{ r.score_q95 | int }}</div>
       <div class="text-xs text-slate-500">медиана: {{ r.score_q50 | int }}</div>
     </div>
     <div>
-      <div class="text-xs uppercase text-slate-500">Игроков (известных)</div>
+      <div class="text-xs uppercase text-slate-500">Игроков</div>
       <div class="text-2xl font-semibold num">{{ r.n_players }}</div>
-      {% set ts = r.score_q95 - r.score_q05 %}
-      <div class="text-xs text-slate-500">ширина CI: {{ ts | int }} вопросов</div>
     </div>
     {% endif %}
   </div>
@@ -138,10 +132,6 @@
            title="вопрос {{ loop.index }}: p = {{ '%.1f'|format(p*100) }}%"></div>
       {% endfor %}
     </div>
-  </div>
-  <div class="text-xs text-slate-500 mt-2">
-    Средняя p̄ = {{ "%.2f"|format(r.expected_takes / pack.n_questions) }}.
-    Высокий столбик = простой вопрос для этого состава.
   </div>
 </section>
 {% endif %}

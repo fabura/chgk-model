@@ -1,0 +1,18 @@
+{# Tournament search for pack_kind=past. Expects optional pack_tournament_id, pack_title #}
+<label class="{% if full_width %}sm:col-span-2 {% endif %}relative block">
+  <span class="block text-slate-600 mb-1">Пакет — прошедший турнир</span>
+  <div class="relative" data-tournament-picker="pack">
+    <input type="text" data-tournament-search autocomplete="off"
+           placeholder="Начните вводить название…"
+           value="{{ pack_title or '' }}"
+           class="w-full border border-slate-300 rounded px-3 py-1.5 focus:outline-none focus:ring focus:ring-indigo-200">
+    <input type="hidden" name="pack_id" data-tournament-id
+           value="{% if pack_tournament_id %}{{ pack_tournament_id }}{% endif %}">
+    <ul data-tournament-results
+        class="hidden absolute z-20 left-0 right-0 mt-1 max-h-56 overflow-y-auto bg-white border border-slate-200 rounded shadow-lg"></ul>
+  </div>
+  <p data-tournament-selected
+     class="mt-1 text-xs text-slate-500 {% if not pack_tournament_id %}hidden{% endif %}">
+    {% if pack_tournament_id %}Выбран: {{ pack_title or '' }} (#{{ pack_tournament_id }}){% endif %}
+  </p>
+</label>

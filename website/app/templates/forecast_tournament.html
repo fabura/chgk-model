@@ -1,10 +1,15 @@
 {% extends "base.html" %}
 {% block title %}Прогноз: {{ tournament.title }} — ChGK Model{% endblock %}
 
+{% block head_extra %}
+<script src="/static/forecast.js" defer></script>
+{% endblock %}
+
 {% block content %}
 <div class="mb-6">
   <div class="text-xs text-slate-500 mb-1">
-    <a href="/tournament/{{ tournament.tournament_id }}" class="text-indigo-600 hover:underline">← к странице турнира</a>
+    <a href="/forecast/upcoming" class="text-indigo-600 hover:underline">← прогноз</a>
+    · <a href="/tournament/{{ tournament.tournament_id }}" class="text-indigo-600 hover:underline">страница турнира</a>
   </div>
   <h1 class="text-2xl font-semibold break-words">Прогноз — {{ tournament.title }}</h1>
   <div class="text-sm text-slate-600 mt-1 break-words">
@@ -14,16 +19,8 @@
     · команд: {{ teams|length }}
   </div>
   <p class="text-sm text-slate-600 mt-2 max-w-3xl">
-    Для каждой команды берётся её состав на этом турнире, но θ игроков —
-    <strong>текущие</strong> (как сейчас в рейтинге, не «на момент турнира»).
-    Затем считается ожидаемый счёт <span class="num">E[T] = Σ p<sub>q</sub></span>
-    по той же формуле, что и при обучении (noisy-OR + lapse + калибровка).
-    {% if n_mc_samples %}
-    Колонки <strong>5%–95%</strong> — границы доверительного интервала
-    из {{ n_mc_samples }} симуляций Монте-Карло; в каждой θ игрока
-    подсэмплируется из ≈Normal(θ̂, σ²(games)), а затем для каждого
-    вопроса бросается монетка с вероятностью <span class="num">p<sub>q</sub></span>.
-    {% endif %}
+    Составы и пакет — с этого турнира; θ игроков — <strong>текущие</strong>
+    (как в рейтинге сейчас, не на дату игры).
   </p>
 </div>
 
@@ -32,6 +29,8 @@
 {% endfor %}
 
 {% if teams %}
+{% set variant = "past" %}
+{% include "_forecast_help.html" %}
 <section class="bg-white border border-slate-200 rounded shadow-sm overflow-hidden">
   <div class="overflow-x-auto">
     <table class="min-w-full text-sm">
@@ -41,8 +40,8 @@
           <th class="px-3 py-2 text-left">Команда</th>
           <th class="px-3 py-2 text-right num">E[T]</th>
           {% if n_mc_samples %}
-          <th class="px-3 py-2 text-right num" title="5–95 % интервал счёта по MC">счёт 5–95%</th>
-          <th class="px-3 py-2 text-right num" title="5–95 % интервал места по MC">место 5–95%</th>
+          <th class="px-3 py-2 text-right num">счёт 5–95%</th>
+          <th class="px-3 py-2 text-right num">место 5–95%</th>
           {% endif %}
           <th class="px-3 py-2 text-right num">Игроков</th>
           <th class="px-3 py-2 text-right num">Факт. счёт</th>
@@ -86,10 +85,6 @@
     </table>
   </div>
 </section>
-<p class="text-xs text-slate-500 mt-3">
-  Δ места &gt; 0 значит «команда сыграла лучше, чем предсказывала бы
-  модель сейчас» (фактическое место выше прогнозного), &lt; 0 — наоборот.
-</p>
 {% else %}
 <div class="text-slate-500">В этом турнире нет данных для прогноза.</div>
 {% endif %}

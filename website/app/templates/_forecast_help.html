@@ -1,0 +1,56 @@
+{# Column legend for forecast result tables.
+   variant: "past" | "event" | "team"
+#}
+<details class="mb-4 text-sm text-slate-600 bg-slate-50 border border-slate-200 rounded px-4 py-3">
+  <summary class="cursor-pointer font-medium text-slate-700 select-none">
+    Что означают колонки и числа
+  </summary>
+  <dl class="mt-3 grid gap-2 sm:grid-cols-2">
+    <div>
+      <dt class="font-medium text-slate-800"># (прогнозное место)</dt>
+      <dd>Ранг по ожидаемому счёту E[T] среди команд на этой странице: 1 = самый высокий прогноз.</dd>
+    </div>
+    <div>
+      <dt class="font-medium text-slate-800">E[T]</dt>
+      <dd>Ожидаемое число взятых вопросов: сумма по пакету вероятностей p<sub>q</sub> (noisy-OR + lapse + калибровка). Не целое число — это матожидание, не «прогноз округлённого счёта».</dd>
+    </div>
+    {% if n_mc_samples %}
+    <div>
+      <dt class="font-medium text-slate-800">счёт 5–95%</dt>
+      <dd>Интервал по {{ n_mc_samples }} симуляциям Монте-Карло: в каждой θ игроков слегка случаются вокруг оценки (шире у новичков), затем по каждому вопросу бросается монетка с вероятностью p<sub>q</sub>. 5% и 95% — границы распределения итогового счёта.</dd>
+    </div>
+    <div>
+      <dt class="font-medium text-slate-800">место 5–95%</dt>
+      <dd>Тот же эксперимент, но после каждой симуляции команды ранжируются по счёту (как в таблице турнира). Показывает, на каких местах команда могла бы оказаться при такой неопределённости.</dd>
+    </div>
+    {% endif %}
+    {% if variant == "past" %}
+    <div>
+      <dt class="font-medium text-slate-800">Игроков</dt>
+      <dd>Сколько игроков состава попали в нашу базу с известным θ; если после слэша — сколько было в активном составе на турнире.</dd>
+    </div>
+    <div>
+      <dt class="font-medium text-slate-800">Факт. счёт / место</dt>
+      <dd>Реальный результат того турнира (для сравнения с прогнозом «как бы сыграли сейчас»).</dd>
+    </div>
+    <div class="sm:col-span-2">
+      <dt class="font-medium text-slate-800">Δ места</dt>
+      <dd>Фактическое место минус прогнозное. <span class="text-emerald-700">+N</span> — сыграли лучше, чем предсказывает модель с текущими θ; <span class="text-rose-700">−N</span> — хуже.</dd>
+    </div>
+    {% elif variant == "event" %}
+    <div>
+      <dt class="font-medium text-slate-800">Игроков</dt>
+      <dd>Число игроков в заявленном составе (по API), для которых посчитан прогноз.</dd>
+    </div>
+    <div>
+      <dt class="font-medium text-slate-800">из них новых</dt>
+      <dd>Игроки, которых нет в нашей базе: для них взято cold-start θ = −1.5 и максимальная неопределённость в MC — прогноз ориентировочный.</dd>
+    </div>
+    {% elif variant == "team" %}
+    <div class="sm:col-span-2">
+      <dt class="font-medium text-slate-800">Столбики p<sub>q</sub></dt>
+      <dd>Высота — вероятность взять вопрос на этой позиции пакета для вашего состава. E[T] — сумма этих вероятностей.</dd>
+    </div>
+    {% endif %}
+  </dl>
+</details>

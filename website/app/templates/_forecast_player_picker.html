@@ -1,0 +1,16 @@
+{# Player chips + autocomplete. Expects raw_players_input for hidden field value #}
+<label class="sm:col-span-2 block relative">
+  <span class="block text-slate-600 mb-1">Игроки</span>
+  <div data-player-picker>
+    <div data-player-chips class="flex flex-wrap gap-1.5 mb-2 min-h-[1.75rem]"></div>
+    <div class="relative">
+      <input type="text" data-player-search autocomplete="off"
+             placeholder="Имя или фамилия — выберите из списка"
+             class="w-full border border-slate-300 rounded px-3 py-1.5 focus:outline-none focus:ring focus:ring-indigo-200">
+      <input type="hidden" name="players" data-player-ids value="{{ raw_players_input or '' }}">
+      <ul data-player-results
+          class="hidden absolute z-20 left-0 right-0 mt-1 max-h-56 overflow-y-auto bg-white border border-slate-200 rounded shadow-lg"></ul>
+    </div>
+  </div>
+  <p class="mt-1 text-xs text-slate-500">До 12 игроков. Можно добавить по одному из подсказки; ID в URL профиля тоже подойдут.</p>
+</label>

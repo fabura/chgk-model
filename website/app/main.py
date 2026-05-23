@@ -989,6 +989,120 @@ def methodology(request: Request):
 # ---------------------------------------------------------------------------
 
 
+@app.get("/api/forecast/tournaments")
+def api_forecast_tournaments(q: str = Query("", max_length=100)):
+    """JSON autocomplete: past tournaments in DuckDB (for pack / forecast pick)."""
+    q = q.strip()
+    if len(q) < 2:
+        return JSONResponse([])
+    if q.isdigit():
+        rows = db.query(
+            """
+            SELECT tournament_id, title, type,
+                   CAST(start_date AS VARCHAR) AS date,
+                   n_questions, n_teams
+            FROM tournaments
+            WHERE tournament_id = ?
+            LIMIT 1
+            """,
+            [int(q)],
+        )
+    else:
+        rows = db.query(
+            """
+            SELECT tournament_id, title, type,
+                   CAST(start_date AS VARCHAR) AS date,
+                   n_questions, n_teams
+            FROM tournaments
+            WHERE title ILIKE '%' || ? || '%'
+            ORDER BY start_date DESC NULLS LAST
+            LIMIT 20
+            """,
+            [q],
+        )
+    out = []
+    for r in rows:
+        out.append({
+            "tournament_id": int(r["tournament_id"]),
+            "title": r["title"] or "",
+            "type": r["type"] or "",
+            "date": (r["date"] or "")[:10],
+            "n_questions": r.get("n_questions"),
+            "n_teams": r.get("n_teams"),
+        })
+    return JSONResponse(out)
+
+
+@app.get("/api/forecast/players")
+def api_forecast_players(
+    q: str = Query("", max_length=80),
+    ids: str = Query("", max_length=500),
+):
+    """JSON: player search (``q``) or hydrate chips by ``ids`` (comma-separated)."""
+    id_list: list[int] = []
+    for chunk in (ids or "").replace(";", ",").split(","):
+        chunk = chunk.strip()
+        if chunk.isdigit():
+            id_list.append(int(chunk))
+    if id_list:
+        rows = db.query(
+            "SELECT player_id, last_name, first_name, theta, games "
+            "FROM players WHERE player_id IN ("
+            + ",".join("?" * len(id_list))
+            + ")",
+            id_list,
+        )
+        return JSONResponse([
+            {
+                "player_id": int(r["player_id"]),
+                "name": _player_full_name(r),
+                "theta": float(r["theta"]) if r["theta"] is not None else None,
+                "games": int(r["games"] or 0),
+            }
+            for r in rows
+        ])
+
+    q = q.strip()
+    if len(q) < 2:
+        return JSONResponse([])
+    if q.isdigit():
+        rows = db.query(
+            "SELECT player_id, last_name, first_name, theta, games "
+            "FROM players WHERE player_id = ? LIMIT 1",
+            [int(q)],
+        )
+    else:
+        tokens = [t for t in q.split() if t]
+        if not tokens:
+            return JSONResponse([])
+        token_cond = (
+            "(last_name ILIKE '%' || ? || '%' OR first_name ILIKE '%' || ? || '%')"
+        )
+        where_players = " AND ".join(token_cond for _ in tokens)
+        params: list[str] = []
+        for t in tokens:
+            params.extend([t, t])
+        rows = db.query(
+            f"""
+            SELECT player_id, last_name, first_name, theta, games
+            FROM players
+            WHERE {where_players}
+            ORDER BY theta DESC
+            LIMIT 15
+            """,
+            params,
+        )
+    return JSONResponse([
+        {
+            "player_id": int(r["player_id"]),
+            "name": _player_full_name(r),
+            "theta": float(r["theta"]) if r["theta"] is not None else None,
+            "games": int(r["games"] or 0),
+        }
+        for r in rows
+    ])
+
+
 @app.get("/forecast/tournament/{tournament_id}", response_class=HTMLResponse)
 def forecast_past_tournament(request: Request, tournament_id: int):
     ctx = forecast_module.forecast_past_tournament(tournament_id)
@@ -1069,6 +1183,11 @@ def forecast_team_builder(
     )
     ctx["raw_players_input"] = players or ""
     ctx["selected_mode"] = mode
+    pack = ctx.get("pack") or {}
+    ctx["pack_tournament_id"] = (
+        pack.get("tournament_id") if pack.get("kind") == "past" else None
+    )
+    ctx["pack_title"] = pack.get("title") if pack.get("kind") == "past" else None
     return templates.TemplateResponse(request, "forecast_team_builder.html", ctx)
 
 
@@ -1088,6 +1207,11 @@ def forecast_for_event(
     )
     if ctx is None:
         raise HTTPException(status_code=404, detail="event not found")
+    pack = ctx.get("pack") or {}
+    ctx["pack_tournament_id"] = (
+        pack.get("tournament_id") if pack.get("kind") == "past" else None
+    )
+    ctx["pack_title"] = pack.get("title") if pack.get("kind") == "past" else None
     return templates.TemplateResponse(request, "forecast_event.html", ctx)
 
 
