@@ -801,13 +801,14 @@
     {# ===== 12. Quality ===== #}
     <h2 id="quality" class="text-lg font-medium">12. Качество модели</h2>
     <p>
-      На прогностическом тесте (последние 20 % турниров по дате
-      исключены из обучения) модель оценивается тремя стандартными
-      метриками. У каждой ниже указано, что считается «лучше»:
+      На честном <i>cell-holdout</i> (10 % случайно выбранных пар
+      «команда × вопрос» спрятаны от обучения и используются только
+      для оценки) модель оценивается тремя стандартными метриками.
+      У каждой ниже указано, что считается «лучше»:
     </p>
     <ul class="list-disc pl-6 text-sm">
       <li>
-        <b>logloss ≈ 0.490</b>
+        <b>logloss ≈ 0.501</b>
         <span class="text-slate-500">
           (<a href="https://en.wikipedia.org/wiki/Cross-entropy"
               class="text-indigo-700 hover:underline" target="_blank"
@@ -818,7 +819,7 @@
         эмпирический «средний по типу турнира» — около 0.57.
       </li>
       <li>
-        <b>Brier ≈ 0.161</b>
+        <b>Brier ≈ 0.164</b>
         <span class="text-slate-500">
           (<a href="https://en.wikipedia.org/wiki/Brier_score"
               class="text-indigo-700 hover:underline" target="_blank"
@@ -828,7 +829,7 @@
         и фактом 0/1; реагирует мягче, чем logloss.
       </li>
       <li>
-        <b>AUC ≈ 0.846</b>
+        <b>AUC ≈ 0.837</b>
         <span class="text-slate-500">
           (<a href="https://en.wikipedia.org/wiki/Receiver_operating_characteristic#Area_under_the_curve"
               class="text-indigo-700 hover:underline" target="_blank"
@@ -840,9 +841,9 @@
     </ul>
     <p class="text-sm text-slate-600">
       По форматам (logloss / AUC):
-      <code>offline 0.448 / 0.868</code>,
-      <code>sync 0.482 / 0.848</code>,
-      <code>async 0.517 / 0.827</code>.
+      <code>offline 0.507 / 0.841</code>,
+      <code>sync 0.489 / 0.843</code>,
+      <code>async 0.530 / 0.818</code>.
       Async всё ещё заметно сложнее предсказывать — ровно поэтому
       веса обновлений по нему урезаны
       (<a href="#type-weights" class="text-indigo-700 hover:underline">раздел 5.4</a>).
