@@ -131,6 +131,7 @@ def get_model_params() -> dict:
             "pos_anchor": None,
             "lapse": None,
             "recal": None,
+            "cold_init_theta": None,
         }
         return _model_params_cache
     if isinstance(raw, (bytes, bytearray)):
@@ -138,6 +139,7 @@ def get_model_params() -> dict:
     payload = json.loads(raw) if isinstance(raw, str) else raw
     def _arr(x):
         return None if x is None else np.asarray(x, dtype=np.float64)
+    cold_init_raw = payload.get("cold_init_theta")
     _model_params_cache = {
         "delta_size": _arr(payload.get("delta_size")),
         "team_size_anchor": payload.get("team_size_anchor"),
@@ -145,6 +147,9 @@ def get_model_params() -> dict:
         "pos_anchor": payload.get("pos_anchor"),
         "lapse": _arr(payload.get("lapse")),
         "recal": _arr(payload.get("recal")),
+        "cold_init_theta": (
+            None if cold_init_raw is None else float(cold_init_raw)
+        ),
     }
     return _model_params_cache
 

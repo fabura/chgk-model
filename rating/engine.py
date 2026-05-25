@@ -135,7 +135,14 @@ class Config:
     # The legacy "inherit team average" cold-start (``cold_init_factor``
     # and ``cold_init_use_team_mean``) was removed in 2026-05; see
     # ``docs/cleanup_2026-05.md``.
-    cold_init_theta: float = -1.0
+    #
+    # 2026-05 (post-jalob): re-tuned -1.0 → -1.5 after the 18-cell
+    # (min_games × cold_init_theta × games_offset) sweep showed the
+    # change cuts logloss 0.5020 → 0.5014 AND cuts the team-level
+    # over-prediction bias on rosters with ≥3 newbies by ~24%
+    # (per-question bias −0.054 → −0.041).  Diagnosed in
+    # ``results/exp_min_games_cold_grid.json``.
+    cold_init_theta: float = -1.5
 
     # Adaptive learning-rate offset.  η_k = η0 / √(games_offset + games_k).
     # Default 0.25 gives a chess-Elo-style "rookie boost": at games=0 the
@@ -366,14 +373,17 @@ class Config:
 
     # Freeze ``log_a`` (i.e. fix discrimination ``a_i = 1``) across
     # all update channels (offline, sync, async, solo).  Default
-    # ``True`` since 2026-05: a 5-variant cell-holdout ablation
-    # showed that learning ``a_i`` did not buy us anything on the
-    # honest hold-out (logloss tied at 0.5078 with frozen vs learned
-    # ``a``; async slightly improved).  Removing ~25 k learnable
-    # parameters also makes SGD a touch faster.  Set to ``False`` to
-    # re-enable learning for ablation experiments.  See
-    # ``results/exp_holdout_ablations.csv``.
-    freeze_log_a: bool = True
+    # ``False``: although a 5-variant cell-holdout ablation
+    # (``results/exp_holdout_ablations.csv``) gave roughly tied
+    # honest logloss for frozen vs learned ``a`` (0.5078 vs 0.5083),
+    # the learned ``a_i`` is the more honest representation of the
+    # question — flat for "lottery" questions, steep for ones that
+    # cleanly separate strong and weak teams — and it is what
+    # downstream consumers (per-question scatter b vs a, methodology
+    # page, forecast) effectively rely on.  Freezing made the site
+    # silently lie ("median a = 1.02" while in fact every a ≡ 1.0).
+    # Set to ``True`` for ablation runs.
+    freeze_log_a: bool = False
 
     # ------------------------------------------------------------------
     # Lapse rate (per (game-type × team/solo)) — added 2026-05.  See

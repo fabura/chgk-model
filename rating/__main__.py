@@ -90,7 +90,7 @@ def main() -> int:
     hp.add_argument(
         "--cold_init_theta",
         type=float,
-        default=-1.0,
+        default=-1.5,
         help="Prior θ for first-time players. Combined with games_offset<1 "
         "(rookie boost), produces the chess-Elo-like ramp-up.",
     )
@@ -224,11 +224,11 @@ def main() -> int:
     hp.add_argument(
         "--freeze-log-a",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=False,
         help="Freeze log_a (i.e. fix discrimination a_i = 1) across all "
-        "update channels.  Default since 2026-05 (the cell-holdout "
-        "ablation showed learning a_i did not improve quality).  "
-        "Disable with --no-freeze-log-a to re-enable for ablations.",
+        "update channels.  Default False so the per-question 'a' shown "
+        "on the website is the actually-learned value.  Pass "
+        "--freeze-log-a for ablation runs.",
     )
     hp.add_argument(
         "--use-lapse-rate",
@@ -429,7 +429,7 @@ def main() -> int:
     )
 
     if args.results_npz:
-        _export_results_npz(args.results_npz, result, maps)
+        _export_results_npz(args.results_npz, result, maps, cfg=cfg)
     if args.players_out:
         _export_players(args.players_out, result, maps, shrink_K=args.shrink_K)
     if args.questions_out:
@@ -478,7 +478,7 @@ def _load_data(args, parser):
 # Compact NPZ export
 # ------------------------------------------------------------------
 
-def _export_results_npz(path: str, result, maps) -> None:
+def _export_results_npz(path: str, result, maps, *, cfg=None) -> None:
     """Save all results to one compressed .npz file."""
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     ps = result.players
@@ -540,6 +540,9 @@ def _export_results_npz(path: str, result, maps) -> None:
     if rc_events:
         kw["recenter_ord"] = np.array([e[0] for e in rc_events], dtype=np.int64)
         kw["recenter_delta"] = np.array([e[2] for e in rc_events], dtype=np.float32)
+
+    if cfg is not None:
+        kw["cold_init_theta"] = np.array([float(cfg.cold_init_theta)], dtype=np.float32)
 
     np.savez_compressed(path, **kw)
     print(f"Results saved to {path}")

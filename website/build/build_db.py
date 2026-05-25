@@ -406,13 +406,22 @@ def _build_theta_before_map(
     history_player_id: Optional[np.ndarray],
     history_game_id: Optional[np.ndarray],
     history_theta: Optional[np.ndarray],
+    *,
+    prior_by_g: dict[int, float],
 ) -> dict[tuple[int, int], float]:
     """Pre-compute θ as it was *before* each (player, tournament) appearance.
 
     Walks each player's chronological history once, alongside the sorted list
     of tournaments they appear in.  For each (player, tournament) we record
     the θ_after of the player's most recent prior tournament — i.e. their
-    rating at the start of the new tournament.  First-time players get 0.0.
+    rating at the start of the new tournament.
+
+    First-time players (no prior history row for that tournament) get
+    ``prior_by_g[g]``, which the caller pre-computes as ``cold_init_theta``
+    shifted into the final post-recenter gauge using the cumulative gauge
+    shifts after each tournament's date.  This matches what the engine did
+    at the time of debut (initialise at ``cold_init_theta`` in the gauge of
+    that moment) and keeps the prior consistent with the final-gauge ``b``.
     """
     out: dict[tuple[int, int], float] = {}
     if (
@@ -433,6 +442,9 @@ def _build_theta_before_map(
             needed[int(p)].add(int(g))
     if not needed:
         return out
+
+    def prior(g: int) -> float:
+        return float(prior_by_g.get(int(g), 0.0))
 
     # NOTE: history_game_id stores the **tournament_id** (DB id), not the
     # chronological game_idx.  Convert to game_idx so that ordering is
@@ -461,19 +473,23 @@ def _build_theta_before_map(
     for p, gs_set in needed.items():
         slot = pid_to_slot.get(p)
         if slot is None:
+            # Player never appeared in training history (filtered out by
+            # ``min_games`` in data.py).  Use the cold-start prior in the
+            # final gauge — same as if the engine had seen them as a
+            # debutant at this tournament.
             for g in gs_set:
-                out[(p, g)] = 0.0
+                out[(p, g)] = prior(g)
             continue
         lo, hi = int(starts[slot]), int(starts[slot + 1])
         if lo == hi:
             for g in gs_set:
-                out[(p, g)] = 0.0
+                out[(p, g)] = prior(g)
             continue
         gs_sorted = sorted(gs_set)
         # Vectorised binary search of all requested g's into the player slice.
         pos = np.searchsorted(gid_s[lo:hi], gs_sorted, side="left")
         for g, k in zip(gs_sorted, pos.tolist()):
-            out[(p, g)] = 0.0 if k == 0 else float(th_s[lo + k - 1])
+            out[(p, g)] = prior(g) if k == 0 else float(th_s[lo + k - 1])
     return out
 
 
@@ -1259,6 +1275,16 @@ def write_duckdb(
         ),
         "lapse": _arr_or_none(res.lapse),
         "recal": _arr_or_none(res.recal),
+        # Cold-start prior used during training.  Forecast pages need
+        # this to assign θ to unknown players (e.g. debutants in the
+        # rating-API roster for an upcoming tournament) with exactly
+        # the same value the engine would have given them.  Falls back
+        # to ``None`` in legacy DuckDB files; callers default to -1.5.
+        "cold_init_theta": (
+            None
+            if getattr(res, "cold_init_theta", None) is None
+            else float(res.cold_init_theta)
+        ),
     }
     con.execute(
         "INSERT INTO model_params (params) VALUES (?)",
@@ -1388,9 +1414,26 @@ def write_duckdb(
     # ---- team_games + player_games ----
     _log("Computing expected takes per team…")
 
+    # Filter rosters to "active" players (those with a θ in the trained
+    # model).  Training itself drops players with ``games < min_games``
+    # before building observations (see ``data.py``), so the engine only
+    # ever saw the active subset for each team.  Mirroring that here keeps
+    # the bake-time expected_takes consistent with what the engine
+    # produced: otherwise a roster like ``[veteran, debutant, debutant]``
+    # would be queried with three players (debutants substituted at the
+    # cold-start prior) at bake but trained as a single-player team —
+    # blowing up ``expected_takes`` for low-experience teams.  Empty
+    # rosters (every player filtered) are dropped, mirroring data.py's
+    # "empty after filtering" branch.
+    rosters_active: dict[tuple[int, int], list[int]] = {}
+    for (tid, team_id), pids in rosters.items():
+        active_pids = [p for p in pids if p in pid_to_theta]
+        if active_pids:
+            rosters_active[(tid, team_id)] = active_pids
+
     # group rosters by tournament for vectorised compute
     rosters_by_tid: dict[int, list[tuple[int, list[int]]]] = defaultdict(list)
-    for (tid, team_id), pids in rosters.items():
+    for (tid, team_id), pids in rosters_active.items():
         rosters_by_tid[tid].append((team_id, pids))
 
     # questions per tournament (use canonical b/a via canonical map)
@@ -1409,12 +1452,59 @@ def write_duckdb(
         int(tid): i for i, tid in enumerate(maps.idx_to_game_id)
     }
 
+    # Cold-start prior per tournament, in the final gauge.  The engine
+    # initialises every first-time player at ``cold_init_theta`` in the
+    # gauge of that moment; the final ``b`` we ship is in the gauge after
+    # all subsequent re-centerings, so we have to shift the prior into the
+    # same gauge to keep predictions invariant.  Uses the same cumulative-
+    # shift logic as ``_apply_recenter_correction``.
+    cold_init = (
+        float(res.cold_init_theta)
+        if getattr(res, "cold_init_theta", None) is not None
+        else -1.0  # fallback for legacy npz that pre-dates the field
+    )
+    prior_by_g: dict[int, float] = {}
+    rc_ord_arr = res.recenter_ord
+    rc_delta_arr = res.recenter_delta
+    if (
+        rc_ord_arr is not None
+        and rc_delta_arr is not None
+        and len(rc_ord_arr) > 0
+    ):
+        order_rc = np.argsort(np.asarray(rc_ord_arr))
+        rc_ord_s = np.asarray(rc_ord_arr)[order_rc].astype(np.int64)
+        rc_delta_s = np.asarray(rc_delta_arr)[order_rc].astype(np.float64)
+        cum_after = np.concatenate([
+            np.cumsum(rc_delta_s[::-1])[::-1],
+            np.zeros(1, dtype=np.float64),
+        ])
+    else:
+        rc_ord_s = None
+        cum_after = None
+    for tid, g_idx in tid_to_game_idx.items():
+        if (
+            rc_ord_s is not None
+            and 0 <= g_idx < len(gdo_local)
+            and int(gdo_local[g_idx]) >= 0
+        ):
+            ord_val = int(gdo_local[g_idx])
+            shift = float(cum_after[np.searchsorted(rc_ord_s, ord_val, side="right")])
+        else:
+            shift = 0.0
+        prior_by_g[int(g_idx)] = cold_init + shift
+    _log(
+        f"  cold-start prior (train) = {cold_init:+.3f}; "
+        f"in final gauge: min {min(prior_by_g.values()):+.3f}, "
+        f"max {max(prior_by_g.values()):+.3f}"
+    )
+
     # Build (player, tournament) → θ_before map so expected takes use θ AS IT
     # WAS at the start of each tournament (eliminates time-bias from final θ).
     _log("  building θ-before-tournament map from history…")
     theta_before_map = _build_theta_before_map(
-        rosters, tid_to_game_idx,
+        rosters_active, tid_to_game_idx,
         res.history_player_id, res.history_game_id, res.history_theta,
+        prior_by_g=prior_by_g,
     )
     _log(f"    {len(theta_before_map):,} (player, tournament) θ values")
 

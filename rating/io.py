@@ -37,6 +37,11 @@ class RatingResults:
     # retroactively shift historical θ rows into a single (final) gauge.
     recenter_ord: Optional[np.ndarray] = None
     recenter_delta: Optional[np.ndarray] = None
+    # Cold-start prior used during training (θ for first-time players).
+    # Saved so bake-time consumers (e.g. expected_takes for old tournaments
+    # with debutants / filtered players) use the same value the engine did
+    # rather than an out-of-band hardcoded constant.
+    cold_init_theta: Optional[float] = None
 
     def theta_for_player(self, player_id: int) -> float:
         """Get θ for player_id (or nan if not found)."""
@@ -57,6 +62,8 @@ def load_results_npz(path: str | Path) -> RatingResults:
         return z[name] if name in z else None
     def _scalar(name):
         return int(z[name][0]) if name in z else None
+    def _fscalar(name):
+        return float(z[name][0]) if name in z else None
     return RatingResults(
         player_id=z["player_id"],
         theta=z["theta"],
@@ -77,4 +84,5 @@ def load_results_npz(path: str | Path) -> RatingResults:
         recal=_get("recal"),
         recenter_ord=_get("recenter_ord"),
         recenter_delta=_get("recenter_delta"),
+        cold_init_theta=_fscalar("cold_init_theta"),
     )

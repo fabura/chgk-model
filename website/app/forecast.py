@@ -296,8 +296,11 @@ def forecast_past_tournament(
 
 
 _SYNTH_PROFILES: dict[str, dict] = {
-    # Loosely matches what the data shows for these formats.  The ``a``
-    # value mirrors the model: ``log_a`` is frozen to 0 → ``a = 1``.
+    # Loosely matches what the data shows for these formats.  ``a = 1``
+    # is the population centre (regularised toward 0 in log space, so
+    # the mean stays near 1.0 even with ``freeze_log_a=False``); for
+    # past packs we use the actually-learned per-question ``a`` from
+    # the questions table instead.
     "easy": {
         "label": "Школьный / лёгкий пакет",
         "b_mean": -0.7, "b_std": 0.5, "a": 1.0,
@@ -473,6 +476,13 @@ def forecast_for_event(
         )
         theta_by_pid = {int(r["player_id"]): r for r in rows}
 
+    # Cold-start prior used during training, read from model_params
+    # (written by build_db).  Falls back to -1.5 for legacy DuckDB
+    # files that pre-date the field.
+    cold_init = db.get_model_params().get("cold_init_theta")
+    if cold_init is None:
+        cold_init = -1.5
+
     rosters: list[dict] = []
     n_unknown_total = 0
     for team_row in roster_payload:
@@ -492,10 +502,11 @@ def forecast_for_event(
             db_row = theta_by_pid.get(int(pid))
             if db_row is None:
                 # Player is in the tournament but not in our DB — likely
-                # a brand-new debutant.  Use the population prior (θ = -1.5,
-                # matching ``Config.cold_init_theta``) and treat them as
-                # having zero games for the bootstrap (max σ).
-                thetas.append(-1.5)
+                # a brand-new debutant.  Use the engine's cold-start
+                # prior (read from model_params, so it stays in sync if
+                # ``Config.cold_init_theta`` ever changes again).  Treat
+                # them as having zero games for the bootstrap (max σ).
+                thetas.append(float(cold_init))
                 games.append(0)
                 n_unknown += 1
             else:
@@ -527,7 +538,8 @@ def forecast_for_event(
     if n_unknown_total:
         sim["warnings"].append(
             f"Игроков не из нашей базы: {n_unknown_total} — для них θ "
-            "взят как cold-start (-1.5) с максимальной неопределённостью."
+            f"взят как cold-start ({cold_init:+.1f}) с максимальной "
+            "неопределённостью."
         )
     sim["tournament"] = meta
     sim["api_tid"] = int(api_tid)

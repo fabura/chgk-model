@@ -433,7 +433,7 @@
     <h3 id="cold-start">5.5 Холодный старт</h3>
     <p>
       Когда игрок появляется в данных впервые, ему присваивается стартовое
-      значение <b>θ = −1.0</b> — «слабый дебютант» (большинство новичков
+      значение <b>θ = −1.5</b> — «слабый дебютант» (большинство новичков
       в рейтинговой базе действительно играют ниже среднего). Раньше
       использовалась средняя θ команды-теммейтов, но это создавало
       положительную обратную связь: слабые новички тянули вниз средние
@@ -448,6 +448,16 @@
       Практическое следствие: первые 5–10 турниров рейтинг игрока
       сильно «прыгает», пока модель находит его реальный уровень —
       это нормально.
+    </p>
+    <p class="text-sm text-slate-600">
+      Значение приора подобрано на сетке 18 точек
+      (\( \texttt{min\_games} \times \texttt{cold\_init\_theta} \times
+      \texttt{games\_offset} \)) на честном
+      <a href="#quality" class="text-indigo-700 hover:underline">cell-holdout</a>:
+      сдвиг с −1.0 до −1.5 даёт −0.0006 logloss
+      <i>и</i> срезает систематическое завышение ожидаемых взятий у
+      ростеров с ≥ 3 новичками на ≈ 24 % (с −0.054 до −0.041
+      на вопрос).
     </p>
 
     {# ===== 6. Regularization ===== #}
@@ -548,7 +558,7 @@
     </p>
     <p>
       Конкретный механизм: каждый новый игрок входит с фиксированным
-      приором \( \theta = -1.0 \). Если за год в систему пришло 5 тысяч
+      приором \( \theta = -1.5 \). Если за год в систему пришло 5 тысяч
       новичков и каждый чуть-чуть «потянул» средние команд вниз, то на
       следующий год средняя по командам уже ниже — и так раз за разом.
       На графике популяции это видно как сдвиг медианы θ всех активных
@@ -704,7 +714,7 @@
           <tr class="border-t"><td class="px-3 py-2 num">eta_size, eta_pos</td><td class="px-3 py-2 text-right num">0.001</td><td class="px-3 py-2">шаги для δ_size и δ_pos</td></tr>
           <tr class="border-t"><td class="px-3 py-2 num">eta_teammate</td>    <td class="px-3 py-2 text-right num">0.005</td><td class="px-3 py-2">L2-стяжка θ к среднему по команде (борьба с identifiability)</td></tr>
           <tr class="border-t"><td class="px-3 py-2 num">games_offset</td>    <td class="px-3 py-2 text-right num">0.25</td><td class="px-3 py-2">«бонус новичка»: шаг ×2 на первой игре</td></tr>
-          <tr class="border-t"><td class="px-3 py-2 num">cold_init_theta</td> <td class="px-3 py-2 text-right num">−1.0</td><td class="px-3 py-2">стартовая θ для нового игрока</td></tr>
+          <tr class="border-t"><td class="px-3 py-2 num">cold_init_theta</td> <td class="px-3 py-2 text-right num">−1.5</td><td class="px-3 py-2">стартовая θ для нового игрока</td></tr>
           <tr class="border-t"><td class="px-3 py-2 num">w_sync</td>          <td class="px-3 py-2 text-right num">0.5</td><td class="px-3 py-2">вес обновления θ и b для синхрона</td></tr>
           <tr class="border-t"><td class="px-3 py-2 num">w_online (async)</td><td class="px-3 py-2 text-right num">0.5</td><td class="px-3 py-2">вес обновления θ для асинхрона</td></tr>
           <tr class="border-t"><td class="px-3 py-2 num">w_online_questions</td><td class="px-3 py-2 text-right num">0.15</td><td class="px-3 py-2">вес обновления b для асинхрона</td></tr>
