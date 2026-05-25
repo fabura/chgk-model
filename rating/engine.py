@@ -403,15 +403,22 @@ class Config:
     # bias measured under the previous (lapse-free) defaults.
     use_lapse_rate: bool = True
     lapse_init_offline_team: float = 0.03
-    lapse_init_offline_solo: float = 0.10
+    lapse_init_offline_solo: float = 0.03
     lapse_init_sync_team: float = 0.01
-    lapse_init_sync_solo: float = 0.07
+    lapse_init_sync_solo: float = 0.02
     lapse_init_async_team: float = 0.04
-    lapse_init_async_solo: float = 0.10
-    # SGD step size for the lapse parameters.  Tiny because there are
-    # ~10 M observations and only 6 scalars; the gradient magnitude
-    # is bounded (always ≤ 1/π).
-    eta_lapse: float = 1e-4
+    lapse_init_async_solo: float = 0.03
+    # SGD step size for the lapse parameters.  Bumped 1e-4 → 1e-3 in
+    # 2026-05 (post-jalob) so SGD can actually move lapse during one
+    # pass — with 1e-4 the values were essentially frozen at init and
+    # the 2026-05 init (solo ≈ 0.10) became outdated once ``log_a``
+    # was unfrozen and recalibration was added.  The combined
+    # over-correction left the top solo bucket capped at 0.875 while
+    # actual rate at predicted ≈0.87 was 0.93 (+3.5 pp bias).  Lower
+    # init + freer SGD lets recal (β ≈ 0.71) absorb the high-p
+    # over-prediction it can already handle, instead of forcing a
+    # hard cap.
+    eta_lapse: float = 1e-3
     # Hard clip to keep π in a sane range.
     lapse_max: float = 0.30
 
