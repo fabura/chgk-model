@@ -629,7 +629,7 @@ def tournament_page(request: Request, tournament_id: int):
             tg.n_players_active
         FROM team_games tg
         WHERE tg.tournament_id = ?
-        ORDER BY tg.score_actual DESC, tg.team_name
+        ORDER BY tg.place ASC NULLS LAST, tg.score_actual DESC, tg.team_name
         """,
         [tournament_id],
     )

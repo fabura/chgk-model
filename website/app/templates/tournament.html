@@ -90,25 +90,30 @@
     <h2 class="text-sm font-medium text-slate-600">Команды ({{ teams|length }})</h2>
   </div>
   <div class="overflow-x-auto">
-    <table class="w-full text-sm min-w-[48rem]">
-          <th class="px-3 py-2 text-right">N игроков</th>
-          <th class="px-3 py-2 text-right">Взято</th>
-          <th class="px-3 py-2 text-right">Ожидание</th>
-          <th class="px-3 py-2 text-right">Δ</th>
+    <table class="w-full text-sm min-w-[48rem] sortable" data-default-sort="0" data-default-dir="asc">
+      <thead class="bg-slate-100 text-slate-600 uppercase text-xs">
+        <tr>
+          <th class="px-3 py-2 text-right sortable-th cursor-pointer select-none" data-sort="num">Место <span class="sort-arrow text-slate-400"></span></th>
+          <th class="px-3 py-2 text-left sortable-th cursor-pointer select-none" data-sort="text">Команда <span class="sort-arrow text-slate-400"></span></th>
+          <th class="px-3 py-2 text-right sortable-th cursor-pointer select-none" data-sort="num">N игроков <span class="sort-arrow text-slate-400"></span></th>
+          <th class="px-3 py-2 text-right sortable-th cursor-pointer select-none" data-sort="num">Взято <span class="sort-arrow text-slate-400"></span></th>
+          <th class="px-3 py-2 text-right sortable-th cursor-pointer select-none" data-sort="num">Ожидание <span class="sort-arrow text-slate-400"></span></th>
+          <th class="px-3 py-2 text-right sortable-th cursor-pointer select-none" data-sort="num">Δ <span class="sort-arrow text-slate-400"></span></th>
           <th class="px-3 py-2 text-left">Топ игроков</th>
         </tr>
       </thead>
       <tbody>
         {% for t in teams %}
         <tr class="border-t border-slate-100 hover:bg-slate-50">
-          <td class="px-3 py-2 text-right num text-slate-600">{{ t.place|int if t.place else "" }}</td>
-          <td class="px-3 py-2"><a href="/team/{{ t.team_id }}" class="text-indigo-700 hover:underline">{{ t.team_name }}</a></td>
-          <td class="px-3 py-2 text-right num text-slate-600">{{ t.n_players_active }}</td>
-          <td class="px-3 py-2 text-right num font-medium">{{ t.score_actual }}</td>
-          <td class="px-3 py-2 text-right num text-slate-600">{{ "%.1f"|format(t.expected_takes) }}</td>
+          <td class="px-3 py-2 text-right num text-slate-600" data-value="{{ t.place if t.place is not none else '' }}">{{ t.place|int if t.place else "" }}</td>
+          <td class="px-3 py-2" data-value="{{ t.team_name }}"><a href="/team/{{ t.team_id }}" class="text-indigo-700 hover:underline">{{ t.team_name }}</a></td>
+          <td class="px-3 py-2 text-right num text-slate-600" data-value="{{ t.n_players_active }}">{{ t.n_players_active }}</td>
+          <td class="px-3 py-2 text-right num font-medium" data-value="{{ t.score_actual }}">{{ t.score_actual }}</td>
+          <td class="px-3 py-2 text-right num text-slate-600" data-value="{{ t.expected_takes }}">{{ "%.1f"|format(t.expected_takes) }}</td>
+          {% set delta = t.score_actual - t.expected_takes %}
           <td class="px-3 py-2 text-right num
-            {% set delta = t.score_actual - t.expected_takes %}
-            {% if delta > 0 %}text-emerald-600{% elif delta < 0 %}text-rose-600{% endif %}">
+            {% if delta > 0 %}text-emerald-600{% elif delta < 0 %}text-rose-600{% endif %}"
+            data-value="{{ delta }}">
             {{ "%+.1f"|format(delta) }}
           </td>
           <td class="px-3 py-2 text-xs">
@@ -127,9 +132,13 @@
 <section class="bg-white border border-slate-200 rounded shadow-sm mb-6">
   <h2 class="px-4 py-2 text-sm font-medium text-slate-600 border-b border-slate-100">Вопросы ({{ questions|length }})</h2>
   <div class="overflow-x-auto">
-    <table class="w-full text-sm min-w-[42rem]">
-          <th class="px-3 py-2 text-right">b</th>
-          <th class="px-3 py-2 text-right">a</th>
+    <table class="w-full text-sm min-w-[42rem] sortable" data-default-sort="0" data-default-dir="asc">
+      <thead class="bg-slate-100 text-slate-600 uppercase text-xs">
+        <tr>
+          <th class="px-3 py-2 text-right sortable-th cursor-pointer select-none" data-sort="num">№ <span class="sort-arrow text-slate-400"></span></th>
+          <th class="px-3 py-2 text-right sortable-th cursor-pointer select-none" data-sort="num">% взято <span class="sort-arrow text-slate-400"></span></th>
+          <th class="px-3 py-2 text-right sortable-th cursor-pointer select-none" data-sort="num">b <span class="sort-arrow text-slate-400"></span></th>
+          <th class="px-3 py-2 text-right sortable-th cursor-pointer select-none" data-sort="num">a <span class="sort-arrow text-slate-400"></span></th>
           <th class="px-3 py-2 text-left">Текст</th>
           <th class="px-3 py-2 text-left">Ответ</th>
         </tr>
@@ -137,10 +146,10 @@
       <tbody>
         {% for q in questions %}
         <tr class="border-t border-slate-100 align-top hover:bg-slate-50">
-          <td class="px-3 py-2 text-right num text-slate-500">{{ q.q_in_tournament + 1 }}</td>
-          <td class="px-3 py-2 text-right num">{{ "%.0f"|format(q.take_rate * 100) if q.take_rate is not none else "–" }}%</td>
-          <td class="px-3 py-2 text-right num">{{ "%.2f"|format(q.b) }}</td>
-          <td class="px-3 py-2 text-right num">{{ "%.2f"|format(q.a) }}</td>
+          <td class="px-3 py-2 text-right num text-slate-500" data-value="{{ q.q_in_tournament + 1 }}">{{ q.q_in_tournament + 1 }}</td>
+          <td class="px-3 py-2 text-right num" data-value="{{ q.take_rate if q.take_rate is not none else '' }}">{{ "%.0f"|format(q.take_rate * 100) if q.take_rate is not none else "–" }}%</td>
+          <td class="px-3 py-2 text-right num" data-value="{{ q.b }}">{{ "%.2f"|format(q.b) }}</td>
+          <td class="px-3 py-2 text-right num" data-value="{{ q.a }}">{{ "%.2f"|format(q.a) }}</td>
           <td class="px-3 py-2 max-w-[min(24rem,90vw)] sm:max-w-xl break-words text-slate-700">{{ q.text or "" }}</td>
           <td class="px-3 py-2 max-w-[min(12rem,40vw)] sm:max-w-xs break-words text-slate-500">{{ q.answer or "" }}</td>
         </tr>
@@ -149,6 +158,93 @@
     </table>
   </div>
 </section>
+
+<script>
+// Click-to-sort for any <table class="sortable"> on the page.  The
+// table renders in its server-default order; clicking a header with
+// data-sort="num" or "text" re-orders its <tbody> rows by the value
+// from each cell's data-value attribute (falling back to text).
+(function() {
+  const tables = document.querySelectorAll('table.sortable');
+  tables.forEach((table) => {
+    const ths = Array.from(table.querySelectorAll('thead th.sortable-th'));
+    const tbody = table.tBodies[0];
+    if (!tbody || ths.length === 0) return;
+
+    let activeCol = parseInt(table.dataset.defaultSort ?? '-1', 10);
+    let activeDir = table.dataset.defaultDir === 'desc' ? 'desc' : 'asc';
+    if (Number.isNaN(activeCol)) activeCol = -1;
+
+    // Numeric cols default to descending on first click (interesting
+    // values are usually the high ones — best Δ, biggest takes, etc.).
+    // Text cols default to ascending.
+    const defaultDirOf = (i) => (ths[i].dataset.sort === 'num' ? 'desc' : 'asc');
+
+    const sortBy = (colIdx, dir) => {
+      const type = ths[colIdx].dataset.sort;
+      const rows = Array.from(tbody.rows);
+      const valueOf = (row) => {
+        const cell = row.cells[colIdx];
+        if (!cell) return null;
+        const raw = cell.dataset.value !== undefined
+          ? cell.dataset.value
+          : cell.textContent.trim();
+        if (type === 'num') {
+          if (raw === '' || raw === null) return null;
+          const n = parseFloat(raw);
+          return Number.isFinite(n) ? n : null;
+        }
+        return raw == null ? '' : String(raw);
+      };
+      const sign = dir === 'desc' ? -1 : 1;
+      rows.sort((a, b) => {
+        const va = valueOf(a);
+        const vb = valueOf(b);
+        // NULLs always go to the end regardless of sort direction —
+        // matches `NULLS LAST` in the SQL default for /tournament.
+        if (va === null && vb === null) return 0;
+        if (va === null) return 1;
+        if (vb === null) return -1;
+        if (va < vb) return -1 * sign;
+        if (va > vb) return 1 * sign;
+        return 0;
+      });
+      rows.forEach((r) => tbody.appendChild(r));
+    };
+
+    const repaintArrows = () => {
+      ths.forEach((th, i) => {
+        const arrow = th.querySelector('.sort-arrow');
+        if (!arrow) return;
+        if (i === activeCol) {
+          arrow.textContent = activeDir === 'desc' ? '↓' : '↑';
+          arrow.classList.remove('text-slate-400');
+          arrow.classList.add('text-slate-700');
+        } else {
+          arrow.textContent = '↕';
+          arrow.classList.add('text-slate-400');
+          arrow.classList.remove('text-slate-700');
+        }
+      });
+    };
+
+    ths.forEach((th, i) => {
+      th.addEventListener('click', () => {
+        if (i === activeCol) {
+          activeDir = activeDir === 'asc' ? 'desc' : 'asc';
+        } else {
+          activeCol = i;
+          activeDir = defaultDirOf(i);
+        }
+        sortBy(activeCol, activeDir);
+        repaintArrows();
+      });
+    });
+
+    repaintArrows();
+  });
+})();
+</script>
 
 <script>
 (function() {
