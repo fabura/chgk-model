@@ -56,22 +56,26 @@ def ensure_schema(conn: PGConnection) -> None:
 
 
 def discovery_cursor(conn: PGConnection) -> str | None:
-    """Pick the lastEditDate cursor for /tournaments?lastEditDate[after]=…
+    """Pick the lastEditDate cursor for /tournaments?lastEditDate[strictly_after]=…
 
     We take MAX(public.tournaments.last_edited_at) since:
       - it is filled by the dump restore for every historical tournament,
       - it matches API's lastEditDate semantics (1-to-1 column),
       - it survives a wiped api_overlay (the dump always provides it).
 
-    Returns an ISO date string ("YYYY-MM-DD") or None if the table is
-    empty (e.g. before the very first dump restore).
+    Returns a full ISO timestamp (``YYYY-MM-DDTHH:MM:SS``); the API
+    iterator uses ``strictly_after`` so passing the exact MAX skips the
+    record we already have and gives true no-op idempotency.
+
+    Returns None if the table is empty (e.g. before the very first dump
+    restore).
     """
     with conn.cursor() as cur:
-        cur.execute("SELECT MAX(last_edited_at)::date FROM public.tournaments")
+        cur.execute("SELECT MAX(last_edited_at) FROM public.tournaments")
         row = cur.fetchone()
     if not row or row[0] is None:
         return None
-    return row[0].isoformat()
+    return row[0].isoformat(timespec="seconds")
 
 
 def record_fetch(

@@ -2,14 +2,18 @@
 
 Examples
 --------
-    # Auto-cursor from MAX(public.tournaments.last_edited_at), dry run,
-    # only first 5 changed tournaments:
-    python -m rating_api --limit 5 --dry-run
+    # Default: auto-cursor from MAX(public.tournaments.last_edited_at),
+    # write changes into the local rating PG.
+    python -m rating_api
+
+    # Cap to the first 5 changed tournaments (smoke test before a full run):
+    python -m rating_api --limit 5
 
     # Force a specific cursor (debug):
-    python -m rating_api --since 2026-05-25 --limit 20 --dry-run
+    python -m rating_api --since 2026-05-25 --limit 20
 
-F.2 supports --dry-run only; without it the CLI errors out cleanly.
+    # Inspect-only mode — never touches public.*:
+    python -m rating_api --dry-run
 """
 from __future__ import annotations
 
@@ -36,7 +40,7 @@ def main() -> int:
     p.add_argument(
         "--dry-run",
         action="store_true",
-        help="Don't write to public.* (F.2 requires this).",
+        help="Don't write to public.* (only api_overlay.fetch_state is updated).",
     )
     p.add_argument(
         "--database-url",
@@ -46,17 +50,10 @@ def main() -> int:
     )
     args = p.parse_args()
 
-    if not args.dry_run:
-        print(
-            "error: F.2 only supports --dry-run; actual upsert lands in F.3.",
-            file=sys.stderr,
-        )
-        return 2
-
     run_sync(
         since=args.since,
         limit=args.limit,
-        dry_run=True,
+        dry_run=args.dry_run,
         database_url=args.database_url,
     )
     return 0

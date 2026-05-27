@@ -121,22 +121,27 @@ class RatingApiClient:
 
     def iter_tournaments_changed_since(
         self,
-        since_iso_date: str,
+        since_iso: str,
         *,
         items_per_page: int = 512,
     ) -> Iterator[dict[str, Any]]:
-        """Yield Tournament-summary blobs with lastEditDate >= since_iso_date.
+        """Yield Tournament-summary blobs with lastEditDate > since_iso.
 
-        `since_iso_date` is a YYYY-MM-DD string (API accepts date or
-        datetime).  Pages are walked in lastEditDate ascending order so
-        the cursor can be advanced after each successful upsert.
+        ``since_iso`` accepts either a date (``YYYY-MM-DD``) or a full
+        datetime (``YYYY-MM-DDTHH:MM:SS``); the API tolerates both.
+        We use ``lastEditDate[strictly_after]`` (i.e. ``>`` not ``>=``)
+        so passing the exact MAX(last_edited_at) from PG cleanly skips
+        the records we already have, making repeat runs no-ops.
+
+        Pages are walked in lastEditDate ascending order so the cursor
+        can be advanced after each successful upsert.
         """
         page = 1
         while True:
             data = self._get(
                 "/tournaments",
                 {
-                    "lastEditDate[after]": since_iso_date,
+                    "lastEditDate[strictly_after]": since_iso,
                     "order[lastEditDate]": "asc",
                     "itemsPerPage": items_per_page,
                     "page": page,

@@ -1,9 +1,10 @@
-"""Orchestrator: discover changed tournaments → fetch → parse → (later) upsert.
+"""Orchestrator: discover changed tournaments → fetch → parse → upsert.
 
-F.2 scope: dry-run only.  Walks discovery, fetches each tournament's
-metadata + results, parses into PG-shaped structures, prints a summary,
-records the outcome in api_overlay.fetch_state.  Does NOT touch
-public.* — that's F.3.
+Walks /tournaments?lastEditDate[after]=cursor in pages, for each
+changed id fetches metadata + results + rosters + editors, parses
+them, and (unless ``dry_run``) writes via ``upsert_bundle`` in a
+per-tournament transaction.  api_overlay.fetch_state is always
+updated, so the dashboard stays accurate in both modes.
 """
 from __future__ import annotations
 
@@ -18,6 +19,7 @@ from rating_api.parse import (
     parse_tournament_blob,
 )
 from rating_api.pg_state import discovery_cursor, ensure_schema, open_conn, record_fetch
+from rating_api.upsert import upsert_bundle
 
 
 @dataclass
@@ -25,9 +27,11 @@ class SyncStats:
     discovered: int = 0
     fetched_ok: int = 0
     fetched_err: int = 0
+    upsert_err: int = 0
     skipped: int = 0
     total_results: int = 0
     total_rosters: int = 0
+    n_empty_results: int = 0
 
 
 def fetch_bundle(client: RatingApiClient, tournament_id: int) -> ParsedTournamentBundle:
@@ -85,14 +89,8 @@ def run_sync(
         Stop after this many discovered tournaments (debug knob).
     dry_run
         If True, never writes to public.* (still writes to
-        api_overlay.fetch_state for observability).  F.2 hard-codes
-        True; F.3 will lift this.
+        api_overlay.fetch_state for observability).
     """
-    if not dry_run:
-        raise NotImplementedError(
-            "Actual upsert into public.* is F.3.  Re-run with dry_run=True."
-        )
-
     client = client or RatingApiClient()
     conn = open_conn(database_url)
     try:
@@ -138,6 +136,19 @@ def run_sync(
             stats.fetched_ok += 1
             stats.total_results += len(bundle.results)
             stats.total_rosters += len(bundle.rosters)
+            if not bundle.results:
+                stats.n_empty_results += 1
+
+            upsert_err: str | None = None
+            if not dry_run:
+                try:
+                    upsert_bundle(conn, bundle)
+                except Exception as e:  # noqa: BLE001
+                    stats.upsert_err += 1
+                    upsert_err = f"upsert failed: {type(e).__name__}: {e}"
+                    if verbose:
+                        print(f"  [upsert-err] tid={tid}: {e}")
+
             record_fetch(
                 conn,
                 tournament_id=int(tid),
@@ -145,32 +156,36 @@ def run_sync(
                 http_status=200,
                 n_results=len(bundle.results),
                 n_rosters=len(bundle.rosters),
-                error_message=None,
+                error_message=upsert_err,
             )
 
-            if verbose:
+            if verbose and upsert_err is None:
                 t = bundle.tournament
                 name = (t.title or "")[:48]
+                tag = "ok " if not dry_run else "dry"
+                empty_marker = " (empty, skipped results/rosters)" if not bundle.results else ""
                 print(
-                    f"  [ok ] tid={tid:<6} type={t.type!r:<22} "
+                    f"  [{tag}] tid={tid:<6} type={t.type!r:<22} "
                     f"qcount={t.questions_count}  "
                     f"results={len(bundle.results):>4}  "
                     f"rosters={len(bundle.rosters):>5}  "
                     f"editors={len(bundle.editors):>2}  "
-                    f"name={name!r}"
+                    f"name={name!r}{empty_marker}"
                 )
 
         if verbose:
             print(
                 f"[sync] done: discovered={stats.discovered} "
-                f"ok={stats.fetched_ok} err={stats.fetched_err} "
-                f"skipped={stats.skipped}  "
-                f"results={stats.total_results} rosters={stats.total_rosters}"
+                f"fetched_ok={stats.fetched_ok} fetched_err={stats.fetched_err} "
+                f"upsert_err={stats.upsert_err} skipped={stats.skipped}  "
+                f"results={stats.total_results} rosters={stats.total_rosters} "
+                f"empty={stats.n_empty_results}"
             )
-            print(
-                "[sync] DRY-RUN: no rows written to public.*. "
-                "api_overlay.fetch_state was updated."
-            )
+            if dry_run:
+                print(
+                    "[sync] DRY-RUN: no rows written to public.*. "
+                    "api_overlay.fetch_state was updated."
+                )
 
         return stats
     finally:

@@ -4,6 +4,11 @@
 # Stages (any failure aborts; previous artefacts kept on disk):
 #   1. refresh_postgres.sh             — pull yesterday's rating backup,
 #                                        re-restore the running postgres
+#   1.4 python -m rating_api             — mirror tournaments changed on
+#                                        api.rating.chgk.info into PG
+#                                        (incremental; cursor =
+#                                        MAX(public.tournaments.last_edited_at))
+#   1.5 scripts/fetch_venue_overlay.py   — sync venue overlay (API → DuckDB)
 #   2. python -m rating --mode db ...  — pull observations into data.npz,
 #                                        train sequential model, write
 #                                        results/seq.npz (single CLI call:
@@ -20,8 +25,12 @@
 # Usage:
 #   ./scripts/refresh_data.sh                 # full refresh
 #   ./scripts/refresh_data.sh --skip-postgres # reuse current rating-db state
+#   ./scripts/refresh_data.sh --skip-api      # don't pull deltas from api.rating
 #   ./scripts/refresh_data.sh --skip-train    # reuse current data.npz + seq.npz
 #   ./scripts/refresh_data.sh --skip-build    # don't rebuild DuckDB
+#   ./scripts/refresh_data.sh --skip-venue      # don't fetch venue overlay API
+#   ./scripts/refresh_data.sh --skip-postgres --api-only
+#       # daily light refresh: no dump restore, only pull API deltas + retrain
 #   SKIP_RELOAD=1 ./scripts/refresh_data.sh   # don't ping the website
 #
 # Env:
@@ -60,11 +69,16 @@ trap 'rm -f "$LOCK_FILE"' EXIT
 ln -sfn "$LOG_FILE" "$LATEST_LINK"
 
 SKIP_POSTGRES=0
+SKIP_API=0
+SKIP_VENUE=0
 SKIP_TRAIN=0
 SKIP_BUILD=0
 for arg in "$@"; do
   case "$arg" in
     --skip-postgres) SKIP_POSTGRES=1 ;;
+    --skip-api)      SKIP_API=1 ;;
+    --api-only)      SKIP_POSTGRES=1 ;;   # convenience alias
+    --skip-venue)    SKIP_VENUE=1 ;;
     --skip-train)    SKIP_TRAIN=1 ;;
     --skip-build)    SKIP_BUILD=1 ;;
     *) echo "[refresh_data] unknown arg: $arg" >&2; exit 64 ;;
@@ -73,6 +87,7 @@ done
 
 CACHE="$REPO_ROOT/data.npz"
 RESULTS="$REPO_ROOT/results/seq.npz"
+VENUE_DB="$REPO_ROOT/data/venue_overlay.duckdb"
 DUCKDB="$REPO_ROOT/website/data/chgk.duckdb"
 DUCKDB_NEW="$REPO_ROOT/website/data/chgk.duckdb.new"
 
@@ -89,6 +104,26 @@ step() { echo; echo "[refresh_data] $(date -u +%FT%TZ) === $* ==="; }
     "$REPO_ROOT/scripts/refresh_postgres.sh"
   else
     step "Stage 1/3: SKIPPED (postgres already up-to-date)"
+  fi
+
+  # ---------------------------------------------------------------- 1.4
+  if [[ $SKIP_API -eq 0 ]]; then
+    step "Stage 1.4: mirror api.rating.chgk.info deltas into PG"
+    cd "$REPO_ROOT"
+    "$PYTHON" -m rating_api
+  else
+    step "Stage 1.4: SKIPPED (api.rating mirror)"
+  fi
+
+  # ---------------------------------------------------------------- 1.5
+  if [[ $SKIP_VENUE -eq 0 ]]; then
+    step "Stage 1.5: fetch venue overlay (API → $VENUE_DB)"
+    cd "$REPO_ROOT"
+    "$PYTHON" "$REPO_ROOT/scripts/fetch_venue_overlay.py" \
+      --db "$VENUE_DB" \
+      --resume
+  else
+    step "Stage 1.5: SKIPPED (venue overlay)"
   fi
 
   # ---------------------------------------------------------------- 2
