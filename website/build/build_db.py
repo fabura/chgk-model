@@ -1147,22 +1147,27 @@ def write_duckdb(
     if res.history_player_id is not None:
         gid_to_game_idx = {int(t): i for i, t in enumerate(maps.idx_to_game_id)}
         gdo = maps.game_date_ordinal
-        last_tid_per_pid: dict[int, int] = {}
-        # We want the *latest* tournament per player; pick the largest
-        # game_idx (chronological ordering by start_date is what we
-        # actually want, but game_idx is built in chronological order).
+        # We want the chronologically latest tournament per player.
+        # Earlier this code picked argmax(game_idx) and trusted that
+        # game_idx grew with start_date, but data.load_from_db orders
+        # tournaments by tournament_id (assignment order), which only
+        # approximates chronology — pre-scheduled or backfilled
+        # tournaments break the assumption.  Compare the actual ordinal
+        # date directly instead.
+        pid_last_ord: dict[int, int] = {}
         for pid_db, tid_db in zip(
             res.history_player_id.tolist(), res.history_game_id.tolist()
         ):
             g_idx = gid_to_game_idx.get(int(tid_db))
-            if g_idx is None:
+            if g_idx is None or not (0 <= g_idx < len(gdo)):
                 continue
-            prev = last_tid_per_pid.get(int(pid_db))
-            if prev is None or g_idx > prev:
-                last_tid_per_pid[int(pid_db)] = g_idx
-        for pid_db, g_idx in last_tid_per_pid.items():
-            if 0 <= g_idx < len(gdo):
-                pid_last_game[pid_db] = _ord_to_date(int(gdo[g_idx]))
+            ord_val = int(gdo[g_idx])
+            if ord_val < 0:
+                continue
+            if ord_val > pid_last_ord.get(int(pid_db), -1):
+                pid_last_ord[int(pid_db)] = ord_val
+        for pid_db, ord_val in pid_last_ord.items():
+            pid_last_game[pid_db] = _ord_to_date(ord_val)
 
     today = date.today()
     pid_arr, last_arr, first_arr, theta_arr, theta_disp_arr, games_arr, last_dt_arr = (
