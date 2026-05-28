@@ -265,18 +265,11 @@
   function initRosterToggleAll() {
     const btn = document.querySelector("[data-roster-toggle-all]");
     if (!btn) return;
-    const cols = () => document.querySelectorAll(".forecast-roster-col");
-    let open = false;
+    const root = btn.closest(".forecast-rosters-wrap");
+    if (!root) return;
     btn.addEventListener("click", () => {
-      open = !open;
-      cols().forEach((el) => el.classList.toggle("hidden", !open));
+      const open = root.classList.toggle("forecast-rosters-open");
       btn.textContent = open ? "Скрыть составы" : "Показать все составы";
-      const hint = btn.closest(".flex")?.querySelector(".text-xs.text-slate-500");
-      if (hint) {
-        hint.textContent = open
-          ? "θ — текущие из рейтинга; * — игрок не в нашей базе"
-          : "Составы скрыты — не раздувают таблицу";
-      }
     });
   }
 
