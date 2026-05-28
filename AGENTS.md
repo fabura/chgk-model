@@ -313,19 +313,57 @@ End-to-end nightly refresh, single-instance via PID lock at
    dump isn't out yet — backups appear ~23:00 UTC), validates with
    `pg_restore --list` **before** touching the running DB, then
    re-restores into the local docker-compose postgres.
-2. `python -m rating --mode db --cache_file data.npz --results_npz results/seq.npz`
+2. `python -m rating_api` — mirrors fresh tournaments from
+   `api.rating.chgk.info` into the same Postgres (see "API mirror"
+   below). Lets us pick up data that landed after the dump was taken,
+   or skip step 1 entirely (`--skip-postgres`) for a daily light refresh
+   when the dump is stale or broken.
+3. `python -m rating --mode db --cache_file data.npz --results_npz results/seq.npz`
    — pulls `data.npz` from PG and trains in a single CLI call.
-3. `python -m website.build.build_db` → `chgk.duckdb.new`.
-4. Atomic `mv .new → .duckdb`, then `POST /admin/reload-db` to swap
+4. `python -m website.build.build_db` → `chgk.duckdb.new`.
+5. Atomic `mv .new → .duckdb`, then `POST /admin/reload-db` to swap
    the inode under the running uvicorn.
 
 ```bash
-./scripts/refresh_data.sh                  # full refresh
-./scripts/refresh_data.sh --skip-postgres  # reuse current PG state
-./scripts/refresh_data.sh --skip-train     # reuse data.npz + seq.npz
-./scripts/refresh_data.sh --skip-build     # don't rebuild DuckDB
-SKIP_RELOAD=1 ./scripts/refresh_data.sh    # don't ping the website
+./scripts/refresh_data.sh                       # full refresh
+./scripts/refresh_data.sh --skip-postgres       # reuse current PG state
+./scripts/refresh_data.sh --skip-api            # don't pull API deltas
+./scripts/refresh_data.sh --api-only            # alias for --skip-postgres
+./scripts/refresh_data.sh --skip-train          # reuse data.npz + seq.npz
+./scripts/refresh_data.sh --skip-build          # don't rebuild DuckDB
+SKIP_RELOAD=1 ./scripts/refresh_data.sh         # don't ping the website
 ```
+
+## API mirror (`rating_api/`)
+
+Incremental loader for `api.rating.chgk.info`. Complements (does not
+replace) the dump-based path. Both write into the same local PG, so
+`load_from_db` is unchanged.
+
+| File | Role |
+|------|------|
+| `rating_api/client.py` | stdlib HTTP client with retry/throttle; `iter_tournaments_changed_since` walks `/tournaments?lastEditDate[strictly_after]=…&order[lastEditDate]=asc` paginated |
+| `rating_api/parse.py` | JSON → dataclasses shaped like rows of `public.tournaments` / `tournament_results` / `tournament_rosters` / `tournament_editors`. `type.name` is written verbatim (matches `_normalize_type`); `questionQty` (dict per-tour) is summed into `questions_count` |
+| `rating_api/upsert.py` | Per-tournament `DELETE … WHERE tournament_id=%s` + bulk INSERT in a single transaction. `tournaments.id` has no UNIQUE constraint, so ON CONFLICT isn't available; the delete-then-insert pattern is intentional |
+| `rating_api/pg_state.py` | `api_overlay.fetch_state` (in a separate schema because `restore.sh` drops `public`). Discovery cursor = `MAX(public.tournaments.last_edited_at)` — the dump fills this column for every historical tournament |
+| `rating_api/sync.py` | Orchestrator: discover → fetch → parse → upsert → record outcome |
+
+```bash
+python -m rating_api                       # default: write deltas since
+                                            # MAX(public.tournaments.last_edited_at)
+python -m rating_api --limit 5             # smoke test (cap at 5 tournaments)
+python -m rating_api --since 2026-05-01    # force a specific cursor
+python -m rating_api --dry-run             # inspect-only, no writes to public.*
+```
+
+**Empty-payload rule**: tournaments whose `/results` returns `[]`
+(e.g. results not posted yet) keep their previous dump-loaded rows in
+`tournament_results` / `tournament_rosters` — we only refresh
+`tournaments` metadata and `tournament_editors` for them.
+
+**Not mirrored**: `true_dls` (per-team granularity, FK on `models`,
+API only surfaces the aggregate `trueDL`). The dump remains the source
+of truth here; `load_from_db` already handles missing rows gracefully.
 
 End-to-end takes ~20 min on macOS (most of it is the train pass).
 
@@ -381,6 +419,9 @@ pip install -r requirements.txt
 ## Scripts
 
 - `scripts/refresh_data.sh`, `scripts/refresh_postgres.sh` — daily refresh pipeline
+- `scripts/fetch_venue_overlay.py` — sync venue assignments from
+  `api.rating.chgk.info` into `data/venue_overlay.duckdb` (see `venue_overlay/`)
+- `scripts/analyse_venue_effects.py` — residual slices by venue size (mono vs multi)
 - `scripts/exp_cold_start_grid.py`, `scripts/exp_cold_start_grid_extra.py` — `(θ_init, games_offset)` sweeps
 - `scripts/run_simple_experiments.py` — single-knob configuration sweeps (calendar decay etc.)
 - `scripts/compare_to_baselines.py` — side-by-side variant comparison on the backtest split
@@ -389,6 +430,19 @@ pip install -r requirements.txt
 - `scripts/theta_to_prob.py` — convert θ to probability
 - `scripts/lookup_players.py` — player lookup
 - `scripts/build_strongest_100plus.py`, `scripts/count_*.py` — analysis
+
+## Refactor backlog
+
+- **Unify the noisy-OR + lapse + recal kernel.** The same formula is
+  currently implemented twice: `website/build/build_db.py::compute_expected_takes`
+  (bake-time, batched per tournament, also computes `_solve_implied_theta`)
+  and `rating/simulate.py::simulate_roster_on_pack` (request-time,
+  per-roster, used by `/forecast/*`).  They are logically identical
+  (verified via the `model_params` JSON written by `build_db`), but
+  structurally duplicated.  Fixing requires a PR whose only goal is
+  bit-exact agreement: route `compute_expected_takes` through
+  `simulate_roster_on_pack`, then diff the resulting `expected_takes`
+  in DuckDB against the previous build and assert ≤ 1 ULP per row.
 
 ## Docs
 
