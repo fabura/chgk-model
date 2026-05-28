@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_forecast_rosters.html" as fr %}
 {% block title %}Прогноз: {{ tournament.title }} — ChGK Model{% endblock %}
 
 {% block head_extra %}
@@ -32,12 +33,14 @@
 {% set variant = "past" %}
 {% include "_forecast_help.html" %}
 <section class="bg-white border border-slate-200 rounded shadow-sm overflow-hidden">
+  {{ fr.roster_toolbar() }}
   <div class="overflow-x-auto">
     <table class="min-w-full text-sm">
       <thead class="bg-slate-100 text-slate-600 text-xs uppercase tracking-wide">
         <tr>
           <th class="px-3 py-2 text-right">#</th>
           <th class="px-3 py-2 text-left">Команда</th>
+          {{ fr.roster_header() }}
           <th class="px-3 py-2 text-right num">E[T]</th>
           {% if n_mc_samples %}
           <th class="px-3 py-2 text-right num">счёт 5–95%</th>
@@ -56,6 +59,7 @@
           <td class="px-3 py-1.5 text-left">
             <a href="/team/{{ r.team_id }}" class="text-indigo-700 hover:underline">{{ r.team_name }}</a>
           </td>
+          {{ fr.roster_cell(r.members|default([])) }}
           <td class="px-3 py-1.5 text-right num">{{ "%.1f" | format(r.expected_takes) }}</td>
           {% if n_mc_samples %}
           <td class="px-3 py-1.5 text-right num text-slate-600">

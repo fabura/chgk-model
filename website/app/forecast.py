@@ -73,6 +73,30 @@ def _theta_sigmas(games: np.ndarray) -> np.ndarray:
     return np.clip(s, _THETA_SIGMA_FLOOR, _THETA_SIGMA_CAP)
 
 
+def _player_display_name(
+    *,
+    player_id: Optional[int],
+    last_name: Optional[str] = None,
+    first_name: Optional[str] = None,
+    api_surname: Optional[str] = None,
+    api_name: Optional[str] = None,
+) -> str:
+    """Best-effort display name for a roster line on forecast pages."""
+    parts = [last_name or "", first_name or ""]
+    name = " ".join(p for p in parts if p).strip()
+    if not name and (api_surname or api_name):
+        name = f"{api_surname or ''} {api_name or ''}".strip()
+    if name:
+        return name
+    if player_id is not None:
+        return f"#{player_id}"
+    return "—"
+
+
+def _members_sorted_by_theta(members: list[dict]) -> list[dict]:
+    return sorted(members, key=lambda m: (-float(m.get("theta", 0.0)), m.get("name") or ""))
+
+
 def simulate_field(
     *,
     rosters: list[dict],
@@ -147,6 +171,8 @@ def simulate_field(
             "n_players_active": src.get("n_players_active"),
             "n_unknown_players": src.get("n_unknown_players", 0),
         }
+        if src.get("members"):
+            row["members"] = src["members"]
         paired.append((row, p_q, {"thetas": thetas, "games": games}))
 
     paired.sort(key=lambda t: (-t[0]["expected_takes"], t[0]["team_name"] or ""))
@@ -245,6 +271,8 @@ def forecast_past_tournament(
             pg.player_id,
             p.theta,
             p.games,
+            p.last_name,
+            p.first_name,
             tg.team_name,
             tg.score_actual,
             tg.place,
@@ -271,11 +299,24 @@ def forecast_past_tournament(
                 "n_players_active": r["n_players_active"],
                 "thetas": [],
                 "games": [],
+                "members": [],
             },
         )
         if r["theta"] is not None:
             slot["thetas"].append(float(r["theta"]))
             slot["games"].append(int(r["games"] or 0))
+            slot["members"].append({
+                "player_id": int(r["player_id"]),
+                "name": _player_display_name(
+                    player_id=int(r["player_id"]),
+                    last_name=r.get("last_name"),
+                    first_name=r.get("first_name"),
+                ),
+                "theta": float(r["theta"]),
+                "unknown": False,
+            })
+    for slot in teams.values():
+        slot["members"] = _members_sorted_by_theta(slot["members"])
 
     sim = simulate_field(
         rosters=list(teams.values()),
@@ -490,11 +531,12 @@ def forecast_for_event(
         team_id = team.get("id")
         if team_id is None:
             continue
-        members = team_row.get("teamMembers") or []
+        members_raw = team_row.get("teamMembers") or []
         thetas: list[float] = []
         games: list[int] = []
+        roster_members: list[dict] = []
         n_unknown = 0
-        for tm in members:
+        for tm in members_raw:
             pl = tm.get("player") or {}
             pid = pl.get("id")
             if not isinstance(pid, int):
@@ -506,12 +548,36 @@ def forecast_for_event(
                 # prior (read from model_params, so it stays in sync if
                 # ``Config.cold_init_theta`` ever changes again).  Treat
                 # them as having zero games for the bootstrap (max σ).
-                thetas.append(float(cold_init))
+                theta_val = float(cold_init)
+                thetas.append(theta_val)
                 games.append(0)
                 n_unknown += 1
+                roster_members.append({
+                    "player_id": int(pid),
+                    "name": _player_display_name(
+                        player_id=int(pid),
+                        api_surname=pl.get("surname"),
+                        api_name=pl.get("name"),
+                    ),
+                    "theta": theta_val,
+                    "unknown": True,
+                })
             else:
-                thetas.append(float(db_row["theta"] or 0.0))
+                theta_val = float(db_row["theta"] or 0.0)
+                thetas.append(theta_val)
                 games.append(int(db_row["games"] or 0))
+                roster_members.append({
+                    "player_id": int(pid),
+                    "name": _player_display_name(
+                        player_id=int(pid),
+                        last_name=db_row.get("last_name"),
+                        first_name=db_row.get("first_name"),
+                        api_surname=pl.get("surname"),
+                        api_name=pl.get("name"),
+                    ),
+                    "theta": theta_val,
+                    "unknown": False,
+                })
         if not thetas:
             continue
         n_unknown_total += n_unknown
@@ -521,6 +587,7 @@ def forecast_for_event(
                 "team_name": team.get("name") or f"#{team_id}",
                 "thetas": thetas,
                 "games": games,
+                "members": _members_sorted_by_theta(roster_members),
                 "n_unknown_players": n_unknown,
                 "n_players_active": len(thetas),
             }

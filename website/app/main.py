@@ -404,6 +404,8 @@ def player_profile(
     request: Request,
     player_id: int,
     min_games: int = Query(30, ge=1, le=10_000),
+    per_page: int = Query(50, ge=10, le=200),
+    page: int = Query(1, ge=1),
 ):
     player = db.query_one(
         "SELECT * FROM players WHERE player_id = ?", [player_id]
@@ -463,6 +465,29 @@ def player_profile(
         [player_id],
     )
 
+    games_total = (
+        db.query_one(
+            "SELECT COUNT(*) AS n FROM player_games WHERE player_id = ?",
+            [player_id],
+        )
+        or {"n": 0}
+    )["n"]
+    games_totals = db.query_one(
+        """
+        SELECT
+            COALESCE(SUM(tg.score_actual), 0) AS total_actual,
+            COALESCE(SUM(tg.expected_takes), 0) AS total_expected
+        FROM player_games pg
+        LEFT JOIN team_games tg USING (tournament_id, team_id)
+        WHERE pg.player_id = ?
+        """,
+        [player_id],
+    ) or {"total_actual": 0, "total_expected": 0}
+
+    games_total_pages = max(1, math.ceil(games_total / per_page))
+    page = min(page, games_total_pages)
+    games_offset = (page - 1) * per_page
+
     games = db.query(
         """
         SELECT
@@ -483,8 +508,9 @@ def player_profile(
         LEFT JOIN team_games tg USING (tournament_id, team_id)
         WHERE pg.player_id = ?
         ORDER BY t.start_date DESC NULLS LAST, t.tournament_id DESC
+        LIMIT ? OFFSET ?
         """,
-        [player_id],
+        [player_id, per_page, games_offset],
     )
 
     # ----- Yearly relative position --------------------------------------
@@ -599,6 +625,12 @@ def player_profile(
                 ensure_ascii=False,
             ),
             "games": games,
+            "games_total": games_total,
+            "games_totals": games_totals,
+            "games_page": page,
+            "games_per_page": per_page,
+            "games_total_pages": games_total_pages,
+            "games_page_links": _build_page_links(page, games_total_pages),
             "teammates": teammates,
         },
     )
@@ -1128,13 +1160,15 @@ def forecast_past_tournament(request: Request, tournament_id: int):
 def forecast_upcoming(
     request: Request,
     days_ahead: int = 30,
-    type: Optional[str] = None,
+    type: Optional[str] = Query("Обычный"),
 ):
     """List upcoming tournaments fetched from rating.chgk.info.
 
     ``type`` filters the list by API type name (``Обычный``, ``Синхрон`` …).
+    Defaults to ``Обычный`` (очные) — pass ``type=`` explicitly for all types.
     The list is small (≤50 per page from the API) and cached for 10 min.
     """
+    type_name = (type or "").strip() or None
     today = datetime.now(timezone.utc).date()
     after = today.isoformat() + "T00:00:00+00:00"
     before_d = today + timedelta(days=int(max(1, min(days_ahead, 180))))
@@ -1147,10 +1181,10 @@ def forecast_upcoming(
     except Exception as exc:
         tournaments = []
         fetch_error = str(exc)
-    if type:
+    if type_name:
         tournaments = [
             t for t in tournaments
-            if (t.get("type") or {}).get("name") == type
+            if (t.get("type") or {}).get("name") == type_name
         ]
     return templates.TemplateResponse(
         request,
@@ -1159,7 +1193,7 @@ def forecast_upcoming(
             "tournaments": tournaments,
             "fetch_error": fetch_error,
             "days_ahead": int(days_ahead),
-            "selected_type": type,
+            "selected_type": type_name,
             "today_iso": today.isoformat(),
             "until_iso": before_d.isoformat(),
         },
