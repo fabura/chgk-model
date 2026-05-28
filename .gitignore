@@ -11,12 +11,23 @@ checkpoints*
 data.npz
 data.npz.bak
 data.npz.tmp
+data.mg*.npz
+data/venue_overlay.duckdb
+data/venue_overlay.duckdb.wal
+
+# Raw per-tournament JSON from rating.chgk.fun.  We only commit the
+# compact ~3 MB parquet bundle (data/chgk_fun_predictions.parquet);
+# the JSON cache is rebuildable from the API and ~25× larger.
+data/chgk_fun_cache/
 
 # Run logs (anywhere)
+logs/
 *.log
+*.out
 
 # Experiment outputs: CSV/npz exports, tuning tables, backtest dumps (regenerate via rating / scripts)
 results/
+results/*.bak*
 website/.admin_token
 website/data/*.duckdb
 website/data/*.duckdb.bak*
