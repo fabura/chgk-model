@@ -63,6 +63,9 @@ try_download_date() {
   local d="$1"
   local url="$R2_PREFIX/${d}_rating.backup"
   echo "[refresh_postgres] trying ${d}_rating.backup ..."
+  local expected_len=""
+  expected_len=$(curl --silent --show-error --head "$url" \
+    | awk -F': ' 'tolower($1)=="content-length"{gsub(/\r/,"",$2); print $2; exit}')
   # --fail makes curl exit non-zero on HTTP errors so we don't write the
   # 404 HTML body over the prior backup.
   if ! curl --fail --location --silent --show-error -o rating.backup.tmp "$url"; then
@@ -74,6 +77,11 @@ try_download_date() {
   sz=$(stat -f%z rating.backup.tmp 2>/dev/null || stat -c%s rating.backup.tmp)
   if [[ "$sz" -lt "$MIN_BACKUP_BYTES" ]]; then
     echo "[refresh_postgres]   too small ($sz bytes); skipping"
+    rm -f rating.backup.tmp
+    return 1
+  fi
+  if [[ -n "$expected_len" && "$sz" != "$expected_len" ]]; then
+    echo "[refresh_postgres]   truncated download ($sz bytes, expected $expected_len); skipping" >&2
     rm -f rating.backup.tmp
     return 1
   fi
@@ -162,7 +170,24 @@ done
 
 if [[ $restore_ok -ne 1 ]]; then
   echo "[refresh_postgres] error: no backup in the last $MAX_WALKBACK_DAYS day(s) produced a valid restore." >&2
-  [[ -n "$PREV_BACKUP" && -s "$PREV_BACKUP" ]] && mv -f "$PREV_BACKUP" rating.backup
+  if [[ -n "$PREV_BACKUP" && -s "$PREV_BACKUP" ]]; then
+    echo "[refresh_postgres] restoring previous rating.backup file on disk…" >&2
+    mv -f "$PREV_BACKUP" rating.backup
+    echo "[refresh_postgres] re-running restore.sh with previous backup…" >&2
+    set +e
+    docker-compose exec -T postgres bash /docker-entrypoint-initdb.d/restore.sh \
+      > "$restore_log" 2>&1
+    restore_rc=$?
+    set -e
+    n=$(docker-compose exec -T postgres psql -U postgres -tAc \
+      "SELECT COUNT(*) FROM public.tournaments" 2>/dev/null || echo 0)
+    n=$(echo "$n" | tr -d '[:space:]')
+    if [[ -n "$n" && "$n" -ge 1000 ]]; then
+      echo "[refresh_postgres] recovered PG from previous backup ($n tournaments)." >&2
+      exit 0
+    fi
+    echo "[refresh_postgres] previous backup also failed to restore (tournaments=${n:-0})." >&2
+  fi
   exit 3
 fi
 
