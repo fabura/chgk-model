@@ -194,7 +194,7 @@ def main() -> int:
     hp.add_argument(
         "--eta_teammate",
         type=float,
-        default=0.005,
+        default=0.02,
         help="Per-tournament L2 pull of teammate θ toward team mean",
     )
     hp.add_argument(

@@ -20,11 +20,14 @@ class PlayerState:
                            calendar-based decay.  [num_players]
     """
 
-    __slots__ = ("num_players", "theta", "games", "seen", "last_seen_ordinal")
+    __slots__ = (
+        "num_players", "theta", "gamma", "games", "seen", "last_seen_ordinal",
+    )
 
     def __init__(self, num_players: int) -> None:
         self.num_players = num_players
         self.theta = np.zeros(num_players, dtype=np.float64)
+        self.gamma = np.zeros(num_players, dtype=np.float64)
         self.games = np.zeros(num_players, dtype=np.int64)
         self.seen = np.zeros(num_players, dtype=bool)
         self.last_seen_ordinal = np.full(num_players, -1, dtype=np.int64)

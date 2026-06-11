@@ -256,7 +256,49 @@ class Config:
     # such artificial intra-team gaps while preserving real differences
     # (which are independently supported by solo games).  0.005 was
     # picked from a sweep (logloss −0.0014, AUC +0.0011 over 0.0).
-    eta_teammate: float = 0.005
+    # 2026-05: bumped to 0.02 after ``scripts/exp_eta_teammate_sweep_honest.py``
+    # showed logloss −0.0005 vs 0.005 and a +0.14 θ gain for stable-roster
+    # "floor" players (e.g. Chernukha on Инк) with no harm to overall quality.
+    eta_teammate: float = 0.02
+
+    # Per-observation difficulty weights (experimental).  Forward pass
+    # unchanged; gradients scaled by a weight derived from ``p_final``:
+    #
+    #   miss (y=0): w = (1 − p) ** diff_w_miss_power
+    #   take (y=1): w = 1 + diff_w_take_boost · (1 − p)
+    #
+    # Down-weights blame for "easy" misses (high p), up-weights credit
+    # for "hard" takes (low p).  Zero powers = disabled (w ≡ 1).
+    # See ``scripts/exp_difficulty_weights_sweep.py``.
+    diff_w_miss_power: float = 0.0
+    diff_w_take_boost: float = 0.0
+    diff_w_solo_only: bool = True
+
+    # ------------------------------------------------------------------
+    # 2D player model (Model C: per-player difficulty slope γ_k).
+    #
+    # When enabled, each player gains a second parameter γ_k that
+    # modulates how question difficulty affects them:
+    #
+    #     z_k = θ_k + γ_k · b  −  b  −  δ
+    #
+    # γ_k > 0  →  player is RELATIVELY BETTER on hard questions
+    #              (γ·b partially cancels −b when b > 0)
+    # γ_k < 0  →  player is RELATIVELY BETTER on easy questions
+    # γ_k = 0  →  identical to the 1D model (with a_i ≡ 1)
+    #
+    # ``eta_gamma`` is the SGD step size for γ (relative to ``eta0``,
+    # same as ``eta_size`` / ``eta_pos``).  ``gamma_max`` is a hard
+    # clip (±2.0), and ``reg_gamma`` is L2 shrinkage.
+    use_2d_players: bool = False
+    eta_gamma: float = 0.001
+    reg_gamma: float = 0.0
+    gamma_max: float = 2.0
+    # Per-type update weights for γ (mirrors theta_w structure).
+    w_gamma_offline: float = 1.0
+    w_gamma_sync: float = 1.0
+    w_gamma_async: float = 1.0
+    w_gamma_solo: float = 1.0
 
     # Periodic gauge re-centering to neutralise the multi-year θ drift.
     #
@@ -535,6 +577,15 @@ def _type_update_weights(
     )
 
 
+def _difficulty_weight_args(cfg: Config, *, is_solo: bool) -> tuple[float, float]:
+    """Return ``(miss_power, take_boost)`` for ``process_batch_nb``."""
+    if cfg.diff_w_miss_power <= 0.0 and cfg.diff_w_take_boost <= 0.0:
+        return 0.0, 0.0
+    if cfg.diff_w_solo_only and not is_solo:
+        return 0.0, 0.0
+    return cfg.diff_w_miss_power, cfg.diff_w_take_boost
+
+
 def _solo_update_weights(
     cfg: Config,
 ) -> tuple[float, float, float, float, float]:
@@ -685,7 +736,10 @@ def run_sequential(
     # Track epoch boundary for periodic gauge re-centering (drift fix).
     last_recenter_epoch: int | None = None
     recenter_period = float(getattr(cfg, "recenter_period_days", 0.0) or 0.0)
-    recenter_enabled = recenter_period > 0
+    # 2D player model: gauge re-centering is disabled because the
+    # transform θ→θ+Δ, b→b+a·Δ does not leave predictions invariant
+    # when γ_k ≠ 0 (the extra term γ_k·a_i·Δ breaks gauge symmetry).
+    recenter_enabled = recenter_period > 0 and not cfg.use_2d_players
     recenter_log: list[tuple[int, float, float, int]] = []
 
     total_loglik = 0.0
@@ -781,6 +835,16 @@ def run_sequential(
         obs_indices = obs_by_game[g]
         gt = game_types[g] if g < len(game_types) else "offline"
         theta_w, b_w, log_a_w, size_w, pos_w = _type_update_weights(gt, cfg)
+
+        # 2D player model: per-type gamma weight.
+        gamma_weff: float = 0.0
+        if cfg.use_2d_players and cfg.eta_gamma > 0.0:
+            if "async" in gt:
+                gamma_weff = cfg.w_gamma_async
+            elif "sync" in gt:
+                gamma_weff = cfg.w_gamma_sync
+            else:
+                gamma_weff = cfg.w_gamma_offline
 
         # 0b. Year/epoch boundary: gauge re-center to keep median θ of
         #     active veterans pinned to cfg.recenter_target.  Strictly a
@@ -890,10 +954,16 @@ def run_sequential(
             for i in obs_indices:
                 qi = _cqi(int(q_idx[i]))
                 s, e = int(offsets[i]), int(offsets[i + 1])
-                th = players.theta[player_flat[s:e]]
+                th = players.theta[player_flat[s:e]].copy()
                 a_val = math.exp(
                     max(min(questions.log_a[qi], 3.0), -3.0)
                 )
+                # 2D player model: pre-apply γ_k·b into effective θ
+                # so forward()'s z_k = -eff_b + a·θ_eff yields
+                # -eff_b + a·θ_k + γ_k·b (Model C).
+                if cfg.use_2d_players:
+                    gm = players.gamma[player_flat[s:e]]
+                    th += gm * questions.b[qi] / a_val
                 ts_raw = e - s
                 if ts_raw < 1:
                     ts_idx = 1
@@ -1013,6 +1083,12 @@ def run_sequential(
                 recal_alpha_max_eff,
                 recal_beta_min_eff,
                 recal_beta_max_eff,
+                players.gamma if cfg.use_2d_players else None,
+                gamma_weff,
+                cfg.eta_gamma,
+                cfg.reg_gamma,
+                cfg.gamma_max,
+                *_difficulty_weight_args(cfg, is_solo=False),
             )
             total_obs_count += len(obs_order_team)
         if obs_order_solo:
@@ -1059,6 +1135,12 @@ def run_sequential(
                 recal_alpha_max_eff,
                 recal_beta_min_eff,
                 recal_beta_max_eff,
+                players.gamma if cfg.use_2d_players else None,
+                cfg.w_gamma_solo,
+                cfg.eta_gamma,
+                cfg.reg_gamma,
+                cfg.gamma_max,
+                *_difficulty_weight_args(cfg, is_solo=True),
             )
             total_obs_count += len(obs_order_solo)
 
@@ -1193,6 +1275,12 @@ def run_sequential(
                         recal_alpha_max_eff,
                         recal_beta_min_eff,
                         recal_beta_max_eff,
+                        players.gamma if cfg.use_2d_players else None,
+                        gamma_weff,
+                        cfg.eta_gamma,
+                        cfg.reg_gamma,
+                        cfg.gamma_max,
+                        *_difficulty_weight_args(cfg, is_solo=False),
                     )
                 if obs_order_solo_e:
                     sw_t, sw_b, sw_la, sw_s, sw_p = (
@@ -1222,6 +1310,12 @@ def run_sequential(
                         recal_alpha_max_eff,
                         recal_beta_min_eff,
                         recal_beta_max_eff,
+                        players.gamma if cfg.use_2d_players else None,
+                        cfg.w_gamma_solo,
+                        cfg.eta_gamma,
+                        cfg.reg_gamma,
+                        cfg.gamma_max,
+                        *_difficulty_weight_args(cfg, is_solo=True),
                     )
                 np.clip(players.theta, -10.0, 10.0, out=players.theta)
             if verbose:
@@ -1269,10 +1363,13 @@ def run_sequential(
                 for i in obs_indices:
                     qi = _cqi(int(q_idx[i]))
                     s, e = int(offsets[i]), int(offsets[i + 1])
-                    th = players.theta[player_flat[s:e]]
+                    th = players.theta[player_flat[s:e]].copy()
                     a_val = math.exp(
                         max(min(questions.log_a[qi], 3.0), -3.0)
                     )
+                    if cfg.use_2d_players:
+                        gm = players.gamma[player_flat[s:e]]
+                        th += gm * questions.b[qi] / a_val
                     ts_raw = e - s
                     if ts_raw < 1:
                         ts_idx = 1

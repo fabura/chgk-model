@@ -122,13 +122,23 @@ def gradients(
 # =============================================================================
 
 @njit(cache=True)
-def _forward_nb(theta: np.ndarray, b: float, a: float, delta: float, clamp: float
+def _forward_nb(theta: np.ndarray, b: float, a: float, delta: float, clamp: float,
+                gamma: np.ndarray | None = None,
 ) -> tuple[float, float, np.ndarray]:
-    """Single obs forward. Returns (p, S, lam)."""
+    """Single obs forward. Returns (p, S, lam).
+
+    When ``gamma`` is not None: uses the 2D player model
+        z_k = -eff_b + a·θ_k + γ_k·b
+    instead of the standard
+        z_k = -eff_b + a·θ_k
+    """
     eff_b = b + delta
+    use_gamma = gamma is not None
     z = np.empty_like(theta)
     for k in range(len(theta)):
         zk = -eff_b + a * theta[k]
+        if use_gamma:
+            zk += gamma[k] * b
         if zk < -clamp:
             z[k] = -clamp
         elif zk > clamp:
@@ -152,9 +162,18 @@ def _forward_nb(theta: np.ndarray, b: float, a: float, delta: float, clamp: floa
 
 
 @njit(cache=True)
-def _gradients_nb(S: float, lam: np.ndarray, a: float, theta: np.ndarray, y: int
-) -> tuple[np.ndarray, float, float, float]:
-    """Single obs gradients. Returns (dL_dtheta, dL_db, dL_dlog_a, dL_ddelta)."""
+def _gradients_nb(S: float, lam: np.ndarray, a: float, theta: np.ndarray, y: int,
+                  gamma: np.ndarray | None = None,
+                  b_val: float = 0.0,
+) -> tuple[np.ndarray, float, float, float, np.ndarray | None]:
+    """Single obs gradients.
+
+    Returns (dL_dtheta, dL_db, dL_dlog_a, dL_ddelta, dL_dgamma).
+
+    When ``gamma`` is not None, corrects dL_db for the 2D player
+    model (dS/db_extra = Σ λ_k·γ_k) and returns per-player
+    dL_dγ_k = dL_dS · λ_k · b_val.
+    """
     if y == 0:
         dL_dS = -1.0
     else:
@@ -169,11 +188,21 @@ def _gradients_nb(S: float, lam: np.ndarray, a: float, theta: np.ndarray, y: int
     dL_dtheta = np.empty_like(lam)
     for k in range(len(lam)):
         dL_dtheta[k] = dL_dS * a * lam[k]
+    use_gamma = gamma is not None
+    if use_gamma:
+        dL_dgamma = np.empty_like(lam)
+        lam_gamma_sum = 0.0
+        for k in range(len(lam)):
+            dL_dgamma[k] = dL_dS * lam[k] * b_val
+            lam_gamma_sum += lam[k] * gamma[k]
+        dL_db += dL_dS * lam_gamma_sum  # correction: dS/db includes Σ λ_k·γ_k
+    else:
+        dL_dgamma_out = np.zeros(1, dtype=np.float64)  # dummy, won't be used
     lam_theta_sum = 0.0
     for k in range(len(lam)):
         lam_theta_sum += lam[k] * a * theta[k]
     dL_dlog_a = dL_dS * lam_theta_sum
-    return dL_dtheta, dL_db, dL_dlog_a, dL_db
+    return dL_dtheta, dL_db, dL_dlog_a, dL_db, dL_dgamma if use_gamma else dL_dgamma_out
 
 
 @njit(cache=True)
@@ -216,6 +245,18 @@ def process_batch_nb(
     recal_alpha_max: float = 3.0,
     recal_beta_min: float = 0.30,
     recal_beta_max: float = 2.00,
+    # 2D player model (Model C: per-player difficulty slope).
+    # When ``gamma`` is not None (shape == theta.shape), the forward
+    # becomes z_k = -eff_b + a·θ_k + γ_k·b and the gradient on θ/b
+    # is corrected accordingly.
+    gamma: np.ndarray | None = None,
+    gamma_w: float = 1.0,
+    eta_gamma: float = 0.0,
+    reg_gamma: float = 0.0,
+    gamma_max: float = 2.0,
+    # Difficulty-weighted loss (see ``Config.diff_w_*``).
+    diff_w_miss_power: float = 0.0,
+    diff_w_take_boost: float = 0.0,
 ) -> float:
     """
     Process a batch of observations.
@@ -268,6 +309,7 @@ def process_batch_nb(
     elif recal_alpha > recal_alpha_max:
         recal_alpha = recal_alpha_max
     is_identity_recal = (recal_alpha == 0.0) and (recal_beta == 1.0)
+    use_2d = gamma is not None
     dlapse_acc = 0.0  # accumulated dL/dπ over the batch
     drecal_alpha_acc = 0.0
     drecal_beta_acc = 0.0
@@ -304,10 +346,16 @@ def process_batch_nb(
         team_size = e - s
         th = np.empty(team_size)
         pids = np.empty(team_size, dtype=np.int32)
+        gm = np.empty(team_size) if use_2d else np.zeros(1)
         for k in range(team_size):
             pids[k] = player_flat[s + k]
             th[k] = theta[pids[k]]
-        p_raw, S, lam = _forward_nb(th, b_val, a_val, delta_g, clamp)
+            if use_2d:
+                gm[k] = gamma[pids[k]]
+        p_raw, S, lam = _forward_nb(
+            th, b_val, a_val, delta_g, clamp,
+            gamma=gm if use_2d else None,
+        )
         # Forward chain: p_raw → p_lapse = (1-π)·p_raw → p_final = sigmoid(α + β·logit(p_lapse))
         p_lapse = one_minus_lapse * p_raw
         if p_lapse < 1e-15:
@@ -330,14 +378,24 @@ def process_batch_nb(
                 p_final = 1e-15
             elif p_final > 1.0 - 1e-15:
                 p_final = 1.0 - 1e-15
+        # Optional per-observation difficulty weight (forward unchanged).
+        obs_w = 1.0
+        if diff_w_miss_power > 0.0 or diff_w_take_boost > 0.0:
+            one_minus_p_final = 1.0 - p_final
+            if one_minus_p_final < 1e-15:
+                one_minus_p_final = 1e-15
+            if y == 0 and diff_w_miss_power > 0.0:
+                obs_w = one_minus_p_final ** diff_w_miss_power
+            elif y == 1 and diff_w_take_boost > 0.0:
+                obs_w = 1.0 + diff_w_take_boost * one_minus_p_final
         # Log-likelihood + dL/dz_recal (= y - p_final), then unified
         # dL/dS via chain through (logit-affine → lapse cap → noisy-OR).
         if y == 1:
-            total_ll += math.log(p_final)
-            dL_dz = 1.0 - p_final
+            total_ll += obs_w * math.log(p_final)
+            dL_dz = obs_w * (1.0 - p_final)
         else:
-            total_ll += math.log(1.0 - p_final)
-            dL_dz = -p_final
+            total_ll += obs_w * math.log(1.0 - p_final)
+            dL_dz = obs_w * (-p_final)
         # dL/dα = dL/dz · 1
         # dL/dβ = dL/dz · logit(p_lapse)
         if not is_identity_recal:
@@ -354,7 +412,11 @@ def process_batch_nb(
         # _gradients_nb (which returns base gradients assuming dL/dS_base =
         # 1/expm1(S) for y=1 or -1 for y=0), then multiply by grad_scale =
         # new_dL_dS / dL_dS_base.
-        dL_dth, dL_db, dL_dloga, dL_ddelta = _gradients_nb(S, lam, a_val, th, y)
+        dL_dth, dL_db, dL_dloga, dL_ddelta, dL_dgamma = _gradients_nb(
+            S, lam, a_val, th, y,
+            gamma=gm if use_2d else None,
+            b_val=b_val,
+        )
         # Unified grad_scale derivation:
         # new_dL_dS = dL_dz · β · (1-π) · exp(-S) / [p_lapse · (1-p_lapse)]
         # For y=1: base_dL_dS = exp(-S)/p_raw, so
@@ -375,6 +437,9 @@ def process_batch_nb(
             dL_db *= grad_scale
             dL_dloga *= grad_scale
             dL_ddelta *= grad_scale
+            if use_2d:
+                for k in range(team_size):
+                    dL_dgamma[k] *= grad_scale
         for k in range(team_size):
             pidx = pids[k]
             lr = eta0 / math.sqrt(games_offset + games[pidx])
@@ -384,6 +449,17 @@ def process_batch_nb(
                 if shrink < 0.0:
                     shrink = 0.0
                 theta[pidx] *= shrink
+            if use_2d and eta_gamma > 0.0:
+                gamma[pidx] += gamma_w * eta_gamma * dL_dgamma[k]
+                if reg_gamma > 0.0:
+                    shrink_g = 1.0 - eta_gamma * reg_gamma
+                    if shrink_g < 0.0:
+                        shrink_g = 0.0
+                    gamma[pidx] *= shrink_g
+                if gamma[pidx] > gamma_max:
+                    gamma[pidx] = gamma_max
+                elif gamma[pidx] < -gamma_max:
+                    gamma[pidx] = -gamma_max
         b_val_new = b[qi] + b_w * eta0 * dL_db
         if reg_b > 0.0:
             shrink_b = 1.0 - eta0 * reg_b
