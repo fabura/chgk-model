@@ -159,8 +159,10 @@ Sequential model: computes player strength changes week by week, tournament by t
 - **2026-04 lean refactor**: a follow-up ablation removed the per-mode
  shift `μ_type` and per-tournament residual `ε_t` (8 746 params,
  net-negative for backtest), added a small teammate-θ shrinkage
- (`eta_teammate=0.005`) to soften the noisy-OR identifiability
- problem on stable rosters, and re-tuned `eta0` (`0.05 → 0.07`) for
+ (`eta_teammate=0.005`, bumped to **0.02** in 2026-05 — see
+ `docs/roster_sticking_2026-05.md`) to soften the noisy-OR
+ identifiability problem on stable rosters, and re-tuned `eta0`
+ (`0.05 → 0.07`) for
  the leaner model. Cumulative gain on the 20 % hold-out:
  `logloss 0.5365 → 0.5309` (−0.0056), `AUC 0.8065 → 0.8115` (+0.0050).
  The full sweep tables live in `/tmp/exp_*.py`.
@@ -455,6 +457,13 @@ pip install -r requirements.txt
 - `docs/theta_bar_init_experiments.md` — θ̄-aware extension (`b_init = log(n) + θ̄ - log(-log(1-p))`); Round 2 retune that pushed `eta0` from 0.04 → 0.15 and the diagnostic showing every Vyshka-Moscow team is now unbiased
 - `docs/leakage_2026-05.md`
 - `docs/cleanup_2026-05.md`
+- `docs/roster_sticking_2026-05.md` — investigation of three veterans
+ flagged as rated "too low" (Чернуха, Рекшинская, Монина): diagnostics
+ for the "perennial floor player on a stable roster" effect, the
+ `eta_teammate` 0.005→0.02 bump (accepted), and two rejected fixes
+ (residual-aware adaptive η; mixed credit attribution) with the
+ evidence that the residual stickiness is ~80 % team-context, not
+ individual θ-staleness
 - `docs/calibration_2026-05.md` — discovery of test-set leakage in the
   legacy time-split backtest, the cell-holdout fix
   (`Config.holdout_obs_fraction`, `--holdout` CLI), measured
@@ -466,3 +475,9 @@ pip install -r requirements.txt
 - `docs/recalibration_2026-05.md` — logit-affine per-(mode × is_solo)
   recalibration `p = sigmoid(α + β · logit(p_lapse))` to fix the
   residual S-shaped mid-range bias (solo p∈[0.7, 0.8] bias 5.0 → 1.0 p.p.)
+- `docs/floor_player_experiments_2026-06.md` — June 2026 cycle on
+  floor players (Монина / Рекшинская / Чернуха): difficulty-weighted
+  loss, Model C rank validation, overperf θ floor — all rejected or not
+  promoted; production unchanged
+- `docs/difficulty_weights_2026-06.md`, `docs/temperature_credit_experiments_2026-06.md`,
+  `docs/2d_player_experiments_2026-06.md` — per-mechanism detail for the above
