@@ -5,6 +5,24 @@
 (function () {
   "use strict";
 
+  // Roster column toggle — delegated so it works even if this file loads late.
+  document.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-roster-toggle-all]");
+    if (!btn) return;
+    const root = btn.closest(".forecast-rosters-wrap");
+    if (!root) return;
+    const open = root.classList.toggle("forecast-rosters-open");
+    btn.textContent = open ? "Скрыть составы" : "Показать все составы";
+    btn.setAttribute("aria-expanded", open ? "true" : "false");
+    if (open) {
+      root.querySelector(".forecast-roster-col")?.scrollIntoView({
+        behavior: "smooth",
+        block: "nearest",
+        inline: "center",
+      });
+    }
+  });
+
   function debounce(fn, ms) {
     let t;
     return function (...args) {
@@ -262,23 +280,14 @@
     });
   }
 
-  function initRosterToggleAll() {
-    const btn = document.querySelector("[data-roster-toggle-all]");
-    if (!btn) return;
-    const root = btn.closest(".forecast-rosters-wrap");
-    if (!root) return;
-    btn.addEventListener("click", () => {
-      const open = root.classList.toggle("forecast-rosters-open");
-      btn.textContent = open ? "Скрыть составы" : "Показать все составы";
-    });
-  }
-
   document.addEventListener("DOMContentLoaded", () => {
     document
       .querySelectorAll("[data-tournament-picker]")
       .forEach(initTournamentPicker);
     document.querySelectorAll("[data-player-picker]").forEach(initPlayerPicker);
     initUpcomingFilter();
-    initRosterToggleAll();
+    document.querySelectorAll("[data-roster-toggle-all]").forEach((btn) => {
+      btn.setAttribute("aria-expanded", "false");
+    });
   });
 })();
