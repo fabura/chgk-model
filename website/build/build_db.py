@@ -281,6 +281,79 @@ def fetch_rating_db_metadata(
     return player_meta, tournament_meta, rosters, team_name, results_rows
 
 
+def fetch_maskless_team_results(
+    database_url: Optional[str] = None,
+    *,
+    trained_tournament_ids: set[int],
+) -> tuple[list[dict], dict[int, dict]]:
+    """Team results with place but no per-question ``points_mask``.
+
+    Shown on team pages for display only — excluded from model training.
+    Returns (rows, tournament_meta for tournaments not in the training set).
+    """
+    url = database_url or os.environ.get(
+        "DATABASE_URL", "postgresql://postgres:password@127.0.0.1:5432/postgres"
+    )
+    _log("Connecting to rating DB for mask-less team results…")
+    conn = psycopg2.connect(url)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT tr.tournament_id, tr.team_id, tr.team_title, tr.position
+        FROM public.tournament_results tr
+        WHERE tr.points_mask IS NULL
+          AND tr.team_id IS NOT NULL
+          AND tr.position IS NOT NULL
+        """
+    )
+    rows: list[dict] = []
+    extra_tids: set[int] = set()
+    for tid, team_id, team_title, position in cur.fetchall():
+        tid_i = int(tid)
+        rows.append(
+            {
+                "tournament_id": tid_i,
+                "team_id": int(team_id),
+                "team_title": (team_title or "").strip(),
+                "position": float(position) if position is not None else None,
+            }
+        )
+        if tid_i not in trained_tournament_ids:
+            extra_tids.add(tid_i)
+    extra_meta: dict[int, dict] = {}
+    if extra_tids:
+        cur.execute(
+            """
+            SELECT id, title, COALESCE(LOWER(type), ''), start_datetime::date,
+                   end_datetime::date, COALESCE(questions_count, 0)
+            FROM public.tournaments WHERE id = ANY(%s)
+            """,
+            (list(extra_tids),),
+        )
+        for r in cur.fetchall():
+            tid = int(r[0])
+            raw_type = (r[2] or "").strip()
+            if "асинхрон" in raw_type or "async" in raw_type:
+                ttype = "async"
+            elif "синхрон" in raw_type or "sync" in raw_type:
+                ttype = "sync"
+            else:
+                ttype = "offline"
+            extra_meta[tid] = {
+                "title": (r[1] or "").strip(),
+                "type": ttype,
+                "start_date": r[3],
+                "end_date": r[4],
+                "n_questions": int(r[5]),
+            }
+    conn.close()
+    _log(
+        f"  mask-less results: {len(rows):,} team rows, "
+        f"{len(extra_tids):,} tournaments outside training set"
+    )
+    return rows, extra_meta
+
+
 # ---------------------------------------------------------------------------
 # Step 3. Question texts from questions.db
 # ---------------------------------------------------------------------------
@@ -799,7 +872,10 @@ CREATE TABLE team_games (
     -- exactly, after stripping out δ_t/δ_size/δ_pos.  Comparable to the
     -- per-player θ values shown elsewhere; used by the team page chart.
     team_theta_implied DOUBLE,
-    place DOUBLE
+    place DOUBLE,
+    -- FALSE when rating DB has place/total but no per-question points_mask
+    -- (common for fresh sync uploads).  Model stats are NULL on these rows.
+    has_breakdown BOOLEAN
 );
 
 CREATE TABLE player_games (
@@ -1067,6 +1143,7 @@ def write_duckdb(
     results_rows,
     questions_by_slot,
     packs_by_tid,
+    maskless_results: Optional[list[dict]] = None,
 ):
     if out_path.exists():
         out_path.unlink()
@@ -1233,6 +1310,24 @@ def write_duckdb(
         cols["n_teams"].append(int(tid_to_n_teams.get(tid, 0)))
         cols["pack_id"].append(pack.get("pack_id"))
         cols["pack_title"].append(pack.get("pack_title"))
+    trained_tids = {int(t) for t in maps.idx_to_game_id}
+    maskless_by_tid: dict[int, int] = defaultdict(int)
+    for row in maskless_results or []:
+        maskless_by_tid[int(row["tournament_id"])] += 1
+    for tid in sorted(maskless_by_tid.keys()):
+        if tid in trained_tids:
+            continue
+        meta = tournament_meta.get(tid, {})
+        cols["tournament_id"].append(tid)
+        cols["game_idx"].append(-1)
+        cols["title"].append(meta.get("title") or "")
+        cols["type"].append(meta.get("type") or "offline")
+        cols["start_date"].append(meta.get("start_date"))
+        cols["end_date"].append(meta.get("end_date"))
+        cols["n_questions"].append(int(meta.get("n_questions") or 0))
+        cols["n_teams"].append(int(maskless_by_tid.get(tid, 0)))
+        cols["pack_id"].append(None)
+        cols["pack_title"].append(None)
     _bulk_insert(
         con,
         "tournaments",
@@ -1556,9 +1651,11 @@ def write_duckdb(
     tg_exp: list[float] = []
     tg_theta: list[Optional[float]] = []
     tg_place: list[Optional[float]] = []
+    tg_breakdown: list[bool] = []
     pg_template: dict[int, dict[int, tuple[int, int, float]]] = {}
     # pg_template: player_id -> {tournament_id: (team_id, n_takes_team, expected_takes_team)}
     n_skipped_phantom = 0
+    inserted_team_games: set[tuple[int, int]] = set()
     for (tid, team_id), pids in rosters.items():
         active_pids = [p for p in pids if p in pid_to_theta]
         if not active_pids:
@@ -1593,6 +1690,8 @@ def write_duckdb(
         tg_exp.append(float(exp))
         tg_theta.append(float(ti) if ti is not None else None)
         tg_place.append(place)
+        tg_breakdown.append(True)
+        inserted_team_games.add((int(tid), int(team_id)))
         for pid in active_pids:
             pg_template.setdefault(int(pid), {})[int(tid)] = (
                 int(team_id),
@@ -1604,11 +1703,38 @@ def write_duckdb(
             f"  hidden phantom rosters: {n_skipped_phantom:,} "
             f"(DSQ or async-zero, matches training-time filter)"
         )
+    n_maskless = 0
+    for row in maskless_results or []:
+        tid = int(row["tournament_id"])
+        team_id = int(row["team_id"])
+        key = (tid, team_id)
+        if key in inserted_team_games:
+            continue
+        place = row.get("position")
+        if place is None:
+            continue
+        pids = rosters.get(key, [])
+        active_pids = [p for p in pids if p in pid_to_theta]
+        tg_tid.append(tid)
+        tg_team.append(team_id)
+        name = row.get("team_title") or team_name.get(team_id, "")
+        tg_name.append(name)
+        tg_nact.append(len(active_pids))
+        tg_score.append(None)
+        tg_exp.append(None)
+        tg_theta.append(None)
+        tg_place.append(float(place))
+        tg_breakdown.append(False)
+        inserted_team_games.add(key)
+        n_maskless += 1
+    if n_maskless:
+        _log(f"  mask-less team_games (display only): {n_maskless:,}")
     _bulk_insert(
         con,
         "team_games",
         ["tournament_id", "team_id", "team_name", "n_players_active",
-         "score_actual", "expected_takes", "team_theta_implied", "place"],
+         "score_actual", "expected_takes", "team_theta_implied", "place",
+         "has_breakdown"],
         {
             "tournament_id": pa.array(tg_tid, type=pa.int32()),
             "team_id": pa.array(tg_team, type=pa.int32()),
@@ -1618,6 +1744,7 @@ def write_duckdb(
             "expected_takes": pa.array(tg_exp, type=pa.float64()),
             "team_theta_implied": pa.array(tg_theta, type=pa.float64()),
             "place": pa.array(tg_place, type=pa.float64()),
+            "has_breakdown": pa.array(tg_breakdown, type=pa.bool_()),
         },
     )
 
@@ -1766,6 +1893,12 @@ def main() -> int:
         )
     )
 
+    trained_tids = set(tournament_ids)
+    maskless_results, extra_tmeta = fetch_maskless_team_results(
+        args.database_url, trained_tournament_ids=trained_tids
+    )
+    tournament_meta.update(extra_tmeta)
+
     # Filter rosters/results to allowed tournaments (defensive).
     if tournament_id_filter is not None:
         rosters = {
@@ -1774,6 +1907,9 @@ def main() -> int:
         results_rows = {
             k: v for k, v in results_rows.items() if k[0] in tournament_id_filter
         }
+        maskless_results = [
+            r for r in maskless_results if r["tournament_id"] in tournament_id_filter
+        ]
 
     questions_by_slot, packs_by_tid = fetch_question_texts(
         args.questions_db, set(tournament_ids)
@@ -1791,6 +1927,7 @@ def main() -> int:
         results_rows=results_rows,
         questions_by_slot=questions_by_slot,
         packs_by_tid=packs_by_tid,
+        maskless_results=maskless_results,
     )
 
     _log(f"Total time: {time.time() - t0:.1f}s")

@@ -844,6 +844,8 @@ def team_page(
     request: Request,
     team_id: int,
     window: int = Query(365, ge=30, le=3650),
+    per_page: int = Query(25, ge=10, le=100),
+    page: int = Query(1, ge=1),
 ):
     """Team profile: tournaments played, regular roster, summary stats."""
     # Most recent name for display.
@@ -862,7 +864,18 @@ def team_page(
         raise HTTPException(status_code=404, detail="team not found")
     team_name = name_row["team_name"] or f"#{team_id}"
 
-    # Tournaments played, with team result.
+    games_total = (
+        db.query_one(
+            "SELECT COUNT(*) AS n FROM team_games WHERE team_id = ?",
+            [team_id],
+        )
+        or {"n": 0}
+    )["n"]
+    games_total_pages = max(1, math.ceil(games_total / per_page))
+    page = min(page, games_total_pages)
+    games_offset = (page - 1) * per_page
+
+    # Tournaments played, with team result (paginated, newest first).
     games = db.query(
         """
         SELECT
@@ -876,11 +889,34 @@ def team_page(
             tg.score_actual,
             tg.expected_takes,
             tg.team_theta_implied,
-            tg.place
+            tg.place,
+            COALESCE(tg.has_breakdown, TRUE) AS has_breakdown
         FROM team_games tg
         JOIN tournaments t USING (tournament_id)
         WHERE tg.team_id = ?
         ORDER BY t.start_date DESC NULLS LAST, t.tournament_id DESC
+        LIMIT ? OFFSET ?
+        """,
+        [team_id, per_page, games_offset],
+    )
+
+    # All games with model stats — for the trend chart (not paginated).
+    trend_games = db.query(
+        """
+        SELECT
+            tg.tournament_id,
+            t.title,
+            t.start_date,
+            tg.score_actual,
+            t.n_questions,
+            tg.expected_takes,
+            tg.team_theta_implied
+        FROM team_games tg
+        JOIN tournaments t USING (tournament_id)
+        WHERE tg.team_id = ?
+          AND COALESCE(tg.has_breakdown, TRUE)
+          AND tg.team_theta_implied IS NOT NULL
+        ORDER BY t.start_date NULLS LAST, t.tournament_id
         """,
         [team_id],
     )
@@ -961,19 +997,22 @@ def team_page(
     for r in roster_rows:
         rosters_by_tournament.setdefault(r["tournament_id"], []).append(r)
 
-    # Aggregate summary
+    # Aggregate summary (model-backed games only).
     summary_row = db.query_one(
         """
         SELECT
-            COUNT(*) AS n_tournaments,
+            (SELECT COUNT(*) FROM team_games WHERE team_id = ?) AS n_tournaments,
             SUM(score_actual) AS total_actual,
             SUM(expected_takes) AS total_expected,
             AVG(score_actual) AS mean_actual,
             AVG(expected_takes) AS mean_expected,
             AVG(score_actual - expected_takes) AS mean_delta
-        FROM team_games WHERE team_id = ? AND expected_takes IS NOT NULL
+        FROM team_games
+        WHERE team_id = ?
+          AND COALESCE(has_breakdown, TRUE)
+          AND expected_takes IS NOT NULL
         """,
-        [team_id],
+        [team_id, team_id],
     )
 
     # Team-strength trend: implied θ per tournament (per-player skill that a
@@ -992,8 +1031,10 @@ def team_page(
             "n_questions": g["n_questions"],
             "expected": g["expected_takes"],
         }
-        for g in reversed(games)  # chronological order for the chart
+        for g in trend_games
     ]
+
+    games_page_links = _build_page_links(page, games_total_pages)
 
     return templates.TemplateResponse(
         request,
@@ -1002,6 +1043,11 @@ def team_page(
             "team_id": team_id,
             "team_name": team_name,
             "games": games,
+            "games_total": games_total,
+            "games_page": page,
+            "games_total_pages": games_total_pages,
+            "games_page_links": games_page_links,
+            "games_per_page": per_page,
             "roster": roster,
             "rosters_by_tournament": rosters_by_tournament,
             "summary": summary_row,

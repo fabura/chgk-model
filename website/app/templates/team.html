@@ -1,5 +1,10 @@
 {% extends "base.html" %}
+{% import "_macros.html" as ui %}
 {% block title %}{{ team_name }} — ChGK Model{% endblock %}
+
+{% macro games_page_url(p) -%}
+?window={{ window }}&per_page={{ games_per_page }}&page={{ p }}
+{%- endmacro %}
 
 {% block head_extra %}
 <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
@@ -18,6 +23,7 @@
       {% if summary.mean_delta > 0 %}text-emerald-600{% elif summary.mean_delta < 0 %}text-rose-600{% endif %}">
       {{ "%+.2f"|format(summary.mean_delta) }}
     </span>
+    <span class="text-slate-400">(только игры с расплюсовкой)</span>
     {% endif %}
     · ID команды: {{ team_id }}
   </div>
@@ -37,15 +43,22 @@
     ровно столько же вопросов на этом пакете. Сложность пакета, тип турнира,
     позиции вопросов и размер состава вычтены — поэтому линия одной команды
     сопоставима через годы и пакеты, а само значение в той же шкале, что и
-    рейтинги игроков.
+    рейтинги игроков. Игры без расплюсовки на график не попадают.
   </p>
 </section>
 
 <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
   <section class="lg:col-span-2 bg-white border border-slate-200 rounded shadow-sm">
-    <h2 class="px-4 py-2 text-sm font-medium text-slate-600 border-b border-slate-100">
-      Турниры ({{ games|length }})
-    </h2>
+    <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between px-4 py-2 border-b border-slate-100">
+      <h2 class="text-sm font-medium text-slate-600">
+        Турниры ({{ games_total }})
+      </h2>
+      {% if games_total_pages > 1 %}
+      <span class="text-xs text-slate-500 num">
+        стр. {{ games_page }} / {{ games_total_pages }}
+      </span>
+      {% endif %}
+    </div>
     <div class="overflow-x-auto">
       <table class="w-full text-sm min-w-[52rem]">
         <thead class="bg-slate-100 text-slate-600 uppercase text-xs">
@@ -65,9 +78,16 @@
         <tbody>
           {% for g in games %}
           {% set tour_roster = rosters_by_tournament.get(g.tournament_id, []) %}
-          <tr class="border-t border-slate-100 hover:bg-slate-50">
+          <tr class="border-t border-slate-100 hover:bg-slate-50{% if not g.has_breakdown %} bg-amber-50/40{% endif %}">
             <td class="px-3 py-2 text-slate-600">{{ g.start_date.isoformat() if g.start_date else "" }}</td>
-            <td class="px-3 py-2"><a href="/tournament/{{ g.tournament_id }}" class="text-indigo-700 hover:underline">{{ g.title }}</a></td>
+            <td class="px-3 py-2">
+              {% if g.has_breakdown %}
+              <a href="/tournament/{{ g.tournament_id }}" class="text-indigo-700 hover:underline">{{ g.title }}</a>
+              {% else %}
+              <a href="https://rating.chgk.info/tournament/{{ g.tournament_id }}"
+                 class="text-indigo-700 hover:underline" target="_blank" rel="noopener">{{ g.title }}</a>
+              {% endif %}
+            </td>
             <td class="px-3 py-2 text-slate-600">{{ g.type }}</td>
             <td class="px-3 py-2 text-slate-700">{{ g.team_name }}</td>
             <td class="px-3 py-2 text-right num">
@@ -81,19 +101,27 @@
                 <span>{{ g.n_players_active }}</span>
               </button>
               {% else %}
-              <span class="text-slate-600">{{ g.n_players_active }}</span>
+              <span class="text-slate-600">{{ g.n_players_active if g.n_players_active else "—" }}</span>
               {% endif %}
             </td>
-            <td class="px-3 py-2 text-right num font-medium">{{ g.score_actual }} / {{ g.n_questions }}</td>
-            <td class="px-3 py-2 text-right num text-slate-600">{{ "%.1f"|format(g.expected_takes) if g.expected_takes is not none else "" }}</td>
-            <td class="px-3 py-2 text-right num
-              {% if g.expected_takes is not none and g.score_actual is not none %}
-                {% if g.score_actual - g.expected_takes > 0 %}text-emerald-600{% elif g.score_actual - g.expected_takes < 0 %}text-rose-600{% endif %}
-              {% endif %}">
-              {% if g.expected_takes is not none and g.score_actual is not none %}{{ "%+.1f"|format(g.score_actual - g.expected_takes) }}{% endif %}
+            <td class="px-3 py-2 text-right num font-medium">
+              {% if g.has_breakdown %}
+              {{ g.score_actual }} / {{ g.n_questions }}
+              {% else %}
+              <span class="text-amber-700 text-xs font-normal" title="На rating.chgk.info есть место, но нет побитовой маски вопросов">нет расплюсовки</span>
+              {% endif %}
             </td>
             <td class="px-3 py-2 text-right num text-slate-600">
-              {% if g.team_theta_implied is not none %}{{ "%+.2f"|format(g.team_theta_implied) }}{% endif %}
+              {% if g.has_breakdown and g.expected_takes is not none %}{{ "%.1f"|format(g.expected_takes) }}{% endif %}
+            </td>
+            <td class="px-3 py-2 text-right num
+              {% if g.has_breakdown and g.expected_takes is not none and g.score_actual is not none %}
+                {% if g.score_actual - g.expected_takes > 0 %}text-emerald-600{% elif g.score_actual - g.expected_takes < 0 %}text-rose-600{% endif %}
+              {% endif %}">
+              {% if g.has_breakdown and g.expected_takes is not none and g.score_actual is not none %}{{ "%+.1f"|format(g.score_actual - g.expected_takes) }}{% endif %}
+            </td>
+            <td class="px-3 py-2 text-right num text-slate-600">
+              {% if g.has_breakdown and g.team_theta_implied is not none %}{{ "%+.2f"|format(g.team_theta_implied) }}{% endif %}
             </td>
             <td class="px-3 py-2 text-right num text-slate-600">{{ g.place|int if g.place else "" }}</td>
           </tr>
@@ -119,6 +147,11 @@
         </tbody>
       </table>
     </div>
+    {% if games_total_pages > 1 %}
+    <div class="px-4 py-3 border-t border-slate-100">
+      {{ ui.paginator(games_page, games_total_pages, games_page_links, games_page_url) }}
+    </div>
+    {% endif %}
   </section>
 
   <section class="bg-white border border-slate-200 rounded shadow-sm">
