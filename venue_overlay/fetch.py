@@ -13,6 +13,7 @@ import duckdb
 from venue_overlay.api import (
     DEFAULT_API_BASE,
     RatingApiError,
+    SynchRequestDetail,
     fetch_synch_requests_for_tournament,
     fetch_tournament_results,
 )
@@ -111,27 +112,36 @@ def parse_results_rows(
 
 def aggregate_tournament_venues(
     team_rows: list[TeamVenueRow],
-    approx_by_venue: dict[int, int],
+    synch_by_venue: dict[int, SynchRequestDetail],
     *,
     fetched_at: datetime,
-) -> list[tuple[int, int, int, bool, int | None, datetime]]:
+) -> list[tuple[int, int, int, bool, int | None, datetime | None, int | None, datetime]]:
     """Build tournament_venues tuples."""
     by_venue: dict[int, set[int]] = defaultdict(set)
+    srid_by_venue: dict[int, int | None] = {}
     tid = team_rows[0].tournament_id if team_rows else None
     if tid is None:
         return []
     for tr in team_rows:
         by_venue[tr.venue_id].add(tr.team_id)
-    out: list[tuple[int, int, int, bool, int | None, datetime]] = []
+        if tr.synch_request_id is not None:
+            srid_by_venue.setdefault(tr.venue_id, tr.synch_request_id)
+    out: list[tuple[int, int, int, bool, int | None, datetime | None, int | None, datetime]] = []
     for vid, teams in sorted(by_venue.items()):
         n = len(teams)
+        meta = synch_by_venue.get(vid)
+        approx = meta.approximate_teams_count if meta else None
+        date_start = meta.date_start if meta else None
+        srid = (meta.synch_request_id if meta else None) or srid_by_venue.get(vid)
         out.append(
             (
                 int(tid),
                 int(vid),
                 n,
                 n == 1,
-                approx_by_venue.get(vid),
+                approx,
+                date_start,
+                srid,
                 fetched_at,
             )
         )
@@ -232,7 +242,8 @@ def write_tournament_overlay(
     tournament_id: int,
     team_rows: list[TeamVenueRow],
     venues: dict[int, VenueRow],
-    tour_venue_rows: list[tuple[int, int, int, bool, int | None, datetime]],
+    tour_venue_rows: list[tuple[int, int, int, bool, int | None, datetime | None, int | None, datetime]],
+    synch_by_venue: dict[int, SynchRequestDetail],
     *,
     fetched_at: datetime,
 ) -> None:
@@ -278,13 +289,38 @@ def write_tournament_overlay(
                 fetched_at,
             ],
         )
+    for meta in synch_by_venue.values():
+        con.execute(
+            """
+            INSERT INTO synch_requests (
+                synch_request_id, tournament_id, venue_id, date_start,
+                status, approximate_teams_count, fetched_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (synch_request_id) DO UPDATE SET
+                tournament_id = excluded.tournament_id,
+                venue_id = excluded.venue_id,
+                date_start = excluded.date_start,
+                status = excluded.status,
+                approximate_teams_count = excluded.approximate_teams_count,
+                fetched_at = excluded.fetched_at
+            """,
+            [
+                meta.synch_request_id,
+                meta.tournament_id,
+                meta.venue_id,
+                meta.date_start,
+                meta.status,
+                meta.approximate_teams_count,
+                fetched_at,
+            ],
+        )
     for row in tour_venue_rows:
         con.execute(
             """
             INSERT INTO tournament_venues (
                 tournament_id, venue_id, teams_played, is_mono,
-                approx_teams_declared, fetched_at
-            ) VALUES (?, ?, ?, ?, ?, ?)
+                approx_teams_declared, date_start, synch_request_id, fetched_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             list(row),
         )
@@ -308,16 +344,16 @@ def fetch_one_tournament(
             timeout_sec=timeout_sec,
         )
         team_rows, venues, missing = parse_results_rows(tournament_id, rows)
-        approx_by_venue: dict[int, int] = {}
+        synch_by_venue: dict[int, SynchRequestDetail] = {}
         if fetch_approx and team_rows:
-            approx_by_venue = fetch_synch_requests_for_tournament(
+            synch_by_venue = fetch_synch_requests_for_tournament(
                 tournament_id,
                 api_base=api_base,
                 sleep_sec=sleep_sec,
                 timeout_sec=timeout_sec,
             )
         tour_venue_rows = aggregate_tournament_venues(
-            team_rows, approx_by_venue, fetched_at=fetched_at
+            team_rows, synch_by_venue, fetched_at=fetched_at
         )
         delete_tournament_rows(con, tournament_id)
         if team_rows:
@@ -327,6 +363,7 @@ def fetch_one_tournament(
                 team_rows,
                 venues,
                 tour_venue_rows,
+                synch_by_venue,
                 fetched_at=fetched_at,
             )
         else:

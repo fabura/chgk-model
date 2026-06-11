@@ -35,8 +35,20 @@ CREATE TABLE IF NOT EXISTS tournament_venues (
     teams_played INTEGER NOT NULL,
     is_mono BOOLEAN NOT NULL,
     approx_teams_declared INTEGER,
+    date_start TIMESTAMP,
+    synch_request_id INTEGER,
     fetched_at TIMESTAMP,
     PRIMARY KEY (tournament_id, venue_id)
+);
+
+CREATE TABLE IF NOT EXISTS synch_requests (
+    synch_request_id INTEGER PRIMARY KEY,
+    tournament_id INTEGER,
+    venue_id INTEGER,
+    date_start TIMESTAMP,
+    status TEXT,
+    approximate_teams_count INTEGER,
+    fetched_at TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS venue_fetch_state (
@@ -58,6 +70,14 @@ def open_db(path: Path | str = DEFAULT_DB_PATH) -> duckdb.DuckDBPyConnection:
 
 def ensure_schema(con: duckdb.DuckDBPyConnection) -> None:
     con.execute(DDL)
+    for stmt in (
+        "ALTER TABLE tournament_venues ADD COLUMN IF NOT EXISTS date_start TIMESTAMP",
+        "ALTER TABLE tournament_venues ADD COLUMN IF NOT EXISTS synch_request_id INTEGER",
+    ):
+        try:
+            con.execute(stmt)
+        except duckdb.Error:
+            pass
 
 
 def utc_now() -> datetime:
