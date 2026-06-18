@@ -31,6 +31,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from data import load_cached  # noqa: E402
 from rating.io import load_results_npz  # noqa: E402
+from website.build.map_tables import bake_map_tables  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -299,7 +300,7 @@ def fetch_maskless_team_results(
     cur = conn.cursor()
     cur.execute(
         """
-        SELECT tr.tournament_id, tr.team_id, tr.team_title, tr.position
+        SELECT tr.tournament_id, tr.team_id, tr.team_title, tr.position, tr.total
         FROM public.tournament_results tr
         WHERE tr.points_mask IS NULL
           AND tr.team_id IS NOT NULL
@@ -308,7 +309,7 @@ def fetch_maskless_team_results(
     )
     rows: list[dict] = []
     extra_tids: set[int] = set()
-    for tid, team_id, team_title, position in cur.fetchall():
+    for tid, team_id, team_title, position, total in cur.fetchall():
         tid_i = int(tid)
         rows.append(
             {
@@ -316,6 +317,7 @@ def fetch_maskless_team_results(
                 "team_id": int(team_id),
                 "team_title": (team_title or "").strip(),
                 "position": float(position) if position is not None else None,
+                "total": int(total) if total is not None else None,
             }
         )
         if tid_i not in trained_tournament_ids:
@@ -352,6 +354,51 @@ def fetch_maskless_team_results(
         f"{len(extra_tids):,} tournaments outside training set"
     )
     return rows, extra_meta
+
+
+def fetch_rosters_for_tournaments(
+    tournament_ids: list[int],
+    database_url: Optional[str] = None,
+) -> dict[tuple[int, int], list[int]]:
+    """Rosters for tournaments outside the training set (mask-less display)."""
+    if not tournament_ids:
+        return {}
+    url = database_url or os.environ.get(
+        "DATABASE_URL", "postgresql://postgres:password@127.0.0.1:5432/postgres"
+    )
+    _log(f"  fetching rosters for {len(tournament_ids):,} mask-less tournaments…")
+    conn = psycopg2.connect(url)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT tournament_id, team_id, player_id
+        FROM public.tournament_rosters
+        WHERE tournament_id = ANY(%s)
+          AND team_id IS NOT NULL AND player_id IS NOT NULL
+        """,
+        (tournament_ids,),
+    )
+    rosters: dict[tuple[int, int], list[int]] = defaultdict(list)
+    for tid, team_id, pid in cur.fetchall():
+        rosters[(int(tid), int(team_id))].append(int(pid))
+    conn.close()
+    _log(f"  mask-less rosters: {len(rosters):,} (tournament, team) pairs")
+    return rosters
+
+
+def _merge_rosters(
+    base: dict[tuple[int, int], list[int]],
+    extra: dict[tuple[int, int], list[int]],
+) -> None:
+    for key, pids in extra.items():
+        if key not in base:
+            base[key] = list(pids)
+            continue
+        seen = set(base[key])
+        for p in pids:
+            if p not in seen:
+                base[key].append(p)
+                seen.add(p)
 
 
 # ---------------------------------------------------------------------------
@@ -912,8 +959,9 @@ CREATE TABLE player_history (
 
 -- Single-row snapshot metadata for the public site footer.
 CREATE TABLE site_meta (
-    data_as_of DATE,         -- latest tournament start_date in this build
-    model_built_at TIMESTAMP -- when DuckDB was baked (naive UTC; pytz-free read)
+    data_as_of DATE,         -- latest start_date <= build day (excludes scheduled future)
+    model_built_at TIMESTAMP, -- when DuckDB was baked (naive UTC; pytz-free read)
+    map_scratch_meta JSON    -- {detail_country_ids, country_iso} for /map scratch
 );
 
 -- Single-row JSON dump of the model's auxiliary parameters needed to
@@ -1346,12 +1394,24 @@ def write_duckdb(
         },
     )
 
-    starts_nonnull = [d for d in cols["start_date"] if d is not None]
-    data_as_of_max = max(starts_nonnull) if starts_nonnull else None
     built_at_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+    build_day = built_at_utc.date()
+    starts_eligible = [
+        d for d in cols["start_date"] if d is not None and d <= build_day
+    ]
+    data_as_of_max = max(starts_eligible) if starts_eligible else None
+    map_geo_path = REPO_ROOT / "website" / "data" / "map_geo.json"
+    map_scratch_meta: dict | None = None
+    if map_geo_path.exists():
+        geo_raw = json.loads(map_geo_path.read_text(encoding="utf-8"))
+        map_scratch_meta = {
+            "detail_country_ids": geo_raw.get("detail_country_ids") or [21, 26],
+            "country_iso": geo_raw.get("country_iso") or {},
+        }
     con.execute(
-        "INSERT INTO site_meta (data_as_of, model_built_at) VALUES (?, ?)",
-        [data_as_of_max, built_at_utc],
+        "INSERT INTO site_meta (data_as_of, model_built_at, map_scratch_meta) "
+        "VALUES (?, ?, ?)",
+        [data_as_of_max, built_at_utc, json.dumps(map_scratch_meta)],
     )
     _log(
         f"site_meta: data_as_of={data_as_of_max}, "
@@ -1652,8 +1712,8 @@ def write_duckdb(
     tg_theta: list[Optional[float]] = []
     tg_place: list[Optional[float]] = []
     tg_breakdown: list[bool] = []
-    pg_template: dict[int, dict[int, tuple[int, int, float]]] = {}
-    # pg_template: player_id -> {tournament_id: (team_id, n_takes_team, expected_takes_team)}
+    pg_template: dict[int, dict[int, tuple[int, Optional[int], Optional[float]]]] = {}
+    # pg_template: player_id -> {tournament_id: (team_id, n_takes, expected)}
     n_skipped_phantom = 0
     inserted_team_games: set[tuple[int, int]] = set()
     for (tid, team_id), pids in rosters.items():
@@ -1720,12 +1780,20 @@ def write_duckdb(
         name = row.get("team_title") or team_name.get(team_id, "")
         tg_name.append(name)
         tg_nact.append(len(active_pids))
-        tg_score.append(None)
+        total = row.get("total")
+        score = int(total) if total is not None else None
+        tg_score.append(score)
         tg_exp.append(None)
         tg_theta.append(None)
         tg_place.append(float(place))
         tg_breakdown.append(False)
         inserted_team_games.add(key)
+        for pid in active_pids:
+            pg_template.setdefault(int(pid), {})[int(tid)] = (
+                int(team_id),
+                score,
+                None,
+            )
         n_maskless += 1
     if n_maskless:
         _log(f"  mask-less team_games (display only): {n_maskless:,}")
@@ -1766,8 +1834,8 @@ def write_duckdb(
     pg_team: list[int] = []
     pg_g: list[int] = []
     pg_theta: list[Optional[float]] = []
-    pg_takes: list[int] = []
-    pg_exp: list[float] = []
+    pg_takes: list[Optional[int]] = []
+    pg_exp: list[Optional[float]] = []
     for pid, per_tid in pg_template.items():
         per_g = history_by_player.get(pid, {})
         for tid, (team_id, n_takes_team, exp_team) in per_tid.items():
@@ -1779,8 +1847,10 @@ def write_duckdb(
             # history is keyed by tournament_id (see engine.py:1090 where
             # gid := maps.idx_to_game_id[g]), not by internal game_idx.
             pg_theta.append(per_g.get(tid))
-            pg_takes.append(n_takes_team)
-            pg_exp.append(exp_team)
+            pg_takes.append(
+                int(n_takes_team) if n_takes_team is not None else None
+            )
+            pg_exp.append(float(exp_team) if exp_team is not None else None)
     _bulk_insert(
         con,
         "player_games",
@@ -1826,6 +1896,8 @@ def write_duckdb(
                 "n_active": pa.array(nact_arr.astype(np.int32)),
             },
         )
+
+    bake_map_tables(con)
 
     # ---- ANALYZE ----
     _log("Finalising…")
@@ -1898,6 +1970,11 @@ def main() -> int:
         args.database_url, trained_tournament_ids=trained_tids
     )
     tournament_meta.update(extra_tmeta)
+    maskless_tids = sorted({int(r["tournament_id"]) for r in maskless_results})
+    _merge_rosters(
+        rosters,
+        fetch_rosters_for_tournaments(maskless_tids, args.database_url),
+    )
 
     # Filter rosters/results to allowed tournaments (defensive).
     if tournament_id_filter is not None:

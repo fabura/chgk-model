@@ -32,6 +32,8 @@ def forward(
     lapse: float = 0.0,
     recal_alpha: float = 0.0,
     recal_beta: float = 1.0,
+    take_floor_min: float = 0.0,
+    is_grave: bool = False,
 ) -> tuple[float, float, np.ndarray]:
     """
     Compute team-answer probability for one (team, question) pair.
@@ -41,8 +43,11 @@ def forward(
         p_raw   = 1 − exp(−S)
         p_lapse = (1 − π) · p_raw                      # lapse cap
         p_final = sigmoid(α + β · logit(p_lapse))      # logit-affine recal
+        p_final = max(p_min, p_final)  if non-grave     # optional take floor
 
-    Identity recalibration: ``α = 0, β = 1``.
+    Identity recalibration: ``α = 0, β = 1``.  The take floor (when
+    ``take_floor_min > 0``) is applied **after** recalibration and is
+    skipped for grave questions (empirical take rate = 0).
 
     Args:
         theta:        player strengths for the team  [team_size]
@@ -53,6 +58,8 @@ def forward(
         lapse:        π ∈ [0, 1).  Floor on the predicted probability.
         recal_alpha:  α additive shift in logit space (default 0 = identity).
         recal_beta:   β multiplicative scale in logit space (default 1).
+        take_floor_min: minimum p_take for non-grave questions (0 = off).
+        is_grave:     skip the floor for zero-take-rate questions.
 
     Returns:
         (p, S, lam)  where lam[k] = λ_k
@@ -75,6 +82,8 @@ def forward(
         else:
             ez = math.exp(z)
             p = ez / (1.0 + ez)
+    if not is_grave and take_floor_min > 0.0 and p < take_floor_min:
+        p = take_floor_min
     p = max(min(p, 1.0 - 1e-15), 1e-15)
     return p, S, lam
 
@@ -237,6 +246,7 @@ def process_batch_nb(
     reg_log_a: float = 0.0,
     clamp: float = 20.0,
     games_offset: float = 1.0,
+    min_eta: float = 0.0,
     lapse_arr: np.ndarray = np.zeros(1, dtype=np.float64),
     eta_lapse: float = 0.0,
     lapse_max: float = 0.30,
@@ -257,6 +267,8 @@ def process_batch_nb(
     # Difficulty-weighted loss (see ``Config.diff_w_*``).
     diff_w_miss_power: float = 0.0,
     diff_w_take_boost: float = 0.0,
+    take_floor_min: float = 0.0,
+    grave_q: np.ndarray | None = None,
 ) -> float:
     """
     Process a batch of observations.
@@ -310,6 +322,7 @@ def process_batch_nb(
         recal_alpha = recal_alpha_max
     is_identity_recal = (recal_alpha == 0.0) and (recal_beta == 1.0)
     use_2d = gamma is not None
+    use_take_floor = take_floor_min > 0.0 and grave_q is not None
     dlapse_acc = 0.0  # accumulated dL/dπ over the batch
     drecal_alpha_acc = 0.0
     drecal_beta_acc = 0.0
@@ -378,6 +391,11 @@ def process_batch_nb(
                 p_final = 1e-15
             elif p_final > 1.0 - 1e-15:
                 p_final = 1.0 - 1e-15
+        floor_active = False
+        if use_take_floor and grave_q[qi] == 0:
+            if p_final < take_floor_min:
+                p_final = take_floor_min
+                floor_active = True
         # Optional per-observation difficulty weight (forward unchanged).
         obs_w = 1.0
         if diff_w_miss_power > 0.0 or diff_w_take_boost > 0.0:
@@ -389,7 +407,15 @@ def process_batch_nb(
             elif y == 1 and diff_w_take_boost > 0.0:
                 obs_w = 1.0 + diff_w_take_boost * one_minus_p_final
         # Log-likelihood + dL/dz_recal (= y - p_final), then unified
-        # dL/dS via chain through (logit-affine → lapse cap → noisy-OR).
+        # dL/dS via chain through (take floor → logit-affine → lapse cap
+        # → noisy-OR).  When the take floor binds, p_final is constant
+        # and no gradient flows to θ / b / lapse / recal.
+        if floor_active:
+            if y == 1:
+                total_ll += obs_w * math.log(p_final)
+            else:
+                total_ll += obs_w * math.log(1.0 - p_final)
+            continue
         if y == 1:
             total_ll += obs_w * math.log(p_final)
             dL_dz = obs_w * (1.0 - p_final)
@@ -443,6 +469,8 @@ def process_batch_nb(
         for k in range(team_size):
             pidx = pids[k]
             lr = eta0 / math.sqrt(games_offset + games[pidx])
+            if min_eta > 0.0 and lr < min_eta:
+                lr = min_eta
             theta[pidx] += theta_w * lr * dL_dth[k]
             if reg_theta > 0.0:
                 shrink = 1.0 - lr * reg_theta

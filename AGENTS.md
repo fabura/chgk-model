@@ -448,6 +448,12 @@ pip install -r requirements.txt
 
 ## Docs
 
+- `docs/experiments_summary_ru.md` — Russian index of all experiments
+  (promoted / rejected / partial). **Update it in the same PR/commit**
+  when you run, promote, or reject an experiment, add a new
+  `docs/*_experiments.md` or `docs/*_YYYY-MM.md`, or change `Config`
+  defaults: one-line summary + status + link to the detailed doc; note
+  leaky vs honest holdout when citing metrics.
 - `docs/interpretation.md` — θ interpretation and tables
 - `docs/async_mode_experiments.md` — async/sync/offline mode effects, verified hypotheses, chosen `t6` defaults
 - `docs/calendar_decay_experiments.md` — calendar-based decay sweep, why per-tournament decay was wrong, current defaults

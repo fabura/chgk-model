@@ -13,7 +13,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import db, forecast as forecast_module
+from . import db, forecast as forecast_module, map_data
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -476,7 +476,10 @@ def player_profile(
         """
         SELECT
             COALESCE(SUM(tg.score_actual), 0) AS total_actual,
-            COALESCE(SUM(tg.expected_takes), 0) AS total_expected
+            COALESCE(
+                SUM(tg.expected_takes) FILTER (WHERE tg.expected_takes IS NOT NULL),
+                0
+            ) AS total_expected
         FROM player_games pg
         LEFT JOIN team_games tg USING (tournament_id, team_id)
         WHERE pg.player_id = ?
@@ -502,7 +505,8 @@ def player_profile(
             tg.place,
             t.n_questions,
             tg.n_players_active,
-            pg.theta_after
+            pg.theta_after,
+            coalesce(tg.has_breakdown, true) AS has_breakdown
         FROM player_games pg
         JOIN tournaments t USING (tournament_id)
         LEFT JOIN team_games tg USING (tournament_id, team_id)
@@ -658,7 +662,8 @@ def tournament_page(request: Request, tournament_id: int):
             tg.score_actual,
             tg.expected_takes,
             tg.place,
-            tg.n_players_active
+            tg.n_players_active,
+            coalesce(tg.has_breakdown, true) AS has_breakdown
         FROM team_games tg
         WHERE tg.tournament_id = ?
         ORDER BY tg.place ASC NULLS LAST, tg.score_actual DESC, tg.team_name
@@ -823,6 +828,8 @@ def tournament_page(request: Request, tournament_id: int):
                 "points_json": json.dumps(pts, ensure_ascii=False),
             }
 
+    no_question_table = len(questions) == 0
+
     return templates.TemplateResponse(
         request,
         "tournament.html",
@@ -831,6 +838,7 @@ def tournament_page(request: Request, tournament_id: int):
             "editors": [e["editor_name"] for e in editors],
             "teams": teams,
             "questions": questions,
+            "no_question_table": no_question_table,
             "scatter_json": json.dumps(scatter, ensure_ascii=False),
             "dead_q_numbers": dead_q_numbers,
             "summary_stats": summary_stats,
@@ -914,7 +922,6 @@ def team_page(
         FROM team_games tg
         JOIN tournaments t USING (tournament_id)
         WHERE tg.team_id = ?
-          AND COALESCE(tg.has_breakdown, TRUE)
           AND tg.team_theta_implied IS NOT NULL
         ORDER BY t.start_date NULLS LAST, t.tournament_id
         """,
@@ -1003,14 +1010,13 @@ def team_page(
         SELECT
             (SELECT COUNT(*) FROM team_games WHERE team_id = ?) AS n_tournaments,
             SUM(score_actual) AS total_actual,
-            SUM(expected_takes) AS total_expected,
+            SUM(expected_takes) FILTER (WHERE expected_takes IS NOT NULL) AS total_expected,
             AVG(score_actual) AS mean_actual,
-            AVG(expected_takes) AS mean_expected,
-            AVG(score_actual - expected_takes) AS mean_delta
+            AVG(expected_takes) FILTER (WHERE expected_takes IS NOT NULL) AS mean_expected,
+            AVG(score_actual - expected_takes)
+                FILTER (WHERE expected_takes IS NOT NULL) AS mean_delta
         FROM team_games
         WHERE team_id = ?
-          AND COALESCE(has_breakdown, TRUE)
-          AND expected_takes IS NOT NULL
         """,
         [team_id, team_id],
     )
@@ -1055,6 +1061,48 @@ def team_page(
             "window": window,
         },
     )
+
+
+@app.get("/map", response_class=HTMLResponse)
+def map_page(
+    request: Request,
+    player_id: Optional[int] = Query(None, ge=1),
+):
+    """ЧГКарта — venue activity map and optional player scratch-card."""
+    ready = map_data.map_tables_present()
+    ctx: dict[str, Any] = {
+        "map_ready": ready,
+        "summary": map_data.get_map_summary() if ready else None,
+        "player_id": player_id,
+        "player_scratch": (
+            map_data.get_player_scratch(player_id) if ready and player_id else None
+        ),
+    }
+    return templates.TemplateResponse(request, "map.html", ctx)
+
+
+@app.get("/api/map/venues")
+def api_map_venues():
+    if not map_data.map_tables_present():
+        return JSONResponse({"error": "map data not built"}, status_code=503)
+    return JSONResponse(map_data.get_venue_markers())
+
+
+@app.get("/api/map/player/{player_id}")
+def api_map_player(player_id: int):
+    if not map_data.map_tables_present():
+        return JSONResponse({"error": "map data not built"}, status_code=503)
+    data = map_data.get_player_scratch(player_id)
+    if not data:
+        raise HTTPException(status_code=404, detail="player not found")
+    return JSONResponse(data)
+
+
+@app.get("/api/map/players")
+def api_map_players(q: str = Query("", max_length=80)):
+    if not map_data.map_tables_present():
+        return JSONResponse([])
+    return JSONResponse(map_data.search_players(q))
 
 
 @app.get("/methodology", response_class=HTMLResponse)

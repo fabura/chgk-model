@@ -198,6 +198,13 @@ def main() -> int:
         help="Per-tournament L2 pull of teammate θ toward team mean",
     )
     hp.add_argument(
+        "--eta-teammate-offline",
+        type=float,
+        default=None,
+        dest="eta_teammate_offline",
+        help="Offline-only override for eta_teammate (sync/async unchanged)",
+    )
+    hp.add_argument(
         "--noisy-or-init",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -249,6 +256,21 @@ def main() -> int:
         "calibration bias (5 → 1 p.p. for solo p∈[0.7, 0.8]).  "
         "Use --no-use-recalibration to disable.  See "
         "docs/recalibration_2026-05.md.",
+    )
+
+    ap.add_argument(
+        "--use-take-floor",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Apply minimum take-probability floor after recalibration "
+        "(non-grave questions only).  Experimental — see "
+        "scripts/exp_take_floor.py.",
+    )
+    hp.add_argument(
+        "--take-floor-min",
+        type=float,
+        default=0.005,
+        help="Minimum p_take when --use-take-floor is on (default 0.005).",
     )
 
     ev = parser.add_argument_group("evaluation")
@@ -339,6 +361,11 @@ def main() -> int:
         eta_pos=args.eta_pos,
         reg_pos=args.reg_pos,
         eta_teammate=args.eta_teammate,
+        **(
+            {"eta_teammate_offline": args.eta_teammate_offline}
+            if args.eta_teammate_offline is not None
+            else {}
+        ),
         recenter_period_days=args.recenter_period_days,
         recenter_target=args.recenter_target,
         recenter_min_games=args.recenter_min_games,
@@ -349,6 +376,8 @@ def main() -> int:
         freeze_log_a=args.freeze_log_a,
         use_lapse_rate=args.use_lapse_rate,
         use_recalibration=args.use_recalibration,
+        use_take_floor=args.use_take_floor,
+        take_floor_min=args.take_floor_min,
         holdout_obs_fraction=args.holdout,
         holdout_seed=args.holdout_seed,
     )

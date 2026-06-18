@@ -184,7 +184,9 @@ def load_tournament_ids_from_db(
         WHERE COALESCE(t.questions_count, 0) >= 10
           AND EXISTS (
             SELECT 1 FROM public.tournament_results r
-            WHERE r.tournament_id = t.id AND r.points_mask IS NOT NULL
+            WHERE r.tournament_id = t.id
+              AND r.team_id IS NOT NULL
+              AND (r.points_mask IS NOT NULL OR r.position IS NOT NULL)
           )
         {date_cond}
         {type_cond}

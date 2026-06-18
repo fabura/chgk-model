@@ -31,6 +31,12 @@
   {% if editors %}
   <div class="text-sm text-slate-600 mt-1 break-words">Редакторы пака: {{ editors|join(", ") }}</div>
   {% endif %}
+  {% if no_question_table %}
+  <p class="mt-2 text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded px-3 py-2">
+    Нет повопросной таблицы для турнира — в рейтинге опубликованы только итоговые места
+    и число взятых вопросов (без помасочной разбивки).
+  </p>
+  {% endif %}
   <div class="mt-3">
     <a href="/forecast/tournament/{{ tournament.tournament_id }}"
        class="inline-flex items-center gap-1 text-sm px-3 py-1.5 rounded border border-indigo-300 bg-indigo-50 text-indigo-700 hover:bg-indigo-100">
@@ -105,17 +111,25 @@
       <tbody>
         {% for t in teams %}
         <tr class="border-t border-slate-100 hover:bg-slate-50">
-          <td class="px-3 py-2 text-right num text-slate-600" data-value="{{ t.place if t.place is not none else '' }}">{{ t.place|int if t.place else "" }}</td>
+          <td class="px-3 py-2 text-right num text-slate-600" data-value="{{ t.place if t.place is not none else '' }}">{% if t.place is not none %}{{ "%g"|format(t.place) }}{% endif %}</td>
           <td class="px-3 py-2" data-value="{{ t.team_name }}"><a href="/team/{{ t.team_id }}" class="text-indigo-700 hover:underline">{{ t.team_name }}</a></td>
-          <td class="px-3 py-2 text-right num text-slate-600" data-value="{{ t.n_players_active }}">{{ t.n_players_active }}</td>
-          <td class="px-3 py-2 text-right num font-medium" data-value="{{ t.score_actual }}">{{ t.score_actual }}</td>
-          <td class="px-3 py-2 text-right num text-slate-600" data-value="{{ t.expected_takes }}">{{ "%.1f"|format(t.expected_takes) }}</td>
+          <td class="px-3 py-2 text-right num text-slate-600" data-value="{{ t.n_players_active if t.has_breakdown else '' }}">{% if t.has_breakdown %}{{ t.n_players_active }}{% else %}—{% endif %}</td>
+          <td class="px-3 py-2 text-right num font-medium" data-value="{{ t.score_actual if t.score_actual is not none else '' }}">
+            {% if t.score_actual is not none %}
+              {{ t.score_actual }}{% if tournament.n_questions %} / {{ tournament.n_questions }}{% endif %}
+            {% else %}—{% endif %}
+          </td>
+          <td class="px-3 py-2 text-right num text-slate-600" data-value="{{ t.expected_takes if t.has_breakdown and t.expected_takes is not none else '' }}">{% if t.has_breakdown and t.expected_takes is not none %}{{ "%.1f"|format(t.expected_takes) }}{% else %}—{% endif %}</td>
+          {% if t.has_breakdown and t.expected_takes is not none and t.score_actual is not none %}
           {% set delta = t.score_actual - t.expected_takes %}
           <td class="px-3 py-2 text-right num
             {% if delta > 0 %}text-emerald-600{% elif delta < 0 %}text-rose-600{% endif %}"
             data-value="{{ delta }}">
             {{ "%+.1f"|format(delta) }}
           </td>
+          {% else %}
+          <td class="px-3 py-2 text-right num text-slate-400" data-value="">—</td>
+          {% endif %}
           <td class="px-3 py-2 text-xs">
             {% for r in (t.roster or [])[:5] %}
               <a href="/player/{{ r.player_id }}" class="text-indigo-700 hover:underline">{{ r|fullname }}</a> <span class="text-slate-400">({{ "%.2f"|format(r.theta) }})</span>{% if not loop.last %}, {% endif %}

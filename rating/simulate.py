@@ -59,20 +59,27 @@ def apply_probability_calibration(
     lapse: float,
     recal_alpha: float,
     recal_beta: float,
+    take_floor_min: float = 0.0,
+    is_grave: bool = False,
 ) -> np.ndarray:
     """Apply the lapse cap + logit-affine recal used by ``rating.model``.
 
     ``p_lapse = (1 - π) · p_raw``;
-    ``p_final = sigmoid(α + β · logit(p_lapse))``.
+    ``p_final = sigmoid(α + β · logit(p_lapse))``;
+    optional ``p_final = max(p_min, p_final)`` for non-grave questions.
 
     Identity recalibration (``α=0, β=1``) short-circuits the second step.
     """
     p = (1.0 - float(lapse)) * np.asarray(p_raw, dtype=np.float64)
     if recal_alpha == 0.0 and recal_beta == 1.0:
-        return p
-    p_c = np.clip(p, 1e-15, 1.0 - 1e-15)
-    z = recal_alpha + recal_beta * np.log(p_c / (1.0 - p_c))
-    return 1.0 / (1.0 + np.exp(-z))
+        out = p
+    else:
+        p_c = np.clip(p, 1e-15, 1.0 - 1e-15)
+        z = recal_alpha + recal_beta * np.log(p_c / (1.0 - p_c))
+        out = 1.0 / (1.0 + np.exp(-z))
+    if not is_grave and take_floor_min > 0.0:
+        out = np.maximum(out, take_floor_min)
+    return out
 
 
 def simulate_roster_on_pack(

@@ -121,9 +121,17 @@ step() { echo; echo "[refresh_data] $(date -u +%FT%TZ) === $* ==="; }
     cd "$REPO_ROOT"
     "$PYTHON" "$REPO_ROOT/scripts/fetch_venue_overlay.py" \
       --db "$VENUE_DB" \
+      --min-date 2000-01-01 \
       --resume
   else
     step "Stage 1.5: SKIPPED (venue overlay)"
+  fi
+
+  # ---------------------------------------------------------------- 1.6
+  if [[ $SKIP_VENUE -eq 0 && $SKIP_BUILD -eq 0 && -f "$VENUE_DB" ]]; then
+    step "Stage 1.6: build map geography (map_geo.json + GeoJSON)"
+    cd "$REPO_ROOT"
+    "$PYTHON" "$REPO_ROOT/scripts/build_map_geo.py" --venue-db "$VENUE_DB"
   fi
 
   # ---------------------------------------------------------------- 2

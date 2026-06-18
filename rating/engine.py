@@ -152,6 +152,11 @@ class Config:
     # asymptotic behaviour but reacted ~2× slower in the first 5 games.
     games_offset: float = 0.25
 
+    # Floor on the per-player adaptive learning rate:
+    # η_k = max(min_eta, η0 / √(games_offset + games_k)).
+    # 0.0 keeps the legacy behaviour exactly.
+    min_eta: float = 0.0
+
     # Team-size effect.  Adds a global, per-team-size shift to the
     # question difficulty:
     #     δ = delta_size[clip(team_size, 1, K)]
@@ -177,6 +182,8 @@ class Config:
     w_size_offline: float = 1.0
     w_size_sync: float = 1.0
     w_size_async: float = 0.5
+    # Optional preset before SGD (ablation / cold-start only).
+    delta_size_init: Optional[dict[int, float]] = None
 
     # Solo-mode update weights.  When ``use_solo_channel=True``,
     # samples with ``team_size == 1`` are routed through a separate
@@ -260,6 +267,10 @@ class Config:
     # showed logloss −0.0005 vs 0.005 and a +0.14 θ gain for stable-roster
     # "floor" players (e.g. Chernukha on Инк) with no harm to overall quality.
     eta_teammate: float = 0.02
+    # Optional override for offline tournaments only (sync/async keep
+    # ``eta_teammate``).  ``None`` = use ``eta_teammate`` everywhere
+    # (production default).  See ``scripts/exp_eta_teammate_offline.py``.
+    eta_teammate_offline: float | None = None
 
     # Per-observation difficulty weights (experimental).  Forward pass
     # unchanged; gradients scaled by a weight derived from ``p_final``:
@@ -351,6 +362,9 @@ class Config:
     # falls back to the team-size-only formula above.
     theta_bar_init: bool = True
     theta_bar_min_games: int = 3
+    # Minimum teams with ≥1 mature player before θ̄-aware init; else
+    # fall back to noisy-OR-only (team-size) formula.
+    theta_bar_min_teams: int = 1
 
     # ------------------------------------------------------------------
     # Multi-epoch warm-start refit (``n_extra_epochs``).
@@ -495,6 +509,33 @@ class Config:
     recal_beta_max: float = 2.00
     recal_alpha_max: float = 3.00
 
+    # ------------------------------------------------------------------
+    # Minimum take-probability floor (experimental) — applied AFTER lapse
+    # and logit-affine recalibration, skipped for grave questions
+    # (canonical questions with empirical take rate = 0).  Rationale:
+    # without a floor, very hard packs / weak rosters can get p ≈ 0,
+    # making overperformance updates asymmetric.  See
+    # ``scripts/exp_take_floor.py``.
+    use_take_floor: bool = False
+    take_floor_min: float = 0.005
+
+
+# ======================================================================
+# Grave-question mask
+# ======================================================================
+
+def compute_grave_mask(
+    q_idx: np.ndarray,
+    taken: np.ndarray,
+    cq: np.ndarray,
+    n_cq: int,
+) -> np.ndarray:
+    """Uint8 mask: 1 for canonical questions with zero takes (гробы)."""
+    takes = np.zeros(n_cq, dtype=np.int64)
+    for i in range(len(q_idx)):
+        takes[int(cq[int(q_idx[i])])] += int(taken[i])
+    return (takes == 0).astype(np.uint8)
+
 
 # ======================================================================
 # Result container
@@ -542,6 +583,15 @@ def _mode_idx(game_type: str) -> int:
     if "sync" in game_type:
         return 1
     return 0
+
+
+def _eta_teammate_for_type(cfg: Config, game_type: str) -> float:
+    """Per-mode teammate-shrinkage step (offline may differ)."""
+    if "async" in game_type or "sync" in game_type:
+        return cfg.eta_teammate
+    if cfg.eta_teammate_offline is not None:
+        return cfg.eta_teammate_offline
+    return cfg.eta_teammate
 
 
 def _type_update_weights(
@@ -705,6 +755,15 @@ def run_sequential(
         cq = np.arange(num_questions, dtype=np.int32)
         num_q_params = num_questions
 
+    grave_q = compute_grave_mask(q_idx, taken, cq, num_q_params)
+    take_floor_eff = float(cfg.take_floor_min) if cfg.use_take_floor else 0.0
+    if verbose and take_floor_eff > 0.0:
+        n_grave = int(grave_q.sum())
+        print(
+            f"[take_floor] min={take_floor_eff:.4f}, "
+            f"graves={n_grave}/{num_q_params} canonical questions"
+        )
+
     def _cqi(raw_qi: int) -> int:
         """Map raw question index → canonical (shared) index."""
         return int(cq[raw_qi])
@@ -751,6 +810,11 @@ def run_sequential(
     team_size_max = max(2, int(cfg.team_size_max))
     team_size_anchor = max(1, min(int(cfg.team_size_anchor), team_size_max))
     delta_size = np.zeros(team_size_max + 1, dtype=np.float64)
+    if cfg.delta_size_init:
+        for idx, val in cfg.delta_size_init.items():
+            ii = int(idx)
+            if 1 <= ii <= team_size_max and ii != team_size_anchor:
+                delta_size[ii] = float(val)
     if not cfg.use_team_size_effect:
         eta_size_eff = 0.0
     else:
@@ -909,6 +973,7 @@ def run_sequential(
         q_team_sizes: dict[int, list[int]] = defaultdict(list)
         q_theta_bars: dict[int, list[float]] = defaultdict(list)
         theta_bar_min_games = max(1, int(cfg.theta_bar_min_games))
+        theta_bar_min_teams = max(1, int(cfg.theta_bar_min_teams))
         for i in obs_indices:
             if is_holdout[i]:
                 continue
@@ -933,7 +998,10 @@ def run_sequential(
                     n_avg = sum(q_team_sizes[qi]) / len(q_team_sizes[qi])
                 else:
                     n_avg = 1.0
-                if cfg.theta_bar_init and q_theta_bars[qi]:
+                if (
+                    cfg.theta_bar_init
+                    and len(q_theta_bars[qi]) >= theta_bar_min_teams
+                ):
                     theta_bar = sum(q_theta_bars[qi]) / len(q_theta_bars[qi])
                 else:
                     theta_bar = None
@@ -985,6 +1053,8 @@ def run_sequential(
                     delta=delta_g, lapse=lapse_pred,
                     recal_alpha=float(recal_pred[0]),
                     recal_beta=float(recal_pred[1]),
+                    take_floor_min=take_floor_eff,
+                    is_grave=bool(grave_q[qi]),
                 )
                 pred_p_list.append(p)
                 pred_y_list.append(int(taken[i]))
@@ -1075,6 +1145,7 @@ def run_sequential(
                 cfg.reg_log_a,
                 20.0,
                 cfg.games_offset,
+                cfg.min_eta,
                 lapse_team[mode_idx_g],
                 eta_lapse_eff,
                 lapse_max_eff,
@@ -1089,6 +1160,8 @@ def run_sequential(
                 cfg.reg_gamma,
                 cfg.gamma_max,
                 *_difficulty_weight_args(cfg, is_solo=False),
+                take_floor_eff,
+                grave_q,
             )
             total_obs_count += len(obs_order_team)
         if obs_order_solo:
@@ -1127,6 +1200,7 @@ def run_sequential(
                 cfg.reg_log_a,
                 20.0,
                 cfg.games_offset,
+                cfg.min_eta,
                 lapse_solo[mode_idx_g],
                 eta_lapse_eff,
                 lapse_max_eff,
@@ -1141,6 +1215,8 @@ def run_sequential(
                 cfg.reg_gamma,
                 cfg.gamma_max,
                 *_difficulty_weight_args(cfg, is_solo=True),
+                take_floor_eff,
+                grave_q,
             )
             total_obs_count += len(obs_order_solo)
 
@@ -1149,7 +1225,8 @@ def run_sequential(
         # 5b. Teammate θ-shrinkage (experimental, see Config docstring).
         # One pull per (team, tournament): collect distinct rosters from
         # observations and shrink each roster's θ toward its mean.
-        if cfg.eta_teammate > 0.0:
+        eta_teammate_eff = _eta_teammate_for_type(cfg, gt)
+        if eta_teammate_eff > 0.0:
             seen_rosters: set[tuple[int, ...]] = set()
             for i in obs_indices:
                 if is_holdout[i]:
@@ -1164,7 +1241,7 @@ def run_sequential(
                 idx = np.fromiter(roster, dtype=np.int64, count=len(roster))
                 th = players.theta[idx]
                 mean_th = float(th.mean())
-                players.theta[idx] = th - cfg.eta_teammate * (th - mean_th)
+                players.theta[idx] = th - eta_teammate_eff * (th - mean_th)
 
         # 6. Increment game counters -------------------------------------
         for pidx in tourn_players:
@@ -1266,7 +1343,7 @@ def run_sequential(
                         cfg.reg_size, cfg.reg_pos,
                         team_size_anchor, pos_anchor,
                         cfg.reg_theta, cfg.reg_b, cfg.reg_log_a,
-                        20.0, cfg.games_offset,
+                        20.0, cfg.games_offset, cfg.min_eta,
                         lapse_team[mode_idx_e],
                         eta_lapse_eff,
                         lapse_max_eff,
@@ -1281,6 +1358,8 @@ def run_sequential(
                         cfg.reg_gamma,
                         cfg.gamma_max,
                         *_difficulty_weight_args(cfg, is_solo=False),
+                        take_floor_eff,
+                        grave_q,
                     )
                 if obs_order_solo_e:
                     sw_t, sw_b, sw_la, sw_s, sw_p = (
@@ -1301,7 +1380,7 @@ def run_sequential(
                         cfg.reg_size, cfg.reg_pos,
                         team_size_anchor, pos_anchor,
                         cfg.reg_theta, cfg.reg_b, cfg.reg_log_a,
-                        20.0, cfg.games_offset,
+                        20.0, cfg.games_offset, cfg.min_eta,
                         lapse_solo[mode_idx_e],
                         eta_lapse_eff,
                         lapse_max_eff,
@@ -1316,6 +1395,8 @@ def run_sequential(
                         cfg.reg_gamma,
                         cfg.gamma_max,
                         *_difficulty_weight_args(cfg, is_solo=True),
+                        take_floor_eff,
+                        grave_q,
                     )
                 np.clip(players.theta, -10.0, 10.0, out=players.theta)
             if verbose:
@@ -1391,6 +1472,8 @@ def run_sequential(
                         delta=delta_g, lapse=lapse_post,
                         recal_alpha=float(recal_post[0]),
                         recal_beta=float(recal_post[1]),
+                        take_floor_min=take_floor_eff,
+                        is_grave=bool(grave_q[qi]),
                     )
                     pred_p_list.append(p)
                     pred_y_list.append(int(taken[i]))

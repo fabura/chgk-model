@@ -77,6 +77,11 @@ def reload_conn() -> dict:
             _fa.clear_cache()
         except Exception:
             pass
+        try:
+            from . import map_data as _md
+            _md.clear_geo_meta_cache()
+        except Exception:
+            pass
         st = path.stat()
         return {
             "path": str(path),
@@ -158,13 +163,30 @@ def get_site_meta() -> dict | None:
     """
     Single-row footer metadata from ``site_meta`` (written by ``build_db``).
 
+    ``data_as_of_iso`` is the latest tournament ``start_date`` not after today
+    (scheduled-future rows in the rating DB are excluded).
+
     Returns ``None`` if the table is missing (pre-migration DuckDB) or empty.
     """
     try:
-        return query_one(
-            "SELECT CAST(data_as_of AS VARCHAR) AS data_as_of_iso, "
+        row = query_one(
+            "SELECT CAST(data_as_of AS VARCHAR) AS stored_data_as_of, "
             "       model_built_at "
             "FROM site_meta LIMIT 1"
         )
+        if not row:
+            return None
+        past = query_one(
+            "SELECT CAST(max(start_date) AS VARCHAR) AS data_as_of_iso "
+            "FROM tournaments "
+            "WHERE start_date IS NOT NULL AND start_date <= current_date"
+        )
+        return {
+            "data_as_of_iso": (
+                past.get("data_as_of_iso") if past else None
+            )
+            or row.get("stored_data_as_of"),
+            "model_built_at": row.get("model_built_at"),
+        }
     except Exception:
         return None

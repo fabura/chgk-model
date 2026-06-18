@@ -14,6 +14,8 @@ data.npz.tmp
 data.mg*.npz
 data/venue_overlay.duckdb
 data/venue_overlay.duckdb.wal
+data/_ne_*.geojson
+data/_ua_regions.geojson
 
 # Raw per-tournament JSON from rating.chgk.fun.  We only commit the
 # compact ~3 MB parquet bundle (data/chgk_fun_predictions.parquet);

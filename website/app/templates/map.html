@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% block title %}ЧГКарта — ChGK Model{% endblock %}
+
+{% block head_extra %}
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<style>
+  #chgk-map { height: min(72vh, 640px); min-height: 360px; }
+  .map-legend-dot { width: 12px; height: 12px; border-radius: 9999px; display: inline-block; }
+  .map-legend-swatch { width: 18px; height: 12px; border-radius: 2px; display: inline-block; }
+  #scratch-hover-tip {
+    background: #ffffff;
+    border: 1px solid #4338ca;
+    border-radius: 4px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+    color: #312e81;
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1.35;
+    max-width: 240px;
+    padding: 6px 10px;
+    pointer-events: none;
+    position: fixed;
+    z-index: 10000;
+  }
+  #scratch-hover-tip.scratch-tip-off { display: none !important; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="space-y-4">
+  <div>
+    <h1 class="text-2xl font-semibold">ЧГКарта</h1>
+    <p class="text-sm text-slate-600 mt-1">
+      Площадки ЧГК. Кружок больше — больше игр;
+      зелёный — активность за {{ summary.active_days if summary else 60 }} дней (размер = недавняя активность).
+      {% if summary %}<span class="text-slate-500">{{ summary.n_towns }} городов, {{ summary.n_active }} активных.</span>{% endif %}
+    </p>
+  </div>
+
+  {% if not map_ready %}
+  <div class="rounded-lg border border-amber-200 bg-amber-50 text-amber-900 px-4 py-3 text-sm">
+    Данные карты не собраны (<code>build_map_geo.py</code> → <code>build_db.py</code>).
+  </div>
+  {% else %}
+
+  <div class="rounded-lg border border-slate-200 bg-white p-4 space-y-2">
+    <div class="relative max-w-md">
+      <input type="text" id="player-search" autocomplete="off"
+             placeholder="Скретч-карта: фамилия или ID игрока"
+             class="w-full border border-slate-300 rounded px-3 py-2 pr-9 text-sm focus:outline-none focus:ring focus:ring-indigo-200"
+             value="{% if player_scratch %}{{ player_scratch.name }}{% endif %}">
+      <button type="button" id="player-search-clear"
+              class="{% if not player_scratch %}hidden {% endif %}absolute right-2 top-1/2 -translate-y-1/2 w-6 h-6 flex items-center justify-center rounded text-slate-400 hover:text-slate-700 hover:bg-slate-100 text-lg leading-none"
+              aria-label="Сбросить карту игрока" title="Сбросить">×</button>
+      <input type="hidden" id="player-id" value="{% if player_id %}{{ player_id }}{% endif %}">
+      <ul id="player-suggest" class="hidden absolute z-20 left-0 right-0 mt-1 bg-white border border-slate-200 rounded shadow-lg text-sm max-h-56 overflow-y-auto"></ul>
+    </div>
+    <p id="scratch-summary" class="text-sm text-slate-600">
+      {% if player_scratch %}
+      <span class="font-medium">{{ player_scratch.name }}</span> — {{ player_scratch.regions|length }} регионов
+      {% else %}
+      Выберите игрока, чтобы закрасить регионы на карте.
+      {% endif %}
+    </p>
+  </div>
+
+  <div class="flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-600 items-center">
+    <label class="inline-flex items-center gap-1.5 cursor-pointer select-none">
+      <input type="checkbox" id="toggle-active" checked class="accent-emerald-600">
+      <span class="map-legend-dot bg-emerald-500/80 border border-emerald-700"></span>
+      активные
+    </label>
+    <label class="inline-flex items-center gap-1.5 cursor-pointer select-none">
+      <input type="checkbox" id="toggle-inactive" checked class="accent-slate-500">
+      <span class="map-legend-dot bg-slate-400/50 border border-slate-500"></span>
+      неактивные
+    </label>
+    <span class="inline-flex items-center gap-1.5">
+      <span class="map-legend-swatch bg-indigo-400/60 border border-indigo-600"></span> регион игрока
+    </span>
+  </div>
+
+  <div class="relative">
+    <div id="chgk-map" class="w-full rounded-lg border border-slate-200 bg-slate-100"></div>
+    <div id="scratch-hover-tip" class="scratch-tip-off" aria-hidden="true"></div>
+  </div>
+  {% endif %}
+</div>
+
+{% if map_ready %}
+<script>
+  window.CHGK_MAP_BOOT = {
+    playerId: {{ player_id|tojson if player_id else 'null' }},
+    playerScratch: {{ player_scratch|tojson if player_scratch else 'null' }}
+  };
+</script>
+<script src="/static/map.js?v=9"></script>
+{% endif %}
+{% endblock %}
