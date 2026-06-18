@@ -28,8 +28,8 @@ p_take = 1 - exp(-S)
 
 `δ = δ_size[clip(team_size, 1, K)] + δ_pos[q_index_in_tournament % tour_len]`:
 
-- `δ_size` — per-team-size shift (anchor at 6) → [`team_size_experiments.md`](team_size_experiments.md)
-- `δ_pos` — per-position-in-tour shift (anchor at 0) → [`position_in_tour_experiments.md`](position_in_tour_experiments.md)
+- `δ_size` — per-team-size shift (anchor at 6) → [`team_size_experiments.md`](experiments/mechanisms/team_size_experiments.md)
+- `δ_pos` — per-position-in-tour shift (anchor at 0) → [`position_in_tour_experiments.md`](experiments/mechanisms/position_in_tour_experiments.md)
 
 Per-mode (`μ_type`) и per-tournament (`ε_t`) offsets **удалены** в 2026-04; различия форматов — через веса обновления (`w_online`, `w_sync`, …).
 
@@ -47,19 +47,19 @@ python -m rating --mode cached --cache_file data.npz --results_npz results/seq.n
 
 | Механизм | Default | Документ |
 |----------|---------|----------|
-| Mode handling `t6` | async θ слабее | [`async_mode_experiments.md`](async_mode_experiments.md) |
-| Calendar decay | `rho_calendar=1.0` (off) | [`calendar_decay_experiments.md`](calendar_decay_experiments.md) |
-| Team size δ | `use_team_size_effect=True`, anchor 6, max 12 | [`team_size_experiments.md`](team_size_experiments.md) |
-| Position δ | `use_pos_effect=True`, `tour_len=12` | [`position_in_tour_experiments.md`](position_in_tour_experiments.md) |
-| Solo channel | `use_solo_channel=True`, `w_solo=0.7` | [`solo_channel_experiments.md`](solo_channel_experiments.md) |
+| Mode handling `t6` | async θ слабее | [`async_mode_experiments.md`](experiments/mechanisms/async_mode_experiments.md) |
+| Calendar decay | `rho_calendar=1.0` (off) | [`calendar_decay_experiments.md`](experiments/mechanisms/calendar_decay_experiments.md) |
+| Team size δ | `use_team_size_effect=True`, anchor 6, max 12 | [`team_size_experiments.md`](experiments/mechanisms/team_size_experiments.md) |
+| Position δ | `use_pos_effect=True`, `tour_len=12` | [`position_in_tour_experiments.md`](experiments/mechanisms/position_in_tour_experiments.md) |
+| Solo channel | `use_solo_channel=True`, `w_solo=0.7` | [`solo_channel_experiments.md`](experiments/mechanisms/solo_channel_experiments.md) |
 | Cold start | `cold_init_theta=-1.0`, `games_offset=0.25` | `scripts/exp_cold_start_grid.py` |
 | Frozen a | `freeze_log_a=True` (a≡1) | `results/exp_holdout_ablations.csv` |
 | Extra epoch | `n_extra_epochs=1` | `results/exp_multi_epoch_honest.csv` |
-| Lapse rate | `use_lapse_rate=True` | [`lapse_rate_2026-05.md`](lapse_rate_2026-05.md) |
-| Recalibration | `use_recalibration=True` | [`recalibration_2026-05.md`](recalibration_2026-05.md) |
+| Lapse rate | `use_lapse_rate=True` | [`lapse_rate_2026-05.md`](experiments/cycles/2026-05/lapse_rate_2026-05.md) |
+| Recalibration | `use_recalibration=True` | [`recalibration_2026-05.md`](experiments/cycles/2026-05/recalibration_2026-05.md) |
 | η₀, w_online | `0.22`, `1.0` | `results/exp_eta0_sweep_honest*.csv` |
 | Yearly recenter | target −0.70, period 365d | см. ниже |
-| Honest holdout | 10%, seed 42 | [`leakage_2026-05.md`](leakage_2026-05.md) |
+| Honest holdout | 10%, seed 42 | [`leakage_2026-05.md`](experiments/cycles/2026-05/leakage_2026-05.md) |
 
 **Backtest logloss (full DB, honest cell-holdout): 0.5004** (`--holdout 0.10 --holdout-seed 42`).
 Legacy time-split 0.485 был leaky ~+5% overall; не сравнивать напрямую.
@@ -81,7 +81,7 @@ Legacy time-split 0.485 был leaky ~+5% overall; не сравнивать н�
 `use_recalibration`, `recal_*`, `holdout_obs_fraction`, `holdout_seed`.
 
 Удалено в 2026-05: `rho`, `use_calendar_decay`, `cold_init_factor`,
-`cold_init_use_team_mean` → [`cleanup_2026-05.md`](cleanup_2026-05.md).
+`cold_init_use_team_mean` → [`cleanup_2026-05.md`](experiments/cycles/2026-05/cleanup_2026-05.md).
 
 Тюнинг: `python -m rating --mode cached --cache_file data.npz --tune`
 
@@ -115,12 +115,12 @@ Gauge transform: `θ ↑ Δ`, `b ↑ a·Δ` — predictions invariant.
 Хронология retune и ablation — в experiment docs. Основные вехи:
 
 - **2026-04 lean**: убраны μ_type, ε_t; `eta_teammate` 0.005→0.02
-- **2026-04 noisy-OR init**: `b_init = log(n) - log(-log(1-p))` → [`noisy_or_init_experiments.md`](noisy_or_init_experiments.md)
-- **2026-04 θ̄-aware init**: + θ̄ mature players → [`theta_bar_init_experiments.md`](theta_bar_init_experiments.md)
+- **2026-04 noisy-OR init**: `b_init = log(n) - log(-log(1-p))` → [`noisy_or_init_experiments.md`](experiments/mechanisms/noisy_or_init_experiments.md)
+- **2026-04 θ̄-aware init**: + θ̄ mature players → [`theta_bar_init_experiments.md`](experiments/mechanisms/theta_bar_init_experiments.md)
 - **2026-05**: lapse, recal, honest holdout, freeze log_a, cleanup legacy decay
-- **2026-06**: floor-player experiments — rejected → [`floor_player_experiments_2026-06.md`](floor_player_experiments_2026-06.md)
+- **2026-06**: floor-player experiments — rejected → [`floor_player_experiments_2026-06.md`](experiments/cycles/2026-06/floor_player_experiments_2026-06.md)
 
-Полный индекс: [`experiments_summary_ru.md`](experiments_summary_ru.md).
+Полный индекс: [`experiments_summary_ru.md`](experiments/experiments_summary_ru.md).
 
 ## Интерпретация θ
 

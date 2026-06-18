@@ -2,7 +2,7 @@
 
 ## Motivation
 
-After the per-mode lapse rate (`docs/lapse_rate_2026-05.md`) fixed
+After the per-mode lapse rate (`docs/experiments/cycles/2026-05/lapse_rate_2026-05.md`) fixed
 the very-top tail of the calibration curve, an honest cell-holdout
 calibration on the user's own player_id (32919) revealed a
 residual S-shaped bias for solo observations:

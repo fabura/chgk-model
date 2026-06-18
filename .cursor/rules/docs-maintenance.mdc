@@ -9,6 +9,7 @@ Before exploring the codebase from scratch, read:
 - `docs/INDEX.md` — navigation hub
 - `docs/repo-map.md` — where modules and scripts live
 - `docs/schema/README.md` — tables and data flow
+- `docs/experiments/README.md` — experiment docs layout
 
 ## Update docs in the same PR when you change:
 
@@ -21,13 +22,13 @@ Before exploring the codebase from scratch, read:
 | `venue_overlay/store.py` DDL | `docs/schema/venue-overlay.md` |
 | `rating_api/pg_state.py` or overlay tables | `docs/schema/api-overlay.md` |
 | New top-level package or major script group | `docs/repo-map.md` |
-| `Config` default or promoted/rejected experiment | `docs/experiments_summary_ru.md` + detail doc |
+| `Config` default or promoted/rejected experiment | `docs/experiments/experiments_summary_ru.md` + doc under `docs/experiments/` |
 | New website route | `docs/repo-map.md` (website section) |
 
 ## Do not duplicate
 
-- Model math and hyperparameter defaults stay in `AGENTS.md`.
-- Experiment details stay in `docs/*_experiments.md`.
+- Model math and hyperparameter defaults stay in `docs/model.md`.
+- Experiment details stay under `docs/experiments/` (not in `docs/` root).
 - Schema docs describe **columns and relationships**, not business logic.
 
 ## Schema source of truth

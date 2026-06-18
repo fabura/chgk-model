@@ -666,7 +666,7 @@
         recenter_target, recenter_min_games, recenter_active_days</code>.</li>
       <li><b>Календарное затухание</b>: <code>rho_calendar</code>
         (по умолчанию 1.0 = выключено, см.
-        <code>docs/calendar_decay_experiments.md</code>).</li>
+        <code>docs/experiments/mechanisms/calendar_decay_experiments.md</code>).</li>
     </ul>
 
     <h3 id="tuning-how">9.2 Как настраивается</h3>
@@ -733,8 +733,8 @@
       re-tune \( \eta_0 \)):
       <code>logloss 0.5365 → 0.4877</code> (−0.0488, ≈ 9 %),
       <code>AUC 0.8065 → 0.8455</code> (+0.0390). Подробности —
-      <code>docs/noisy_or_init_experiments.md</code>,
-      <code>docs/theta_bar_init_experiments.md</code> и
+      <code>docs/experiments/mechanisms/noisy_or_init_experiments.md</code>,
+      <code>docs/experiments/mechanisms/theta_bar_init_experiments.md</code> и
       <code>results/exp_*.csv</code>.
     </p>
 
@@ -743,7 +743,7 @@
     <p>
       Сама модель не «забывает» рейтинг с календарным временем
       (любое календарное затухание во время обучения ухудшает logloss
-      и AUC, см. <code>docs/calendar_decay_experiments.md</code>): θ
+      и AUC, см. <code>docs/experiments/mechanisms/calendar_decay_experiments.md</code>): θ
       меняется только тогда, когда игрок реально выходит на турнир.
       Из-за этого в «сыром» рейтинге на верхних местах могут оказаться
       люди, которые не играют уже несколько лет — их последняя оценка

@@ -39,7 +39,7 @@ computed `lam_tau = lam ** (1/temperature)` when `temperature != 1.0`.
 **Conclusion.** Any τ > 1 monotonically destroys predictive quality.
 The noisy-OR gradient is the exact MLE gradient; distorting it harms
 optimisation.  This mirrors the `credit_uniform_mix` result from
-`docs/roster_sticking_2026-05.md` (Hypothesis 3) — uniform credit
+`docs/experiments/cycles/2026-05/roster_sticking_2026-05.md` (Hypothesis 3) — uniform credit
 blend also gave ΔLogloss = 0.00000 with zero benefit.  The model's
 credit attribution is statistically correct; the identifiability
 problem for floor players cannot be solved by distorting the

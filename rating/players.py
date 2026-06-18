@@ -59,7 +59,7 @@ class PlayerState:
         inherit ever-lower starting θ.
 
         The legacy team-mean cold-start path was removed in 2026-05;
-        see ``docs/cleanup_2026-05.md``.
+        see ``docs/experiments/cycles/2026-05/cleanup_2026-05.md``.
         """
         if self.seen[player_idx]:
             return

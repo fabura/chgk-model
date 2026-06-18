@@ -12,7 +12,7 @@
 | `results/seq.npz` | Результаты обучения (не в git) |
 | `AGENTS.md` | Контекст для AI: модель, defaults, пайплайн |
 | `CLAUDE.md` | 12 правил кодирования (шаблон) |
-| `README.md` | Quick start, refresh, layout |
+| `README.md` | Project overview and quick start |
 
 ## `rating/` — sequential online rating
 
@@ -100,8 +100,21 @@
 | `test_rating_api_*.py` | API mirror (parse, upsert, sync, client) |
 | `test_async_mode_effects.py` | Mode weights |
 | `test_compare_h2h.py`, `test_h2h_eval.py` | H2H compare |
+| `test_schema_docs.py` | Schema docs vs code DDL |
 
 Запуск: `python -m pytest tests/`
+
+## `docs/`
+
+| Путь | Назначение |
+|------|------------|
+| `INDEX.md` | Хаб навигации |
+| `model.md`, `interpretation.md` | Модель и интерпретация θ |
+| `repo-map.md` | Этот файл |
+| `schema/` | Таблицы и связи |
+| `experiments/` | История экспериментов — см. `experiments/README.md` |
+| `reference/` | OpenAPI snapshot и прочие снимки |
+| `assets/` | PDF и бинарные артефакты |
 
 ## Внешние зависимости (не в этом репо)
 

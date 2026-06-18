@@ -3,7 +3,7 @@
 ## Motivation
 
 The honest cell-holdout calibration
-(`docs/calibration_2026-05.md`) showed a sharp pattern of high-`p`
+(`docs/experiments/cycles/2026-05/calibration_2026-05.md`) showed a sharp pattern of high-`p`
 over-prediction concentrated in solo (size = 1) and async
 tournaments — the noisy-OR forward
 `p = 1 − exp(−exp(−b + a·θ))` asymptotes to 1, but empirically

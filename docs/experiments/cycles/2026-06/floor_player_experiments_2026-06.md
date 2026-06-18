@@ -1,6 +1,6 @@
 # Floor-player / roster-sticking experiments, 2026-06
 
-Follow-up to `docs/roster_sticking_2026-05.md` (Чернуха, Рекшинская,
+Follow-up to `docs/experiments/cycles/2026-05/roster_sticking_2026-05.md` (Чернуха, Рекшинская,
 Монина on stable strong rosters).  Several new levers were tried after
 user reports that intuitive strength (especially on hard questions, and
 especially for veterans who **massively overperform** career
@@ -16,10 +16,10 @@ Related docs (detail per mechanism):
 
 | Doc | Mechanism | Verdict |
 |-----|-----------|---------|
-| `docs/roster_sticking_2026-05.md` | `eta_teammate`, credit mix, adaptive η | only η_teammate accepted |
-| `docs/temperature_credit_experiments_2026-06.md` | τ-scaled λ credit | REJECTED |
-| `docs/difficulty_weights_2026-06.md` | loss reweight easy-miss / hard-take | REJECTED |
-| `docs/2d_player_experiments_2026-06.md` | Model C γ_k | logloss win, **not promoted** |
+| `docs/experiments/cycles/2026-05/roster_sticking_2026-05.md` | `eta_teammate`, credit mix, adaptive η | only η_teammate accepted |
+| `docs/experiments/cycles/2026-06/temperature_credit_experiments_2026-06.md` | τ-scaled λ credit | REJECTED |
+| `docs/experiments/cycles/2026-06/difficulty_weights_2026-06.md` | loss reweight easy-miss / hard-take | REJECTED |
+| `docs/experiments/cycles/2026-06/2d_player_experiments_2026-06.md` | Model C γ_k | logloss win, **not promoted** |
 | **this doc** | overperf θ floor, rank diagnostics | REJECTED / inconclusive |
 
 Source artefacts kept:
@@ -59,7 +59,7 @@ rankings on “medium/hard pack” projections did not match that.
 
 ## 2. Difficulty-weighted loss — REJECTED
 
-See `docs/difficulty_weights_2026-06.md`.
+See `docs/experiments/cycles/2026-06/difficulty_weights_2026-06.md`.
 
 Reweighting gradients (`diff_w_miss_power`, `diff_w_take_boost`) to
 down-weight easy misses and up-weight hard takes **monotonically worsens**
@@ -74,7 +74,7 @@ Code: `Config.diff_w_*` left at 0.0 in `rating/engine.py` /
 
 ## 3. Model C (γ_k) — logloss win, ranking loss
 
-See `docs/2d_player_experiments_2026-06.md`.
+See `docs/experiments/cycles/2026-06/2d_player_experiments_2026-06.md`.
 
 | Config | holdout ll | AUC |
 |--------|----------:|----:|
@@ -176,7 +176,7 @@ prior experiments already show that path does not help floor players.
 
 1. **Per-player lapse** — encode “whiffs easy, delivers on hard” as
    extra noise on easy questions without deflating θ (see
-   `docs/difficulty_weights_2026-06.md` §4b).
+   `docs/experiments/cycles/2026-06/difficulty_weights_2026-06.md` §4b).
 2. **Display / auxiliary metrics** — career `actual−exp`,
    `team_theta_implied`, loyalty-weighted core rankings (already on site
    for teams); do not force into θ.

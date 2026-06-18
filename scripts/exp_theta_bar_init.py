@@ -43,7 +43,7 @@ CONFIGS = {
     # NOTE: pack-level shrinkage variants (`thbar_pack_*`,
     # `b_pack_shrinkage`, `pack_prior_w`) were tested in this slot and
     # all degraded logloss; the corresponding Config fields were
-    # removed.  See docs/theta_bar_init_experiments.md for the full
+    # removed.  See docs/experiments/mechanisms/theta_bar_init_experiments.md for the full
     # account.
 }
 

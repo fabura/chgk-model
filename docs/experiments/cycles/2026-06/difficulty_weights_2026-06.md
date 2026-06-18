@@ -114,7 +114,7 @@ the calibrated response. Reweighting the loss to suppress this
 (`(1−p)**α`) makes the estimator inconsistent — it stops being an MLE,
 θ drifts upward, and held-out predictions get worse. This is the same
 failure class as temperature-scaled credit
-(`docs/temperature_credit_experiments_2026-06.md`).
+(`docs/experiments/cycles/2026-06/temperature_credit_experiments_2026-06.md`).
 
 **The lesson is the same as every prior credit-attribution experiment:
 encode structural priors in the *model*, not heuristics in the
@@ -131,7 +131,7 @@ z_k = θ_k + γ_k·b − b − δ
 `γ_k > 0` ⇒ relatively better on hard questions. This *changes the
 prediction* (it is not a loss hack), so it stays a clean MLE — and it
 already shows **−0.0040 logloss** at `eta_gamma=0.01`
-(`docs/2d_player_experiments_2026-06.md`). It directly expresses
+(`docs/experiments/cycles/2026-06/2d_player_experiments_2026-06.md`). It directly expresses
 "some players are hard-question specialists" with θ = baseline ability
 and γ = difficulty profile.
 
@@ -193,4 +193,4 @@ now agree.
 The `diff_w_*` knobs are left in `Config` (default 0.0 = disabled) as a
 documented dead-end, mirroring how the temperature knobs were handled.
 No production default changes.  Model C was **not** promoted after rank
-validation — see `docs/floor_player_experiments_2026-06.md`.
+validation — see `docs/experiments/cycles/2026-06/floor_player_experiments_2026-06.md`.

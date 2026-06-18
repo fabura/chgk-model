@@ -191,7 +191,7 @@ project's failed-ablation convention (cf. `b_pack_shrinkage`,
 `pack_prior_w` in 2026-04). The result CSV
 `results/exp_credit_mix_holdout.csv` is kept as the record.
 
-**2026-06 follow-up** (`docs/floor_player_experiments_2026-06.md`): difficulty-
+**2026-06 follow-up** (`docs/experiments/cycles/2026-06/floor_player_experiments_2026-06.md`): difficulty-
 weighted loss, Model C promotion, and per-tournament overperformance θ
 floor were also tried and rejected / not promoted.  Production still
 `eta_teammate=0.02` only.

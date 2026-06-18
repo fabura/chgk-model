@@ -22,7 +22,7 @@ The current model has:
 - Question: 2D (`b_i` — difficulty, `a_i` — discrimination)
 
 Earlier experiments showed `freeze_log_a=True` gives identical logloss
-to learned `a_i` (0.5078 vs 0.5083, `docs/cleanup_2026-05.md`),
+to learned `a_i` (0.5078 vs 0.5083, `docs/experiments/cycles/2026-05/cleanup_2026-05.md`),
 suggesting the discrimination dimension is redundant.  At the same
 time, domain intuition says players differ not just in *how good* they
 are, but in *what kind* of questions they answer — some are
@@ -183,7 +183,7 @@ question content, which is not available in the current dataset.
 **Do not promote to production yet.**
 
 Holdout logloss improves (−0.0040 vs 1D with `freeze_log_a=True`),
-but a June 2026 follow-up (`docs/floor_player_experiments_2026-06.md`)
+but a June 2026 follow-up (`docs/experiments/cycles/2026-06/floor_player_experiments_2026-06.md`)
 showed that **1D projections of (θ, γ) do not fix intuitive rankings**
 for floor players on strong rosters (Монина career +437 actual−exp yet
 rank ~2350 on `θ+γ·b_mean`; Рекшинская ranked above her with +26).

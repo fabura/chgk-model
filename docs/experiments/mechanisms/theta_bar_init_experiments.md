@@ -2,7 +2,7 @@
 
 ## Motivation
 
-`docs/noisy_or_init_experiments.md` описывает первый шаг —
+`docs/experiments/mechanisms/noisy_or_init_experiments.md` описывает первый шаг —
 коррекцию init на размер команды (`b = log(n) − log(−log(1 − p))`),
 которая убрала систематическое занижение `b` на `log(6) ≈ 1.79`
 и дала `−0.0088` logloss на бэктесте.

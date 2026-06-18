@@ -14,10 +14,13 @@
 | Тексты вопросов (`questions.db`) | [`schema/questions-db.md`](schema/questions-db.md) |
 | Venue overlay, API overlay | [`schema/venue-overlay.md`](schema/venue-overlay.md), [`schema/api-overlay.md`](schema/api-overlay.md) |
 | Схема данных — обзор и связи | [`schema/README.md`](schema/README.md) |
+| Эксперименты: что в проде / что отвергли | [`experiments/experiments_summary_ru.md`](experiments/experiments_summary_ru.md) |
+| Навигация по экспериментам | [`experiments/README.md`](experiments/README.md) |
+| Пост-анализ, черновики постов | [`experiments/analysis/`](experiments/analysis/) |
+| OpenAPI snapshot rating API | [`reference/openapi.json`](reference/openapi.json) |
 | Операции: сайт, refresh, API | [`../AGENTS.md`](../AGENTS.md) |
 | Запуск, refresh, деплой | [`../README.md`](../README.md), [`../website/README.md`](../website/README.md) |
 | Интерпретация θ | [`interpretation.md`](interpretation.md) |
-| Эксперименты (индекс) | [`experiments_summary_ru.md`](experiments_summary_ru.md) |
 
 ## Поток данных (end-to-end)
 
@@ -59,7 +62,7 @@ rating-db Postgres (public.*)
 | Формат `data.npz` / `seq.npz` | `schema/cache.md` |
 | Новый пакет / значимый скрипт | `repo-map.md` |
 | `Config` defaults / механика модели | `model.md` |
-| `Config` defaults / эксперимент | `experiments_summary_ru.md` + детальный doc |
+| Эксперимент / смена статуса | `experiments/experiments_summary_ru.md` + doc в `experiments/` |
 | Новая таблица в overlay / API mirror | соответствующий `schema/*.md` |
 
 Подробнее: `.cursor/rules/docs-maintenance.mdc`.
@@ -69,19 +72,17 @@ rating-db Postgres (public.*)
 
 ```
 docs/
-  INDEX.md              ← этот файл
-  model.md              ← формула, Config, обучение
-  repo-map.md           ← карта модулей и файлов
-  schema/               ← таблицы и связи
-    README.md
-    postgres.md
-    duckdb.md
-    cache.md
-    questions-db.md
-    venue-overlay.md
-    api-overlay.md
-  interpretation.md     ← θ и вероятности
-  experiments_summary_ru.md
-  *_experiments.md      ← детали экспериментов
-  *_YYYY-MM.md          ← разовые исследования
+  INDEX.md                 ← этот файл
+  model.md                 ← формула, Config, обучение
+  repo-map.md              ← карта модулей и файлов
+  interpretation.md        ← θ и вероятности
+  schema/                  ← таблицы и связи (Postgres, DuckDB, npz, …)
+  experiments/
+    README.md              ← навигация по экспериментам
+    experiments_summary_ru.md
+    mechanisms/            ← принятые механизмы модели
+    cycles/2026-04|05|06/  ← месячные циклы абляций
+    analysis/              ← пост-анализ, черновики (не абляции)
+  reference/               ← openapi.json и прочие снимки
+  assets/                  ← PDF и бинарные артефакты
 ```

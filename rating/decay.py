@@ -9,7 +9,7 @@ only because of real-world time passing, not because the dataset
 happens to contain many parallel tournaments in the same week.
 
 The legacy global per-tournament decay (``apply_decay(theta, rho)``)
-was removed in 2026-05; see ``docs/cleanup_2026-05.md``.  In
+was removed in 2026-05; see ``docs/experiments/cycles/2026-05/cleanup_2026-05.md``.  In
 practice the production model has run with ``rho_calendar=1.0``
 (i.e. decay disabled entirely) since 2024-Q1.
 """

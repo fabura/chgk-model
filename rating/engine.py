@@ -53,7 +53,7 @@ class Config:
     # legacy defaults: logloss 0.5270 → 0.5182 (-0.0088), AUC
     # 0.8158 → 0.8333 (+0.0175); offline-bucket logloss
     # 0.5075 → 0.4791 (-0.0284, ~5.6 %).  Full sweep table in
-    # ``docs/noisy_or_init_experiments.md`` and
+    # ``docs/experiments/mechanisms/noisy_or_init_experiments.md`` and
     # ``results/exp_noisy_or_init_retune.csv``.
     #
     # 2026-04 θ̄-aware init re-tune.  Adding ``theta_bar_init=True``
@@ -67,7 +67,7 @@ class Config:
     # Cumulative gain over the previous (noisy-OR-only) re-tune:
     # logloss 0.5182 → 0.4877 (-0.0305, ~5.9 %), AUC 0.8333 → 0.8455
     # (+0.0122); offline-bucket logloss 0.4791 → 0.4483 (-0.0308).
-    # Full sweep table in ``docs/theta_bar_init_experiments.md`` and
+    # Full sweep table in ``docs/experiments/mechanisms/theta_bar_init_experiments.md`` and
     # ``results/exp_theta_bar_retune.csv``.
     # 2026-05: bumped from 0.15 → 0.22 after a 9-cell honest cell-
     # holdout sweep (results/exp_eta0_sweep_honest{_high}.csv).  The
@@ -103,7 +103,7 @@ class Config:
     # they next appear in a tournament.  Decouples decay from the
     # dataset tournament cadence (which is highly uneven across weeks).
     #
-    # Empirically (see ``docs/calendar_decay_experiments.md``), the
+    # Empirically (see ``docs/experiments/mechanisms/calendar_decay_experiments.md``), the
     # legacy per-tournament global decay ``rho=0.9995`` was over-
     # aggressive on the rating-DB cadence (~21 tournaments/week × ~8
     # years ⇒ effective multiplier ≈ 0.014).  Calendar decay with
@@ -114,7 +114,7 @@ class Config:
     #
     # The legacy global decay path (``apply_decay`` and the
     # ``rho``/``use_calendar_decay`` knobs) was removed in 2026-05;
-    # see ``docs/cleanup_2026-05.md``.
+    # see ``docs/experiments/cycles/2026-05/cleanup_2026-05.md``.
     rho_calendar: float = 1.0  # 1.0 = disable; <1 = per-week multiplicative decay
     decay_period_days: float = 7.0
 
@@ -134,7 +134,7 @@ class Config:
     #
     # The legacy "inherit team average" cold-start (``cold_init_factor``
     # and ``cold_init_use_team_mean``) was removed in 2026-05; see
-    # ``docs/cleanup_2026-05.md``.
+    # ``docs/experiments/cycles/2026-05/cleanup_2026-05.md``.
     #
     # 2026-05 (post-jalob): re-tuned -1.0 → -1.5 after the 18-cell
     # (min_games × cold_init_theta × games_offset) sweep showed the
@@ -177,7 +177,7 @@ class Config:
     eta_size: float = 0.001
     # 2026-04: 0.10 → 0.0; the L2 was pulling δ_size[1..3] toward 0,
     # leaving solo (+0.04) and pairs (+0.02) systematically
-    # under-predicted.  See docs/error_structure_2026-04.md §3.
+    # under-predicted.  See docs/experiments/cycles/2026-04/error_structure_2026-04.md §3.
     reg_size: float = 0.0
     w_size_offline: float = 1.0
     w_size_sync: float = 1.0
@@ -443,7 +443,7 @@ class Config:
 
     # ------------------------------------------------------------------
     # Lapse rate (per (game-type × team/solo)) — added 2026-05.  See
-    # ``docs/calibration_2026-05.md`` for motivation: the noisy-OR
+    # ``docs/experiments/cycles/2026-05/calibration_2026-05.md`` for motivation: the noisy-OR
     # forward asymptotically goes to 1, but empirically even strong
     # solo / async players miss "easy" questions ~5–10 % of the time
     # (typos, distraction, format glitches).  Without a floor the

@@ -62,7 +62,7 @@ def _veteran_theta_deltas(
     configs = _build_configs(holdout, seed)
     baseline = run_sequential(arrays, maps, configs["baseline"], verbose=False)
     rows: list[dict] = []
-    # Motivating floor-player ids from docs/floor_player_experiments_2026-06.md
+    # Motivating floor-player ids from docs/experiments/cycles/2026-06/floor_player_experiments_2026-06.md
     # plus a few top-θ veterans for the "overperform at hard events" angle.
     watch_ids = [34909, 26818, 158668, 32919, 735, 1204]
     pid_to_idx = {int(pid): i for i, pid in enumerate(maps.idx_to_player_id)}

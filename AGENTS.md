@@ -80,7 +80,7 @@ Cloudflare or a certbot sidecar once a domain is registered.
 ### Display-only inactivity decay
 
 The model itself does not decay θ over calendar time
-(`rho_calendar = 1.0` — see `docs/calendar_decay_experiments.md`),
+(`rho_calendar = 1.0` — see `docs/experiments/mechanisms/calendar_decay_experiments.md`),
 which leaves long-retired players at the very top of the raw θ board.
 The website hides this artefact by precomputing a `theta_display`
 column at build time (`compute_theta_display` in `website/build/build_db.py`):
@@ -240,46 +240,13 @@ pip install -r requirements.txt
 
 ## Docs
 
-- `docs/INDEX.md` — documentation hub (schemas, repo map, links)
+- `docs/INDEX.md` — documentation hub (start here)
 - `docs/model.md` — formula, Config defaults, training history
 - `docs/repo-map.md` — modules, scripts, routes, typical commands
 - `docs/schema/` — Postgres, DuckDB, npz, questions.db, overlays (tables + ER)
-- `docs/experiments_summary_ru.md` — Russian index of all experiments
-  (promoted / rejected / partial). **Update it in the same PR/commit**
-  when you run, promote, or reject an experiment, add a new
-  `docs/*_experiments.md` or `docs/*_YYYY-MM.md`, or change `Config`
-  defaults: one-line summary + status + link to the detailed doc; note
-  leaky vs honest holdout when citing metrics.
+- `docs/experiments/README.md` — layout of experiment docs
+- `docs/experiments/experiments_summary_ru.md` — Russian index (✅/❌/⚠️); **update in the same PR** when promoting/rejecting experiments or changing `Config` defaults
+- `docs/experiments/mechanisms/` — long-lived production mechanisms
+- `docs/experiments/cycles/` — monthly ablation cycles (2026-04 …)
+- `docs/experiments/analysis/` — observational reports and post drafts (no Config changes)
 - `docs/interpretation.md` — θ interpretation and tables
-- `docs/async_mode_experiments.md` — async/sync/offline mode effects, verified hypotheses, chosen `t6` defaults
-- `docs/calendar_decay_experiments.md` — calendar-based decay sweep, why per-tournament decay was wrong, current defaults
-- `docs/team_size_experiments.md` — per-team-size difficulty shift (δ_size) and backtest gains
-- `docs/position_in_tour_experiments.md` — per-position-in-tour shift (δ_pos), empirical curve, anchor choice, backtest gains
-- `docs/noisy_or_init_experiments.md` — noisy-OR-aware question initialisation (`b_init = log(n) - log(-log(1-p))`), why the legacy init under-shot b on hard packs and why that leaked into θ via the noisy-OR gauge, plus the 27-trial coord-descent retune (Round 1)
-- `docs/theta_bar_init_experiments.md` — θ̄-aware extension (`b_init = log(n) + θ̄ - log(-log(1-p))`); Round 2 retune that pushed `eta0` from 0.04 → 0.15 and the diagnostic showing every Vyshka-Moscow team is now unbiased
-- `docs/leakage_2026-05.md`
-- `docs/cleanup_2026-05.md`
-- `docs/roster_sticking_2026-05.md` — investigation of three veterans
- flagged as rated "too low" (Чернуха, Рекшинская, Монина): diagnostics
- for the "perennial floor player on a stable roster" effect, the
- `eta_teammate` 0.005→0.02 bump (accepted), and two rejected fixes
- (residual-aware adaptive η; mixed credit attribution) with the
- evidence that the residual stickiness is ~80 % team-context, not
- individual θ-staleness
-- `docs/calibration_2026-05.md` — discovery of test-set leakage in the
-  legacy time-split backtest, the cell-holdout fix
-  (`Config.holdout_obs_fraction`, `--holdout` CLI), measured
-  magnitude of leakage (~+5 % logloss overall, +16 % on offline),
-  and consequences for past ablation results
-- `docs/lapse_rate_2026-05.md` — per-(mode × is_solo) lapse-rate
-  floor `p = (1 − π) · p_noisy_or` to fix solo / async high-p
-  over-prediction (−0.0054 logloss; solo high-p bias 9.5 → 1.5 p.p.)
-- `docs/recalibration_2026-05.md` — logit-affine per-(mode × is_solo)
-  recalibration `p = sigmoid(α + β · logit(p_lapse))` to fix the
-  residual S-shaped mid-range bias (solo p∈[0.7, 0.8] bias 5.0 → 1.0 p.p.)
-- `docs/floor_player_experiments_2026-06.md` — June 2026 cycle on
-  floor players (Монина / Рекшинская / Чернуха): difficulty-weighted
-  loss, Model C rank validation, overperf θ floor — all rejected or not
-  promoted; production unchanged
-- `docs/difficulty_weights_2026-06.md`, `docs/temperature_credit_experiments_2026-06.md`,
-  `docs/2d_player_experiments_2026-06.md` — per-mechanism detail for the above

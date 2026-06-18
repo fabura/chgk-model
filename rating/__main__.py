@@ -133,7 +133,7 @@ def main() -> int:
         default=0.0,
         help="L2-style shrinkage for delta_size (default 0.0; "
              "raised values pull δ_size toward 0 — see "
-             "docs/error_structure_2026-04.md §3).",
+             "docs/experiments/cycles/2026-04/error_structure_2026-04.md §3).",
     )
     hp.add_argument(
         "--use-pos-effect",
@@ -255,7 +255,7 @@ def main() -> int:
         "Default since 2026-05 — fixes the residual S-shaped mid-range "
         "calibration bias (5 → 1 p.p. for solo p∈[0.7, 0.8]).  "
         "Use --no-use-recalibration to disable.  See "
-        "docs/recalibration_2026-05.md.",
+        "docs/experiments/cycles/2026-05/recalibration_2026-05.md.",
     )
 
     ap.add_argument(

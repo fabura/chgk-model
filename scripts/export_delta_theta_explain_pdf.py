@@ -7,7 +7,7 @@ from pathlib import Path
 from fpdf import FPDF
 
 ROOT = Path(__file__).resolve().parents[1]
-OUT = ROOT / "docs" / "delta_vs_theta_hay_eli.pdf"
+OUT = ROOT / "docs" / "assets" / "delta_vs_theta_hay_eli.pdf"
 FONT = "/System/Library/Fonts/Supplemental/Arial Unicode.ttf"
 
 

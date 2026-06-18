@@ -2,7 +2,7 @@
 
 This note captures the cheap-but-impactful changes evaluated against
 the previously-tuned `t6` baseline (see
-`docs/async_mode_experiments.md`).  The biggest win came from replacing
+`docs/experiments/mechanisms/async_mode_experiments.md`).  The biggest win came from replacing
 the global per-tournament decay with a per-player calendar-based decay.
 
 ## Why the per-tournament decay was wrong

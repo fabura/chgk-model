@@ -46,7 +46,7 @@ CONFIGS = {
 
     # Note (2026-05): the legacy ``cold_init_factor`` and
     # ``use_calendar_decay`` knobs were removed during the cleanup.
-    # See ``docs/cleanup_2026-05.md``.  Calendar-decay is now always
+    # See ``docs/experiments/cycles/2026-05/cleanup_2026-05.md``.  Calendar-decay is now always
     # on, configured solely via ``rho_calendar``; cold-start is always
     # the fixed-prior path (``cold_init_theta``).
 

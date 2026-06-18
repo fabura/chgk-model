@@ -1,6 +1,6 @@
 # Calibration on the honest cell-holdout, 2026-05
 
-After the 2026-05 cleanup (`docs/cleanup_2026-05.md`) and with the new
+After the 2026-05 cleanup (`docs/experiments/cycles/2026-05/cleanup_2026-05.md`) and with the new
 default config (`freeze_log_a=True`, `team_size_max=12`,
 `n_extra_epochs=1`, `--holdout 0.10`), we re-ran the calibration
 analysis on the leakage-free held-out cells.  Output:

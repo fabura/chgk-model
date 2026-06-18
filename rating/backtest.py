@@ -58,7 +58,7 @@ def backtest(
       respect to player ratings, but the question difficulty ``b`` of
       questions that first appear in a test tournament is initialised
       from that tournament's empirical take rate — see
-      ``docs/leakage_2026-05.md``.  This biases the metric and is the
+      ``docs/experiments/cycles/2026-05/leakage_2026-05.md``.  This biases the metric and is the
       legacy behaviour kept for back-compatibility.
 
     * **Per-cell hold-out**: ``cfg.holdout_obs_fraction > 0.0`` —

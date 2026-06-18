@@ -1,6 +1,6 @@
 """Re-tune δ_size: drop the L2 reg and/or raise the step size.
 
-Hypothesis (docs/error_structure_2026-04.md §1.3 + new §3): the
+Hypothesis (docs/experiments/cycles/2026-04/error_structure_2026-04.md §1.3 + new §3): the
 +0.04 / +0.02 residual on size 1 / 2 is a δ_size under-fit, pulled
 back toward 0 by ``reg_size = 0.10``.  Upper bound for any size-only
 calibration is −0.00051 logloss (post-hoc, in-sample).

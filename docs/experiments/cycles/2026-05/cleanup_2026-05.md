@@ -1,7 +1,7 @@
 # Config cleanup, 2026-05
 
 After the leakage-free re-validation of the model
-(`docs/leakage_2026-05.md`), several `Config` knobs that had been
+(`docs/experiments/cycles/2026-05/leakage_2026-05.md`), several `Config` knobs that had been
 either dead-by-default or shown to provide no value were removed.
 
 ## Removed parameters and code paths
@@ -11,7 +11,7 @@ either dead-by-default or shown to provide no value were removed.
 * **What**: legacy global per-tournament rating decay (`θ ← ρ · θ`
   applied once per tournament for every player).
 * **Why removed**: `use_calendar_decay=True` was the production default
-  since the calendar-decay experiments (`docs/calendar_decay_experiments.md`)
+  since the calendar-decay experiments (`docs/experiments/mechanisms/calendar_decay_experiments.md`)
   showed that the per-tournament path cut backtest logloss from 0.532 to
   0.602.  Calendar-decay (per-player, per-day) replaced it. The `rho`
   knob and `apply_decay` function were only reachable via
@@ -70,7 +70,7 @@ either dead-by-default or shown to provide no value were removed.
   out, deterministic via `--holdout-seed=42`, and the metric is
   computed only on those cells).
 * **Why**: the legacy time-split was leaky by ~+5 % logloss overall
-  (~+16 % on offline tournaments) — see `docs/leakage_2026-05.md`.
+  (~+16 % on offline tournaments) — see `docs/experiments/cycles/2026-05/leakage_2026-05.md`.
   Reaching for the honest mode every single time is cumbersome and
   error-prone.  The legacy mode is still available via
   `--holdout 0.0` for direct comparison to historical numbers.
