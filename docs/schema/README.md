@@ -70,3 +70,8 @@ erDiagram
 3. Источник правды для DuckDB — константа `DDL` в `website/build/build_db.py`.
 4. Источник правды для venue overlay — `DDL` в `venue_overlay/store.py`.
 5. Источник правды для npz — `CACHE_VERSION_NPZ` в `data.py`, `_export_results_npz` в `rating/__main__.py`.
+
+## CI
+
+`python scripts/check_schema_docs.py` — таблицы из DDL в коде упомянуты в `docs/schema/*.md`.
+Запускается в GitHub Actions (`.github/workflows/schema-docs.yml`) и в `tests/test_schema_docs.py`.

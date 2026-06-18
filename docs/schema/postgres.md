@@ -5,6 +5,18 @@
 
 Подключение: `DATABASE_URL` (default `postgresql://postgres:password@127.0.0.1:5432/postgres`).
 
+## Полная DDL (live snapshot)
+
+Репозиторий `rating-db` — источник схемы. Для актуального списка колонок
+из локального Postgres:
+
+```bash
+python scripts/introspect_postgres_schema.py --out docs/schema/postgres_live.md
+```
+
+Файл `postgres_live.md` генерируется вручную и коммитится при смене схемы
+rating-db. CI проверяет только `docs/schema/postgres.md` (контракт проекта).
+
 ## Таблицы, которые читает модель
 
 ### `public.tournaments`

@@ -6,6 +6,7 @@
 
 | Задача | Куда смотреть |
 |--------|---------------|
+| Модель, формула, hyperparams | [`model.md`](model.md) |
 | Где какой модуль / файл | [`repo-map.md`](repo-map.md) |
 | Таблицы Postgres (рейтинговая БД) | [`schema/postgres.md`](schema/postgres.md) |
 | Таблицы DuckDB (сайт) | [`schema/duckdb.md`](schema/duckdb.md) |
@@ -13,7 +14,7 @@
 | Тексты вопросов (`questions.db`) | [`schema/questions-db.md`](schema/questions-db.md) |
 | Venue overlay, API overlay | [`schema/venue-overlay.md`](schema/venue-overlay.md), [`schema/api-overlay.md`](schema/api-overlay.md) |
 | Схема данных — обзор и связи | [`schema/README.md`](schema/README.md) |
-| Модель, гиперпараметры, пайплайн | [`../AGENTS.md`](../AGENTS.md) |
+| Операции: сайт, refresh, API | [`../AGENTS.md`](../AGENTS.md) |
 | Запуск, refresh, деплой | [`../README.md`](../README.md), [`../website/README.md`](../website/README.md) |
 | Интерпретация θ | [`interpretation.md`](interpretation.md) |
 | Эксперименты (индекс) | [`experiments_summary_ru.md`](experiments_summary_ru.md) |
@@ -57,16 +58,19 @@ rating-db Postgres (public.*)
 | SQL к `public.*` в `data.py` / `build_db.py` | `schema/postgres.md` |
 | Формат `data.npz` / `seq.npz` | `schema/cache.md` |
 | Новый пакет / значимый скрипт | `repo-map.md` |
+| `Config` defaults / механика модели | `model.md` |
 | `Config` defaults / эксперимент | `experiments_summary_ru.md` + детальный doc |
 | Новая таблица в overlay / API mirror | соответствующий `schema/*.md` |
 
 Подробнее: `.cursor/rules/docs-maintenance.mdc`.
+Проверка: `python scripts/check_schema_docs.py` (CI: `.github/workflows/schema-docs.yml`).
 
 ## Структура `docs/`
 
 ```
 docs/
   INDEX.md              ← этот файл
+  model.md              ← формула, Config, обучение
   repo-map.md           ← карта модулей и файлов
   schema/               ← таблицы и связи
     README.md

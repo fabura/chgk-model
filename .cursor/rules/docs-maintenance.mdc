@@ -14,6 +14,7 @@ Before exploring the codebase from scratch, read:
 
 | Change | Update |
 |--------|--------|
+| `Config` defaults or model mechanics | `docs/model.md` |
 | `DDL` in `website/build/build_db.py` or new DuckDB column | `docs/schema/duckdb.md` |
 | SQL against `public.*` (columns, joins, filters) | `docs/schema/postgres.md` |
 | `CACHE_VERSION_NPZ`, npz keys, `RatingResults` fields | `docs/schema/cache.md` |

@@ -6,261 +6,42 @@ Guidance for AI agents working with this codebase.
 
 | Need | Read first |
 |------|------------|
+| Model, hyperparams, training defaults | [`docs/model.md`](docs/model.md) |
 | Navigation, data flow, doc index | [`docs/INDEX.md`](docs/INDEX.md) |
 | Which file/module does what | [`docs/repo-map.md`](docs/repo-map.md) |
 | DB tables and relationships | [`docs/schema/README.md`](docs/schema/README.md) → `docs/schema/*.md` |
-| Model, hyperparams, pipeline (below) | This file |
+| Website, refresh, API mirror (below) | This file |
 
 Schema docs must stay in sync with code — see `.cursor/rules/docs-maintenance.mdc`.
 
 ## Project overview
 
-**ChGK** (Что? Где? Когда?) is a probabilistic model that estimates:
+Probabilistic ChGK model: player strength **θ**, question difficulty **b**,
+discrimination **a** from team take/not-take outcomes and rosters.
 
-- **θ** (theta) — player strength
-- **b** — question difficulty
-- **a** — question discrimination (selectivity)
+**Full formula, defaults, hyperparameter list, training history:**
+[`docs/model.md`](docs/model.md).
 
-from binary team answers (taken / not taken) and team rosters. Data comes from the rating DB: `tournaments`, `tournament_results.points_mask`, `tournament_rosters`.
-
-Core formula (noisy-OR):
-`z_k = -(b_i + δ) + a_i * θ_k` → `λ_k = exp(z_k)` → `S = Σ_k λ_k` → `p_take = 1 - exp(-S)`
-
-`δ = δ_size[clip(team_size, 1, K)] + δ_pos[q_index_in_tournament % tour_len]` where:
-
-- `δ_size` = per-team-size shift (anchored at 6 = 0; corrects noisy-OR's
-  naive composition of player contributions; see
-  `docs/team_size_experiments.md`)
-- `δ_pos` = per-position-in-tour shift (anchored at 0 = 0, the easiest
-  position; captures the empirical "first questions easier, mid-tour
-  hardest, end-tour slight rebound" pattern; see
-  `docs/position_in_tour_experiments.md`)
-
-The per-mode (`μ_type`) and per-tournament (`ε_t`) offsets were removed
-in 2026-04 after an ablation showed those 8 746 parameters were
-net-negative for backtest quality (logloss −0.0043, AUC +0.0044 when
-removed). Mode differences are now captured only via the per-mode
-update weights (`w_online`, `w_sync`, …) in `rating.engine`.
+Data: rating DB `tournaments`, `tournament_results.points_mask`, `tournament_rosters`.
+Load/cache: `data.py`; train: `python -m rating --mode cached --cache_file data.npz`.
 
 ## Sequential online rating (`rating/`)
 
-Sequential model: computes player strength changes week by week, tournament by tournament.
+See [`docs/model.md`](docs/model.md) for formula, defaults, and `Config` fields.
 
-- **Location**: `rating/` package
-- **Run**: `python -m rating --mode cached --cache_file data.npz`
-- **Important defaults**:
-  - tuned `t6` mode handling — see `docs/async_mode_experiments.md`
-  - per-player calendar decay (`rho_calendar=1.0` = disabled by
-    default) — see `docs/calendar_decay_experiments.md`. The legacy
-    global per-tournament decay (`rho`, `use_calendar_decay`,
-    `apply_decay`) was removed in 2026-05; see `docs/cleanup_2026-05.md`.
-  - learned per-team-size effect (`use_team_size_effect=True`,
-    anchor at 6) — see `docs/team_size_experiments.md`
-  - learned per-position-in-tour effect (`use_pos_effect=True`,
-    anchor at 0, `tour_len=12`) — see `docs/position_in_tour_experiments.md`
-  - separate solo update channel (`use_solo_channel=True`,
-    `w_solo=0.3`) — observations with `team_size==1` are routed
-    through their own gradient pass with a much smaller θ-update
-    weight, so prolific soloists in online quizzes (M-Лига etc.)
-    don't get artefactually inflated θ via the noisy-OR
-    identifiability shortcut. See `docs/solo_channel_experiments.md`.
-  - fixed cold-start prior (`cold_init_theta=-1.0`) plus chess-Elo
-    "rookie boost" (`games_offset=0.25`, so first-game η = 2·η0) —
-    breaks the team-mean inheritance feedback loop that produced
-    multi-year population θ drift; rationale and the 12-cell sweep
-    that picked these defaults are in `scripts/exp_cold_start_grid.py`
-    (and the extra boundary sweep in `..._extra.py`). The legacy
-    "inherit team-mean" path (`cold_init_factor`,
-    `cold_init_use_team_mean`) was removed in 2026-05; see
-    `docs/cleanup_2026-05.md`.
-  - frozen question discrimination (`freeze_log_a=True`,
-    i.e. `a_i ≡ 1` for every question). Ablation under cell-holdout
-    (`results/exp_holdout_ablations.csv`) showed learning `a_i` did
-    not improve quality; freezing removes ~25 k learnable parameters.
-    Set `--no-freeze-log-a` to re-enable for ablation experiments.
-  - team-size effect learned up to size 12
-    (`team_size_max=12`, anchor at 6) — bumped from 8 in 2026-05
-    after honest calibration showed the previously-collapsed `[10+]`
-    bucket was under-predicted by ~3 p.p.; see
-    `results/exp_size_max.csv`.
-  - one extra SGD epoch by default (`n_extra_epochs=1`) — gives
-    overall logloss −0.0009 and async-only logloss −0.0024 under
-    cell-holdout vs single-pass; a second extra epoch plateaus,
-    indicating SGD reaches the local optimum after pass 2 and a
-    fancier optimizer (Adam / L-BFGS) is unlikely to help. See
-    `results/exp_multi_epoch_honest.csv`.
-  - per-(mode × is_solo) lapse rate (`use_lapse_rate=True`,
-    six learnable scalars `π_{m,s}`) capping the predicted
-    probability at `1 − π`. Fixes the +9.5 p.p. solo high-p
-    over-prediction (down to +1.5 p.p.) and +3.9 p.p. async
-    high-p (down to +2.1 p.p.).  Net **−0.0054 logloss** — the
-    largest single gain in the 2026-05 cycle. See
-    `docs/lapse_rate_2026-05.md`.
-  - re-tuned defaults: `eta0=0.22` (was 0.15), `w_online=1.0`
-    (was 0.5).  Both shifted upward after the lapse rate
-    absorbed format-specific noise that previously demanded
-    smaller online steps.  See `results/exp_eta0_sweep_honest*.csv`
-    and `results/exp_w_online_sweep_honest*.csv`.
-  - `w_solo` 0.3 → 0.7 after the lapse rate took over part of the
-    noise-absorption role for solo obs; broad plateau 0.5–0.9 on
-    overall logloss.
-  - per-(mode × is_solo) logit-affine recalibration
-    (`use_recalibration=True`, 12 learnable scalars α, β) applied
-    after the lapse cap to fix the residual S-shaped mid-range
-    bias.  Net −0.0003 logloss but big structural fix:
-    over-predicted solo "expected takes" drop ~10 % (e.g.
-    player 32919 went from 442.8 → 407.8 expected solo takes).
-    See `docs/recalibration_2026-05.md`.
- - Backtest logloss on the full DB: **0.5004** (honest cell-holdout
- with `--holdout 0.10 --holdout-seed 42`, the new CLI default; see
- `docs/leakage_2026-05.md`). The legacy time-split number was 0.485
- but it was leaky by ~+5 % overall and ~+16 % on offline tournaments —
- do not compare honest numbers to historical leaky ones (use
- `--holdout 0.0` for the legacy mode if you need a direct comparison).
- The leaky number was 0.602 with the old per-tournament decay; 0.532
- before adding team-size; 0.527 before the position effect; ~1.3 %
- further improvement from the fixed cold-start prior; ~1.7 % more
- from the 2026-04 noisy-OR init + retune; ~5.9 % more from the
- θ̄-aware init + retune. Note: the last two gains touch the same
- `b_init` channel that leaks, so part of those reported gains is
- improvement in *the calibration of the leakage*; see the 2026-05
- ablation re-validation in `results/exp_holdout_ablations.csv`.
-- **Hyperparameters**: `eta0`, `rho_calendar`, `decay_period_days`,
- `cold_init_theta`, `games_offset`, `w_online`, `w_online_questions`,
- `w_online_log_a`, `w_offline`, `w_sync`, `eta_size`, `eta_pos`,
- `eta_teammate`, `reg_size`, `reg_pos`, `reg_theta`, `reg_b`,
- `reg_log_a`, `team_size_max`, `team_size_anchor`,
- `w_size_offline/sync/async`, `tour_len`, `pos_anchor`,
- `use_solo_channel`, `w_solo`, `w_solo_questions`, `w_solo_log_a`,
- `w_size_solo`, `w_pos_solo`, `recenter_period_days`,
- `recenter_target`, `recenter_min_games`, `recenter_active_days`,
- `noisy_or_init`, `theta_bar_init`, `theta_bar_min_games`,
- `n_extra_epochs`, `extra_test_fraction`, `freeze_log_a`,
- `use_lapse_rate`, `lapse_init_offline_team/solo`,
- `lapse_init_sync_team/solo`, `lapse_init_async_team/solo`,
- `eta_lapse`, `lapse_max`, `use_recalibration`,
- `recal_alpha_init`, `recal_beta_init`, `eta_recal`,
- `recal_alpha_max`, `recal_beta_min`, `recal_beta_max`,
- `holdout_obs_fraction`, `holdout_seed`.
- Full list in `Config` (`rating/engine.py`). Removed in 2026-05:
- `rho`, `use_calendar_decay`, `cold_init_factor`,
- `cold_init_use_team_mean` — see `docs/cleanup_2026-05.md`.
-- **Drift fix (yearly gauge re-centering)**: every
-  `recenter_period_days` (365 by default) the median θ of "active
-  veterans" (`games >= recenter_min_games=200`, seen within
-  `recenter_active_days=365`) is pinned to `recenter_target` (default
-  **−0.70**, tuned via backtest sweep). Implemented as a strict gauge
-  transform — `θ ↑ Δ`, `b ↑ a·Δ` — so predictions are exactly
-  invariant; the only effect is to keep absolute θ comparable across
-  years and stop the multi-year cold-start drift (median θ used to
-  drift from −0.15 in 2020 to −0.66 in 2025; now pinned at −0.70 with
-  per-year Δ < 0.04). Also yields a small predictive-quality win
-  (logloss 0.5350 at target=−0.80, 0.5357 at −0.70 vs 0.5486 with
-  re-centering disabled). Filter for "season aggregate" tournaments
-  (`exclude_seasonal_aggregates=True` in `data.py`) is applied at load
-  time before training to remove "12 граней"-style broken
-  `points_mask` rows.
-- **Re-tuned defaults (2026-04, post-cleanup)**: after the seasonal-
-  aggregate filter and yearly re-centering, the per-update step sizes
-  needed re-tuning. A focused sweep (`/tmp/chgk_retune*.py`,
-  `results/retune_2026-04*.csv`, 38 trials) on the 20 % time-split
-  hold-out picked **`eta0=0.05`** (was 0.10), **`w_sync=0.7`** (was
-  0.9) and **`w_online_questions=0.30`** (was 0.45) as the then-current
-  `Config` defaults.
-- **2026-04 lean refactor**: a follow-up ablation removed the per-mode
- shift `μ_type` and per-tournament residual `ε_t` (8 746 params,
- net-negative for backtest), added a small teammate-θ shrinkage
- (`eta_teammate=0.005`, bumped to **0.02** in 2026-05 — see
- `docs/roster_sticking_2026-05.md`) to soften the noisy-OR
- identifiability problem on stable rosters, and re-tuned `eta0`
- (`0.05 → 0.07`) for
- the leaner model. Cumulative gain on the 20 % hold-out:
- `logloss 0.5365 → 0.5309` (−0.0056), `AUC 0.8065 → 0.8115` (+0.0050).
- The full sweep tables live in `/tmp/exp_*.py`.
-- **Small-team residual fix (2026-04)**: dropped `reg_size` from
- `0.10 → 0.0`; the L2 was holding `δ_size[1..3]` ≈ 0.2 nats short of
- the post-hoc oracle, leaving solo (+0.04) and pairs (+0.02)
- systematically under-predicted. Single-line change, captures ~96 %
- of the size-only upper bound: `logloss 0.4877 → 0.4872` (AUC
- +0.0005, brier −0.00025); per-slice gains concentrate in async
- (−0.0008) and the hardest tournament quartile (−0.0049). See
- `docs/error_structure_2026-04.md` §3.
-- **2026-04 noisy-OR init + retune (Round 1)**: a follow-up
- investigation (chat thread on Vyshka Moscow over-prediction)
- showed the legacy question initialisation `b_init = -log(p_take)`
- implicitly assumed a 1-player team at θ=0, under-estimating b
- by `log(team_size)` for the typical 6-player teams. On hard packs
- SGD inside one tournament can't fully close that gap, and the
- residual leaks into θ via the noisy-OR gauge ambiguity,
- systematically depressing the θ of top players who play many
- strong-field events. Fix: noisy-OR-aware init
- `b_init = log(n_avg) - log(-log(1-p))`
- (`Config.noisy_or_init=True`, `QuestionState.init_from_take_rate`
- takes `team_size_avg`). After the structural change, a 27-trial
- coord-descent retune on the 20 % hold-out picked `eta0=0.04`
- (was 0.07), `w_sync=0.5` (was 0.7), `w_online_questions=0.15`
- (was 0.30), `eta_size=0.001` (was 0.005), `eta_pos=0.001`
- (was 0.005). Round 1 gain: `logloss 0.5270 → 0.5182` (−0.0088),
- `AUC 0.8158 → 0.8333` (+0.0175). See
- `docs/noisy_or_init_experiments.md` and
- `results/exp_noisy_or_init_retune.csv`.
-- **2026-04 θ̄-aware init + retune (Round 2)**: noisy-OR init
- still implicitly assumes the average team plays at `θ̄ = 0`,
- which is wrong on strong-field tournaments where `θ̄ ≈ +0.5…+1.0`.
- Extended init to incorporate the mean pre-tournament θ of mature
- players (`games >= theta_bar_min_games=3`) on teams that played
- each question:
- `b_init = log(n_avg) + θ̄ - log(-log(1-p))`
- (`Config.theta_bar_init=True`,
- `QuestionState.init_from_take_rate(theta_bar=…)`). The cleaner
- b lets θ updates be ~3.5× more aggressive — a 25-trial retune
- picked `eta0=0.15` (was 0.04); other knobs unchanged from
- Round 1. Round 2 gain over Round 1: `logloss 0.5182 → 0.4877`
- (−0.0305, ~5.9 %), `AUC 0.8333 → 0.8455` (+0.0122);
- offline-bucket `logloss 0.4791 → 0.4483` (−0.0308). All three
- modes (offline / sync / async) improved symmetrically.
- Diagnostic on the 3 days of Vyshka Moscow:
- `mean(actual − expected)` went from `−5.5` (every team
- systematically over-predicted) to `+0.3` (unbiased) — the
- original Юлия observation is fixed at the root.
- Strong-field veterans no longer systematically lose θ on
- hard tournaments they actually win.
- See `docs/theta_bar_init_experiments.md`,
- `results/exp_theta_bar_retune.csv`,
- `scripts/diagnostic_compare.py` for the full story. Two failed
- ablations from this round (`b_pack_shrinkage`, `pack_prior_w`)
- were removed from `Config`.
-- **Paired tournaments**: Uses `canonical_q_idx` — sync+async pairs share question params (b, a)
-- **Tournament ordering**: By `start_datetime` (date of start, not end)
+Quick reference:
 
 | File | Role |
 |------|------|
-| `rating/model.py` | Noisy-OR `forward`, gradients (stable `expm1` formulation) |
-| `rating/players.py` | `PlayerState` — θ, adaptive η = η0/√(games_offset + games); fixed-prior or team-mean cold-start |
-| `rating/questions.py` | `QuestionState` — b, log_a, init from take rate |
-| `rating/decay.py` | θ ← ρ·θ between tournaments (or per-week calendar decay) |
-| `rating/tournaments.py` | Tournament-type encoding helpers (`TYPE_OFFLINE/SYNC/ASYNC`, `game_type_to_idx`); the per-mode/per-tournament shift was removed in 2026-04 |
-| `rating/engine.py` (`delta_size`) | per-team-size shift, anchored at 6, learned online |
-| `rating/engine.py` (`delta_pos`) | per-position-in-tour shift (length `tour_len`, anchored at 0), learned online |
-| `rating/engine.py` | `Config` + `run_sequential()` — chronological online SGD |
-| `rating/backtest.py` | Time-split evaluation (logloss, Brier, AUC) |
-| `rating/io.py` | `load_results_npz()` / `save_results_npz()` — compact results |
+| `rating/engine.py` | `Config` + `run_sequential()` |
+| `rating/model.py` | Noisy-OR forward + gradients |
+| `rating/players.py`, `rating/questions.py` | θ and b/a state |
+| `rating/backtest.py` | Cell-holdout evaluation |
+| `rating/io.py` | `load_results_npz()` |
 
 ```bash
-# From DB (prefer .npz — compressed, faster load)
-python -m rating --mode db --cache_file data.npz
-
-# From cache
-python -m rating --mode cached --cache_file data.npz
-
-# Backtest
-python -m rating --mode cached --cache_file data.npz --backtest
-
-# Export (compact .npz or CSV)
 python -m rating --mode cached --cache_file data.npz --results_npz results/seq.npz
-python -m rating --mode cached --cache_file data.npz \
-    --players_out results/seq_players.csv \
-    --questions_out results/seq_questions.csv
+python -m rating --mode cached --cache_file data.npz --backtest
 ```
 
 ## Website (`website/`)
@@ -460,6 +241,7 @@ pip install -r requirements.txt
 ## Docs
 
 - `docs/INDEX.md` — documentation hub (schemas, repo map, links)
+- `docs/model.md` — formula, Config defaults, training history
 - `docs/repo-map.md` — modules, scripts, routes, typical commands
 - `docs/schema/` — Postgres, DuckDB, npz, questions.db, overlays (tables + ER)
 - `docs/experiments_summary_ru.md` — Russian index of all experiments

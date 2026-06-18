@@ -146,7 +146,8 @@ calling the same script with `StartCalendarInterval` set to `Hour=1`.
 | [`docs/INDEX.md`](docs/INDEX.md) | Hub: data flow, links to everything |
 | [`docs/repo-map.md`](docs/repo-map.md) | Modules, scripts, website routes |
 | [`docs/schema/`](docs/schema/) | Tables (Postgres, DuckDB, npz) and relationships |
-| [`AGENTS.md`](AGENTS.md) | Model, defaults, refresh pipeline (for AI agents) |
+| [`docs/model.md`](docs/model.md) | Model formula, Config defaults, training |
+| [`AGENTS.md`](AGENTS.md) | Ops for AI agents (website, refresh, API) |
 
 ## Layout
 

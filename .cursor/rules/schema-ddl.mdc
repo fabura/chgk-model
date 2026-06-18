@@ -10,3 +10,4 @@ alwaysApply: false
 2. After editing DDL or npz/cache format, update that doc in the same PR.
 3. If adding a table: add to `docs/schema/README.md` ER section and `docs/INDEX.md` if user-facing.
 4. DuckDB DDL lives in `build_db.py` constant `DDL` — keep `docs/schema/duckdb.md` aligned.
+5. Run `python scripts/check_schema_docs.py` before pushing schema changes.
