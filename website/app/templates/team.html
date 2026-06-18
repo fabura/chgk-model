@@ -6,6 +6,25 @@
 ?window={{ window }}&per_page={{ games_per_page }}&page={{ p }}
 {%- endmacro %}
 
+{% macro roster_row(r) %}
+<tr class="border-t border-slate-100 hover:bg-slate-50">
+  <td class="px-3 py-2"><a href="/player/{{ r.player_id }}" class="text-indigo-700 hover:underline">{{ r|fullname }}</a></td>
+  <td class="px-3 py-2 text-right num">{{ "%.3f"|format(r.theta) }}</td>
+  <td class="px-3 py-2 text-right num text-slate-600 whitespace-nowrap">
+    {{ r.n_app_venue }} <span class="text-slate-400">/ {{ r.n_app_window }}</span>
+    {% if r.n_app_async > 0 %}
+    <span class="text-[10px] text-slate-400 block">+{{ r.n_app_async }} асинхр.</span>
+    {% endif %}
+  </td>
+  <td class="px-3 py-2 text-right num text-slate-600 whitespace-nowrap">
+    {{ r.n_app_window }} <span class="text-slate-400">/ {{ r.games_with_team }}</span>
+  </td>
+  <td class="px-3 py-2 text-right num text-slate-600">
+    {% if r.share_venue is not none %}{{ "%.0f"|format(100 * r.share_venue) }}%{% else %}—{% endif %}
+  </td>
+</tr>
+{% endmacro %}
+
 {% block head_extra %}
 <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
 {% endblock %}
@@ -156,7 +175,7 @@
 
   <section class="bg-white border border-slate-200 rounded shadow-sm">
     <h2 class="px-4 py-2 text-sm font-medium text-slate-600 border-b border-slate-100">
-      Состав ({{ roster|length }} игр.)
+      Состав ({{ roster|length }} игроков)
     </h2>
     <div class="overflow-x-auto">
     <table class="w-full text-sm min-w-[22rem]">
@@ -164,35 +183,54 @@
         <tr>
           <th class="px-3 py-2 text-left">Игрок</th>
           <th class="px-3 py-2 text-right">θ</th>
-          <th class="px-3 py-2 text-right" title="Игр за команду в окне ({{ window }} дн.) / всего за всю историю">
+          <th class="px-3 py-2 text-right" title="Очник+синхрон в окне ({{ window }} дн.) / всего игр в окне">
+            Площадка<br><span class="normal-case font-normal text-[10px] text-slate-400">окно</span>
+          </th>
+          <th class="px-3 py-2 text-right" title="Игр за команду в окне / всего за всю историю">
             Игр<br><span class="normal-case font-normal text-[10px] text-slate-400">окно/всего</span>
           </th>
-          <th class="px-3 py-2 text-right" title="Доля игр в окне ({{ window }} дн.), которые игрок провёл именно за эту команду">
-            Доля
+          <th class="px-3 py-2 text-right" title="Доля очных+синхронных игр в окне за эту команду (без асинхрона)">
+            Доля<br><span class="normal-case font-normal text-[10px] text-slate-400">площадка</span>
           </th>
         </tr>
       </thead>
+      {% if roster_core %}
       <tbody>
-        {% for r in roster %}
-        <tr class="border-t border-slate-100 hover:bg-slate-50">
-          <td class="px-3 py-2"><a href="/player/{{ r.player_id }}" class="text-indigo-700 hover:underline">{{ r|fullname }}</a></td>
-          <td class="px-3 py-2 text-right num">{{ "%.3f"|format(r.theta) }}</td>
-          <td class="px-3 py-2 text-right num text-slate-600 whitespace-nowrap">
-            {{ r.n_app_window }} <span class="text-slate-400">/ {{ r.games_with_team }}</span>
-          </td>
-          <td class="px-3 py-2 text-right num text-slate-600">
-            {% if r.share_window is not none %}{{ "%.0f"|format(100 * r.share_window) }}%{% else %}—{% endif %}
+        <tr class="bg-indigo-50/60">
+          <td colspan="5" class="px-3 py-1.5 text-xs font-medium text-indigo-800">
+            Ядро ({{ roster_core|length }}) — те же {{ roster_core|length }} игроков, что в рейтинге
+            <a href="/teams" class="text-indigo-700 hover:underline">команд</a>
           </td>
         </tr>
+        {% for r in roster_core %}
+        {{ roster_row(r) }}
         {% endfor %}
       </tbody>
+      {% endif %}
+      {% if roster_other %}
+      <tbody>
+        <tr class="bg-slate-50">
+          <td colspan="5" class="px-3 py-1.5 text-xs font-medium text-slate-600">
+            Остальные ({{ roster_other|length }})
+          </td>
+        </tr>
+        {% for r in roster_other %}
+        {{ roster_row(r) }}
+        {% endfor %}
+      </tbody>
+      {% endif %}
+      {% if not roster %}
+      <tbody>
+        <tr><td colspan="5" class="px-3 py-4 text-center text-slate-400 text-sm">Нет данных</td></tr>
+      </tbody>
+      {% endif %}
     </table>
     </div>
     <p class="px-3 py-2 text-xs text-slate-500 border-t border-slate-100">
-      Сортировка по доле в окне последних {{ window }} дней. Игрок с долей
-      &lt; 100% играл в этот период не только за эту команду; именно эта
-      доля используется как вес при подсчёте «силы ядра» команды на
-      <a href="/teams" class="text-indigo-700 hover:underline">странице команд</a>.
+      Сортировка: игры на площадке (очник + синхрон) в окне {{ window }} дн.
+      В ядро попадают до 6 игроков с ≥ {{ core_min_venue }} такими играми за
+      команду (как на странице команд). Асинхрон не учитывается в доле —
+      онлайн-квизы за другие составы не размывают привязку к этой команде.
     </p>
   </section>
 </div>

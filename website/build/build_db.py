@@ -38,7 +38,7 @@ from website.build.map_tables import bake_map_tables  # noqa: E402
 # Display-time inactivity decay
 #
 # The model deliberately does not decay θ over calendar time
-# (`rho_calendar = 1.0`, see docs/calendar_decay_experiments.md):
+# (`rho_calendar = 1.0`, see docs/experiments/mechanisms/calendar_decay_experiments.md):
 # every bit of decay during training cost backtest accuracy.  But for
 # a "current strength" board the raw θ leaves long-retired players at
 # the very top (their last θ from years ago is still their score).
@@ -922,7 +922,9 @@ CREATE TABLE team_games (
     place DOUBLE,
     -- FALSE when rating DB has place/total but no per-question points_mask
     -- (common for fresh sync uploads).  Model stats are NULL on these rows.
-    has_breakdown BOOLEAN
+    has_breakdown BOOLEAN,
+    -- Per-question 0/1 mask for head-to-head compare (NULL when no breakdown).
+    points_mask TEXT
 );
 
 CREATE TABLE player_games (
@@ -1712,6 +1714,7 @@ def write_duckdb(
     tg_theta: list[Optional[float]] = []
     tg_place: list[Optional[float]] = []
     tg_breakdown: list[bool] = []
+    tg_mask: list[Optional[str]] = []
     pg_template: dict[int, dict[int, tuple[int, Optional[int], Optional[float]]]] = {}
     # pg_template: player_id -> {tournament_id: (team_id, n_takes, expected)}
     n_skipped_phantom = 0
@@ -1751,6 +1754,7 @@ def write_duckdb(
         tg_theta.append(float(ti) if ti is not None else None)
         tg_place.append(place)
         tg_breakdown.append(True)
+        tg_mask.append(mask)
         inserted_team_games.add((int(tid), int(team_id)))
         for pid in active_pids:
             pg_template.setdefault(int(pid), {})[int(tid)] = (
@@ -1787,6 +1791,7 @@ def write_duckdb(
         tg_theta.append(None)
         tg_place.append(float(place))
         tg_breakdown.append(False)
+        tg_mask.append(None)
         inserted_team_games.add(key)
         for pid in active_pids:
             pg_template.setdefault(int(pid), {})[int(tid)] = (
@@ -1802,7 +1807,7 @@ def write_duckdb(
         "team_games",
         ["tournament_id", "team_id", "team_name", "n_players_active",
          "score_actual", "expected_takes", "team_theta_implied", "place",
-         "has_breakdown"],
+         "has_breakdown", "points_mask"],
         {
             "tournament_id": pa.array(tg_tid, type=pa.int32()),
             "team_id": pa.array(tg_team, type=pa.int32()),
@@ -1813,6 +1818,7 @@ def write_duckdb(
             "team_theta_implied": pa.array(tg_theta, type=pa.float64()),
             "place": pa.array(tg_place, type=pa.float64()),
             "has_breakdown": pa.array(tg_breakdown, type=pa.bool_()),
+            "points_mask": pa.array(tg_mask, type=pa.string()),
         },
     )
 

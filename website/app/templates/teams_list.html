@@ -3,7 +3,7 @@
 {% block title %}Команды — ChGK Model{% endblock %}
 
 {% macro page_url(p) -%}
-?min_games={{ min_games }}&min_eff_base={{ min_eff_base }}&window={{ window }}&per_page={{ per_page }}&page={{ p }}
+?min_games={{ min_games }}&min_eff_base={{ min_eff_base }}&window={{ window }}&core={{ core }}&per_page={{ per_page }}&page={{ p }}
 {%- endmacro %}
 
 {% block content %}
@@ -16,12 +16,20 @@
     <label for="min_games">мин. турниров:</label>
     <input id="min_games" type="number" name="min_games" value="{{ min_games }}" min="1" max="200"
            class="w-20 border border-slate-300 rounded px-2 py-0.5">
-    <label for="min_eff_base" title="Эффективное число лояльных игроков в ядре (сумма долей в окне)">
+    <label for="min_eff_base" title="Эффективное число лояльных игроков в ядре (сумма весов в окне)">
       мин. ядро:
     </label>
     <input id="min_eff_base" type="number" name="min_eff_base" value="{{ min_eff_base }}"
            min="0.5" max="6.0" step="0.5"
            class="w-20 border border-slate-300 rounded px-2 py-0.5">
+    <label for="core" title="offline — ядро по очнику+синхрону; all — по всем режимам">
+      ядро:
+    </label>
+    <select id="core" name="core"
+            class="border border-slate-300 rounded px-2 py-0.5 bg-white">
+      <option value="offline" {% if core == 'offline' %}selected{% endif %}>площадка</option>
+      <option value="all" {% if core == 'all' %}selected{% endif %}>все режимы</option>
+    </select>
     <label for="per_page">на странице:</label>
     <select id="per_page" name="per_page"
             class="border border-slate-300 rounded px-2 py-0.5 bg-white">
@@ -35,16 +43,26 @@
 </div>
 
 <p class="text-xs text-slate-500 mb-3">
+  {% if core == 'offline' %}
+  «Сила базового состава» — среднее θ до шести игроков с наибольшим числом
+  <strong>очных и синхронных</strong> игр за команду за последние {{ window }} дней{% if ref_cutoff and ref_today %}
+  (с {{ ref_cutoff.isoformat() }} по {{ ref_today.isoformat() }}){% endif %}.
+  Вес игрока: доля его игр на площадке в окне, сыгранных за эту команду
+  (без асинхрона), умноженная на <code>min(1, n/3)</code>
+  — разовые гости с 1–2 играми почти не влияют. В ядро попадают только
+  игроки с ≥ 2 такими играми за команду в окне. Если у команды в окне
+  нет ни очных, ни синхронных турниров, используется логика по всем режимам.
+  {% else %}
   «Сила базового состава» — среднее θ шести самых частых игроков команды
   за последние {{ window }} дней{% if ref_cutoff and ref_today %}
   (с {{ ref_cutoff.isoformat() }} по {{ ref_today.isoformat() }}){% endif %},
   взвешенное по их «доле»&nbsp;— проценту игр в окне, которые игрок провёл
-  именно за эту команду. Игрок, отыгравший за команду 6 туров из 60,
-  даёт 10 % своей θ; «свой» с 50 из 55 — 91 %. «Ядро» — сумма этих долей
-  в топ-6: 6.0 значит шесть полностью преданных игроков, 1.0 — фактически
-  команда из одного человека. Команды без активности в окне в список не
-  входят. Учитываются только составы, сыгравшие в окне ≥ {{ min_games }}
-  турниров и набравшие ядро ≥ {{ "%.1f"|format(min_eff_base) }}.
+  именно за эту команду (все режимы).
+  {% endif %}
+  «Ядро» — сумма весов в топ-6: 6.0 значит шесть полностью преданных игроков,
+  1.0 — фактически команда из одного человека. Команды без активности в окне
+  в список не входят. Учитываются только составы, сыгравшие в окне ≥
+  {{ min_games }} турниров и набравшие ядро ≥ {{ "%.1f"|format(min_eff_base) }}.
   {% if total %}
   · всего {{ total }} команд; страница {{ page }} из {{ total_pages }}.
   {% endif %}

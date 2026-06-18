@@ -16,7 +16,7 @@
   <h1 class="text-2xl font-semibold">Сравнение</h1>
   <p class="text-sm text-slate-600 mt-1 break-words">
     До {{ max_players }} игроков и до {{ max_tournaments }} турниров на одной странице.
-    Игроки: оверлей θ, места, годовые перцентили, общие турниры.
+    Игроки: оверлей θ, места, годовые перцентили, общие турниры, статистика по общим вопросам.
     Турниры: карта вопросов (b, a) с цветом по турниру и средней точкой каждого.
     Парные синхрон↔асинхрон сестры подтягиваются автоматически.
   </p>
@@ -163,6 +163,177 @@
       </tbody>
     </table>
   </div>
+</section>
+{% endif %}
+
+{% if players|length >= 2 %}
+<section class="bg-white border border-slate-200 rounded shadow-sm mb-6">
+  <div class="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between px-4 py-2 border-b border-slate-100">
+    <h2 class="text-sm font-medium text-slate-600">Общие вопросы (head-to-head)</h2>
+    <span class="text-xs text-slate-500">один турнир, один номер вопроса — результат команд</span>
+  </div>
+  {% if not h2h_available %}
+  <p class="px-4 py-3 text-sm text-slate-500">
+    Статистика по вопросам появится после пересборки DuckDB с колонкой <code class="text-xs">points_mask</code>
+    (<code class="text-xs">python -m website.build.build_db …</code>).
+  </p>
+  {% elif h2h_pairs %}
+    {% for pair in h2h_pairs %}
+    <div class="{% if not loop.first %}border-t border-slate-200{% endif %} px-4 py-4">
+      <h3 class="text-sm font-semibold text-slate-800 mb-2">
+        {{ pair.player_a|fullname }}
+        <span class="text-slate-400 font-normal">vs</span>
+        {{ pair.player_b|fullname }}
+      </h3>
+      <p class="text-sm text-slate-600 mb-3">
+        <span class="num font-medium">{{ pair.n_common }}</span> общих вопросов
+        в <span class="num">{{ pair.n_tournaments }}</span> турнирах.
+        {% if pair.n_same_team %}
+        <span class="text-emerald-700 text-xs ml-1">({{ pair.n_same_team }} в одной команде)</span>
+        {% endif %}
+      </p>
+      <div class="overflow-x-auto mb-3">
+        <table class="w-full text-sm min-w-[32rem]">
+          <thead class="bg-slate-50 text-slate-600 text-xs uppercase">
+            <tr>
+              <th class="px-3 py-2 text-left"></th>
+              <th class="px-3 py-2 text-right">Взял</th>
+              <th class="px-3 py-2 text-right">Не взял</th>
+              <th class="px-3 py-2 text-right">%</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr class="border-t border-slate-100">
+              <td class="px-3 py-2 font-medium">{{ pair.player_a|fullname }}</td>
+              <td class="px-3 py-2 text-right num">{{ pair.a_taken }}</td>
+              <td class="px-3 py-2 text-right num text-slate-500">{{ pair.a_not_taken }}</td>
+              <td class="px-3 py-2 text-right num font-medium">{{ "%.1f"|format(100 * pair.a_rate) }}%</td>
+            </tr>
+            <tr class="border-t border-slate-100">
+              <td class="px-3 py-2 font-medium">{{ pair.player_b|fullname }}</td>
+              <td class="px-3 py-2 text-right num">{{ pair.b_taken }}</td>
+              <td class="px-3 py-2 text-right num text-slate-500">{{ pair.b_not_taken }}</td>
+              <td class="px-3 py-2 text-right num font-medium">{{ "%.1f"|format(100 * pair.b_rate) }}%</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="text-xs text-slate-600 mb-3">
+        Разница: <span class="num font-medium">{{ "%+.0f"|format(pair.delta_takes) }}</span> взятий
+        (<span class="num">{{ "%+.1f"|format(100 * pair.delta_rate) }}</span> п.п.)
+        · оба взяли <span class="num">{{ pair.both_taken }}</span>
+        · только {{ pair.player_a|fullname }} <span class="num">{{ pair.only_a }}</span>
+        · только {{ pair.player_b|fullname }} <span class="num">{{ pair.only_b }}</span>
+        · оба промах <span class="num">{{ pair.neither }}</span>
+      </p>
+      {% if pair.tournament_wins_a is not none %}
+      <p class="text-xs text-slate-500 mb-3">
+        По сумме взятий в общих турнирах:
+        {{ pair.player_a|fullname }} <span class="num">{{ pair.tournament_wins_a }}</span>,
+        {{ pair.player_b|fullname }} <span class="num">{{ pair.tournament_wins_b }}</span>,
+        ничьи <span class="num">{{ pair.tournament_ties }}</span>.
+      </p>
+      {% endif %}
+      {% if pair.by_field %}
+      <details class="text-sm mb-2" {% if h2h_pairs|length == 1 %}open{% endif %}>
+        <summary class="cursor-pointer text-slate-700 hover:text-indigo-700">По сложности (доля поля)</summary>
+        <div class="overflow-x-auto mt-2">
+          <table class="w-full text-xs min-w-max">
+            <thead class="text-slate-500 uppercase">
+              <tr>
+                <th class="px-2 py-1 text-left">Категория</th>
+                <th class="px-2 py-1 text-right">n</th>
+                <th class="px-2 py-1 text-right">{{ pair.player_a|fullname }}</th>
+                <th class="px-2 py-1 text-right">{{ pair.player_b|fullname }}</th>
+                <th class="px-2 py-1 text-right">Δ</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in pair.by_field %}
+              <tr class="border-t border-slate-100">
+                <td class="px-2 py-1">{{ row.name }}</td>
+                <td class="px-2 py-1 text-right num">{{ row.n }}</td>
+                <td class="px-2 py-1 text-right num">{{ "%.1f"|format(100 * row.a_rate) }}%</td>
+                <td class="px-2 py-1 text-right num">{{ "%.1f"|format(100 * row.b_rate) }}%</td>
+                <td class="px-2 py-1 text-right num {% if row.delta > 0.005 %}text-emerald-700{% elif row.delta < -0.005 %}text-rose-700{% endif %}">{{ "%+.1f"|format(100 * row.delta) }} п.п.</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </details>
+      {% endif %}
+      {% if pair.by_mode %}
+      <details class="text-sm mb-2">
+        <summary class="cursor-pointer text-slate-700 hover:text-indigo-700">По формату</summary>
+        <div class="overflow-x-auto mt-2">
+          <table class="w-full text-xs min-w-max">
+            <thead class="text-slate-500 uppercase">
+              <tr>
+                <th class="px-2 py-1 text-left">Формат</th>
+                <th class="px-2 py-1 text-right">n</th>
+                <th class="px-2 py-1 text-right">{{ pair.player_a|fullname }}</th>
+                <th class="px-2 py-1 text-right">{{ pair.player_b|fullname }}</th>
+                <th class="px-2 py-1 text-right">Δ</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in pair.by_mode %}
+              <tr class="border-t border-slate-100">
+                <td class="px-2 py-1">{{ row.name|type_label }}</td>
+                <td class="px-2 py-1 text-right num">{{ row.n }}</td>
+                <td class="px-2 py-1 text-right num">{{ "%.1f"|format(100 * row.a_rate) }}%</td>
+                <td class="px-2 py-1 text-right num">{{ "%.1f"|format(100 * row.b_rate) }}%</td>
+                <td class="px-2 py-1 text-right num">{{ "%+.1f"|format(100 * row.delta) }} п.п.</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </details>
+      {% endif %}
+      {% if pair.editors_a_better or pair.editors_b_better %}
+      <details class="text-sm">
+        <summary class="cursor-pointer text-slate-700 hover:text-indigo-700">По редакторам (≥ 15 вопросов)</summary>
+        <div class="grid md:grid-cols-2 gap-4 mt-2">
+          {% if pair.editors_a_better %}
+          <div>
+            <p class="text-xs text-slate-500 mb-1">Где {{ pair.player_a|fullname }} лучше</p>
+            <table class="w-full text-xs">
+              {% for row in pair.editors_a_better %}
+              <tr class="border-t border-slate-100">
+                <td class="py-1 pr-2">{{ row.name }}</td>
+                <td class="py-1 text-right num text-slate-500">{{ row.n }}</td>
+                <td class="py-1 text-right num text-emerald-700">{{ "%+.0f"|format(100 * row.delta) }} п.п.</td>
+              </tr>
+              {% endfor %}
+            </table>
+          </div>
+          {% endif %}
+          {% if pair.editors_b_better %}
+          <div>
+            <p class="text-xs text-slate-500 mb-1">Где {{ pair.player_b|fullname }} лучше</p>
+            <table class="w-full text-xs">
+              {% for row in pair.editors_b_better %}
+              <tr class="border-t border-slate-100">
+                <td class="py-1 pr-2">{{ row.name }}</td>
+                <td class="py-1 text-right num text-slate-500">{{ row.n }}</td>
+                <td class="py-1 text-right num text-rose-700">{{ "%+.0f"|format(100 * row.delta) }} п.п.</td>
+              </tr>
+              {% endfor %}
+            </table>
+          </div>
+          {% endif %}
+        </div>
+      </details>
+      {% endif %}
+    </div>
+    {% endfor %}
+  {% else %}
+  <p class="px-4 py-3 text-sm text-slate-500">
+    Нет общих вопросов с расплюской — игроки не пересекались на турнирах с покомандной статистикой по вопросам.
+  </p>
+  {% endif %}
 </section>
 {% endif %}
 

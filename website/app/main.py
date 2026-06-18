@@ -13,7 +13,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import db, forecast as forecast_module, map_data
+from . import compare_h2h, db, forecast as forecast_module, map_data
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -257,20 +257,17 @@ def tournaments_list(
     )
 
 
-# Cached SQL for the teams ranking page.  The "current strength" of a
-# team is the *loyalty-weighted* average ``theta_display`` of the up-to-6
-# players who appeared most often in that team over the last ``window``
-# days (relative to the latest tournament in the database).  Loyalty
-# share for player p in team T is ``n_app(p, T) / n_app_total(p)``,
-# i.e. the fraction of p's games in the window that were for T.
-#
-# A guest who played 6/100 games for T contributes weight 0.06 to T's
-# average; a regular with 50/55 contributes 0.91.  This both kills the
-# "Карякин-effect" (one player propping up several teams' rosters) and,
-# combined with the ``eff_n_base`` filter (= sum of shares in top-6),
-# auto-removes ad-hoc / one-off teams whose "core" is a handful of
-# players whose real home is elsewhere.
-_TEAMS_RANK_SQL = """
+# Venue-aware team core (очник + синхрон): min venue appearances to enter
+# top-6, and dampening for 1–2-game guests (weight *= min(1, n / dampen)).
+# Async is excluded from core selection and loyalty share — it does not
+# reflect «playing together» on a team the way sync/offline do.
+_VENUE_TYPE_SQL = "t.type IN ('offline', 'sync')"
+_VENUE_CORE_MIN = 2
+_VENUE_GUEST_DAMPEN = 3.0
+
+# Cached SQL for the teams ranking page.  Default ``core=offline`` ranks
+# by venue (очник + синхрон) loyalty; ``core=all`` keeps all-mode share.
+_TEAMS_RANK_SQL_ALL = """
 WITH cutoff AS (
     SELECT MAX(start_date) - INTERVAL ({window}) DAY AS dt FROM tournaments
 ),
@@ -293,9 +290,6 @@ p_share AS (
 ),
 ranked AS (
     SELECT s.team_id, s.player_id, s.n_app, s.share, p.theta_display,
-           -- Top-6 selection is still by appearance count: the "regular
-           -- roster" is who played most for the team.  Share only
-           -- changes the *weight* in the average below.
            ROW_NUMBER() OVER (
                PARTITION BY s.team_id
                ORDER BY s.n_app DESC, p.theta_display DESC, s.player_id
@@ -321,6 +315,104 @@ team_meta AS (
 )
 """
 
+_TEAMS_RANK_SQL_VENUE = """
+WITH cutoff AS (
+    SELECT MAX(start_date) - INTERVAL ({window}) DAY AS dt FROM tournaments
+),
+recent_pg AS (
+    SELECT pg.team_id, pg.player_id, COUNT(*) AS n_app,
+           SUM(CASE WHEN {venue_type} THEN 1 ELSE 0 END) AS n_app_venue
+    FROM player_games pg
+    JOIN tournaments t USING (tournament_id)
+    WHERE t.start_date >= (SELECT dt FROM cutoff)
+    GROUP BY pg.team_id, pg.player_id
+),
+p_total AS (
+    SELECT player_id,
+           SUM(n_app) AS n_app_total,
+           SUM(n_app_venue) AS n_app_venue_total
+    FROM recent_pg
+    GROUP BY player_id
+),
+p_share AS (
+    SELECT r.team_id, r.player_id, r.n_app, r.n_app_venue,
+           r.n_app::DOUBLE / pt.n_app_total AS share,
+           CASE WHEN pt.n_app_venue_total > 0
+                THEN r.n_app_venue::DOUBLE / pt.n_app_venue_total
+                ELSE NULL END AS share_venue
+    FROM recent_pg r JOIN p_total pt USING (player_id)
+),
+team_venue AS (
+    SELECT team_id, SUM(n_app_venue) AS team_venue_total
+    FROM recent_pg
+    GROUP BY team_id
+),
+scored AS (
+    SELECT s.team_id, s.player_id, s.n_app, s.n_app_venue,
+           s.share, s.share_venue, p.theta_display,
+           t.team_venue_total,
+           CASE
+               WHEN t.team_venue_total = 0 THEN s.share
+               WHEN s.n_app_venue >= {min_venue}
+                    AND s.share_venue IS NOT NULL THEN
+                   s.share_venue * LEAST(1.0, s.n_app_venue / {guest_dampen})
+               ELSE 0.0
+           END AS weight,
+           CASE WHEN t.team_venue_total = 0
+                THEN s.n_app ELSE s.n_app_venue END AS rank_n_app
+    FROM p_share s
+    JOIN players p USING (player_id)
+    JOIN team_venue t USING (team_id)
+),
+eligible AS (
+    SELECT *,
+           CASE
+               WHEN team_venue_total = 0 THEN n_app >= 1
+               ELSE n_app_venue >= {min_venue} AND weight > 0
+           END AS ok
+    FROM scored
+),
+ranked AS (
+    SELECT team_id, player_id, n_app, n_app_venue, share, share_venue,
+           theta_display, weight,
+           ROW_NUMBER() OVER (
+               PARTITION BY team_id
+               ORDER BY rank_n_app DESC, theta_display DESC, player_id
+           ) AS rk
+    FROM eligible
+    WHERE ok
+),
+base AS (
+    SELECT team_id,
+           SUM(weight * theta_display) / SUM(weight) AS base_theta,
+           SUM(weight) AS eff_n_base
+    FROM ranked WHERE rk <= 6
+    GROUP BY team_id
+),
+team_meta AS (
+    SELECT tg.team_id,
+           arg_max(tg.team_name, t.start_date) AS team_name,
+           COUNT(*) AS n_recent_games,
+           MAX(t.start_date) AS last_played
+    FROM team_games tg
+    JOIN tournaments t USING (tournament_id)
+    WHERE t.start_date >= (SELECT dt FROM cutoff)
+    GROUP BY tg.team_id
+)
+"""
+
+
+def _teams_rank_sql(window: int, core: str = "offline") -> str:
+    w = int(window)
+    if core == "all":
+        return _TEAMS_RANK_SQL_ALL.format(window=w)
+    return _TEAMS_RANK_SQL_VENUE.format(
+        window=w,
+        venue_type=_VENUE_TYPE_SQL,
+        min_venue=_VENUE_CORE_MIN,
+        guest_dampen=_VENUE_GUEST_DAMPEN,
+    )
+
 
 @app.get("/teams", response_class=HTMLResponse)
 def teams_list(
@@ -328,20 +420,17 @@ def teams_list(
     min_games: int = Query(3, ge=1, le=200),
     min_eff_base: float = Query(3.0, ge=0.5, le=6.0),
     window: int = Query(365, ge=30, le=3650),
+    core: str = Query("offline", pattern=r"^(offline|all)$"),
     per_page: int = Query(100, ge=10, le=500),
     page: int = Query(1, ge=1),
 ):
     """Teams sorted by current loyalty-weighted base-roster strength.
 
-    For each (player, team) in the window we compute
-    ``share = n_app(player, team) / n_app_total(player)``.  The team's
-    "base θ" is the share-weighted mean of ``theta_display`` over the
-    top-6 most-frequent players, and ``eff_n_base = Σ share`` over those
-    six.  ``min_eff_base`` filters out ad-hoc teams whose core is
-    actually loyal to other teams (so e.g. a single-player team has
-    eff_n_base ≤ 1, a team of six fully-loyal regulars has eff_n_base = 6).
+    Default ``core=offline``: top-6 by venue (очник+синхрон) appearances,
+    weight ``share_venue * min(1, n_venue/3)`` (guests with <2 venue games
+    excluded; async ignored).  ``core=all``: legacy all-mode share.
     """
-    sql_head = _TEAMS_RANK_SQL.format(window=int(window))
+    sql_head = _teams_rank_sql(int(window), core)
 
     total = (
         db.query_one(
@@ -395,6 +484,7 @@ def teams_list(
             "page_links": _build_page_links(page, total_pages),
             "ref_today": cutoff_row.get("today"),
             "ref_cutoff": cutoff_row.get("cutoff"),
+            "core": core,
         },
     )
 
@@ -928,29 +1018,28 @@ def team_page(
         [team_id],
     )
 
-    # Regular roster: players who appeared most often, with:
-    #   - games_with_team   — total appearances over team's full history
-    #   - n_app_window      — appearances in the last ``window`` days
-    #   - share_window      — fraction of the player's window appearances
-    #                         that were for this team (= "loyalty"; the
-    #                         same number used in the team-ranking SQL)
-    # Sorted by share desc, then by recent-window appearances, so the
-    # "real core" floats to the top regardless of historic guests.
+    # Regular roster with offline-aware metrics (matches /teams ranking).
     roster = db.query(
         """
         WITH cutoff AS (
             SELECT MAX(start_date) - INTERVAL (?) DAY AS dt FROM tournaments
         ),
         recent_pg AS (
-            SELECT pg.team_id, pg.player_id, COUNT(*) AS n_app
+            SELECT pg.team_id, pg.player_id, COUNT(*) AS n_app,
+                   SUM(CASE WHEN t.type IN ('offline', 'sync') THEN 1 ELSE 0 END)
+                       AS n_app_venue,
+                   SUM(CASE WHEN t.type = 'async' THEN 1 ELSE 0 END) AS n_app_async
             FROM player_games pg
             JOIN tournaments t USING (tournament_id)
             WHERE t.start_date >= (SELECT dt FROM cutoff)
             GROUP BY pg.team_id, pg.player_id
         ),
         p_total AS (
-            SELECT player_id, SUM(n_app) AS n_app_total
-            FROM recent_pg GROUP BY player_id
+            SELECT player_id,
+                   SUM(n_app) AS n_app_total,
+                   SUM(n_app_venue) AS n_app_venue_total
+            FROM recent_pg
+            GROUP BY player_id
         ),
         all_time AS (
             SELECT pg.player_id,
@@ -966,20 +1055,40 @@ def team_page(
             a.games_with_team,
             a.last_played,
             COALESCE(r.n_app, 0) AS n_app_window,
+            COALESCE(r.n_app_venue, 0) AS n_app_venue,
+            COALESCE(r.n_app_async, 0) AS n_app_async,
             CASE WHEN r.n_app IS NULL THEN NULL
-                 ELSE r.n_app::DOUBLE / pt.n_app_total END AS share_window
+                 ELSE r.n_app::DOUBLE / pt.n_app_total END AS share_window,
+            CASE WHEN pt.n_app_venue_total > 0 AND r.n_app_venue IS NOT NULL
+                 THEN r.n_app_venue::DOUBLE / pt.n_app_venue_total
+                 ELSE NULL END AS share_venue
         FROM all_time a
         JOIN players p USING (player_id)
         LEFT JOIN recent_pg r ON r.player_id = a.player_id AND r.team_id = ?
         LEFT JOIN p_total pt ON pt.player_id = a.player_id
-        ORDER BY share_window DESC NULLS LAST,
+        ORDER BY n_app_venue DESC,
                  n_app_window DESC,
+                 share_venue DESC NULLS LAST,
                  a.games_with_team DESC,
                  p.theta DESC
         LIMIT 50
         """,
         [int(window), team_id, team_id],
     )
+
+    core_rows = db.query(
+        _teams_rank_sql(int(window), "offline")
+        + """
+        SELECT player_id, rk, weight, n_app_venue, share_venue
+        FROM ranked
+        WHERE team_id = ? AND rk <= 6
+        ORDER BY rk
+        """,
+        [team_id],
+    )
+    core_ids = {r["player_id"] for r in core_rows}
+    roster_core = [r for r in roster if r["player_id"] in core_ids]
+    roster_other = [r for r in roster if r["player_id"] not in core_ids]
 
     # Per-tournament roster: who actually played in each game, with their
     # θ snapshot right after that tournament.  One batched query, grouped
@@ -1055,6 +1164,9 @@ def team_page(
             "games_page_links": games_page_links,
             "games_per_page": per_page,
             "roster": roster,
+            "roster_core": roster_core,
+            "roster_other": roster_other,
+            "core_min_venue": _VENUE_CORE_MIN,
             "rosters_by_tournament": rosters_by_tournament,
             "summary": summary_row,
             "trend_json": json.dumps(trend_json, ensure_ascii=False),
@@ -1805,6 +1917,8 @@ def compare_players(
         for s in tournament_suggestions
     }
 
+    h2h_pairs, h2h_available = compare_h2h.compute_pairwise_head_to_head(players)
+
     return templates.TemplateResponse(
         request,
         "compare.html",
@@ -1819,6 +1933,8 @@ def compare_players(
             "add_url": add_url,
             "chart_series_json": json.dumps(chart_series, ensure_ascii=False),
             "common_tournaments": common_tournaments,
+            "h2h_pairs": h2h_pairs,
+            "h2h_available": h2h_available,
             "yearly_by_year": yearly_by_year,
             # Tournament comparison
             "tournament_ids": tournament_ids,
