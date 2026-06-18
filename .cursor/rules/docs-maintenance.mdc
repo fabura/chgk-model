@@ -1,0 +1,34 @@
+---
+description: Keep project docs in sync when changing schemas, modules, or experiments
+alwaysApply: true
+---
+
+# Documentation maintenance
+
+Before exploring the codebase from scratch, read:
+- `docs/INDEX.md` — navigation hub
+- `docs/repo-map.md` — where modules and scripts live
+- `docs/schema/README.md` — tables and data flow
+
+## Update docs in the same PR when you change:
+
+| Change | Update |
+|--------|--------|
+| `DDL` in `website/build/build_db.py` or new DuckDB column | `docs/schema/duckdb.md` |
+| SQL against `public.*` (columns, joins, filters) | `docs/schema/postgres.md` |
+| `CACHE_VERSION_NPZ`, npz keys, `RatingResults` fields | `docs/schema/cache.md` |
+| `venue_overlay/store.py` DDL | `docs/schema/venue-overlay.md` |
+| `rating_api/pg_state.py` or overlay tables | `docs/schema/api-overlay.md` |
+| New top-level package or major script group | `docs/repo-map.md` |
+| `Config` default or promoted/rejected experiment | `docs/experiments_summary_ru.md` + detail doc |
+| New website route | `docs/repo-map.md` (website section) |
+
+## Do not duplicate
+
+- Model math and hyperparameter defaults stay in `AGENTS.md`.
+- Experiment details stay in `docs/*_experiments.md`.
+- Schema docs describe **columns and relationships**, not business logic.
+
+## Schema source of truth
+
+Code wins over markdown. If docs and code disagree, fix the docs (or fix the code if the bug is in code).

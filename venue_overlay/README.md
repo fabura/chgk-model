@@ -15,9 +15,7 @@ python scripts/fetch_venue_overlay.py --tournament-id 13606 --no-resume
 python scripts/fetch_venue_overlay.py --source cache --cache data.npz --resume
 ```
 
-Output: `data/venue_overlay.duckdb` with tables `venues`, `team_tournament_venue`,
-`tournament_venues` (incl. `date_start`, `synch_request_id`), `synch_requests`
-(`dateStart` from API), `venue_fetch_state`.
+Output: `data/venue_overlay.duckdb` — schema: [`../docs/schema/venue-overlay.md`](../docs/schema/venue-overlay.md).
 
 API: `GET https://api.rating.chgk.info/tournaments/{id}/results` (optional `?venue=` filter for debugging).
 

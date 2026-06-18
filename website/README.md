@@ -38,12 +38,15 @@ website/
 
 ## Источники данных
 
+Схемы таблиц: [`../docs/schema/`](../docs/schema/).
+
 | Что | Откуда |
 |-----|--------|
-| Наблюдения (game, question, team, taken, roster) | `../data.npz` |
+| Наблюдения (game, question, team, taken, roster) | `../data.npz` — см. [`docs/schema/cache.md`](../docs/schema/cache.md) |
 | θ игроков, b/a вопросов, история θ | `../results/seq.npz` |
-| Имена игроков, метаданные турниров, ростеры команд, названия | рейтинговая БД (`public.players`, `public.tournaments`, `public.tournament_rosters`, `public.tournament_results`, `public.teams`) |
-| Тексты вопросов, авторы, редакторы пака | `chgk-embedings/data/questions.db` |
+| Имена игроков, метаданные турниров, ростеры команд, названия | рейтинговая БД — см. [`docs/schema/postgres.md`](../docs/schema/postgres.md) |
+| Тексты вопросов, авторы, редакторы пака | `chgk-embedings/data/questions.db` — см. [`docs/schema/questions-db.md`](../docs/schema/questions-db.md) |
+| Таблицы сайта (DuckDB) | [`docs/schema/duckdb.md`](../docs/schema/duckdb.md) |
 
 ## MVP-страницы
 

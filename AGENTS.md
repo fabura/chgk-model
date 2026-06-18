@@ -2,6 +2,17 @@
 
 Guidance for AI agents working with this codebase.
 
+## Start here (do not rediscover layout)
+
+| Need | Read first |
+|------|------------|
+| Navigation, data flow, doc index | [`docs/INDEX.md`](docs/INDEX.md) |
+| Which file/module does what | [`docs/repo-map.md`](docs/repo-map.md) |
+| DB tables and relationships | [`docs/schema/README.md`](docs/schema/README.md) → `docs/schema/*.md` |
+| Model, hyperparams, pipeline (below) | This file |
+
+Schema docs must stay in sync with code — see `.cursor/rules/docs-maintenance.mdc`.
+
 ## Project overview
 
 **ChGK** (Что? Где? Когда?) is a probabilistic model that estimates:
@@ -448,6 +459,9 @@ pip install -r requirements.txt
 
 ## Docs
 
+- `docs/INDEX.md` — documentation hub (schemas, repo map, links)
+- `docs/repo-map.md` — modules, scripts, routes, typical commands
+- `docs/schema/` — Postgres, DuckDB, npz, questions.db, overlays (tables + ER)
 - `docs/experiments_summary_ru.md` — Russian index of all experiments
   (promoted / rejected / partial). **Update it in the same PR/commit**
   when you run, promote, or reject an experiment, add a new

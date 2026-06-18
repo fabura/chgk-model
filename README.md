@@ -139,6 +139,15 @@ Daily refresh ~01:00 UTC (after the new R2 backup is published):
 For launchd on macOS, drop a plist into `~/Library/LaunchAgents/`
 calling the same script with `StartCalendarInterval` set to `Hour=1`.
 
+## Documentation
+
+| Doc | Contents |
+|-----|----------|
+| [`docs/INDEX.md`](docs/INDEX.md) | Hub: data flow, links to everything |
+| [`docs/repo-map.md`](docs/repo-map.md) | Modules, scripts, website routes |
+| [`docs/schema/`](docs/schema/) | Tables (Postgres, DuckDB, npz) and relationships |
+| [`AGENTS.md`](AGENTS.md) | Model, defaults, refresh pipeline (for AI agents) |
+
 ## Layout
 
 - `data.py` — data loader, index maps, synthetic data, DB loader (points_mask → samples).
